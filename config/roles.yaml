@@ -1,0 +1,16 @@
+# Slack role allowlist.
+#
+# Only users listed under `analyst` may use the data functions of the bot
+# (fetch / list / review Intercom conversations). Everyone else is treated as
+# the `default` role and gets a polite "no access" reply.
+#
+# Find a user's ID in Slack: click their profile → ⋮ More → "Copy member ID"
+# (looks like U01ABCDEF). You can also list IDs with the bot once it runs.
+
+analyst:
+  - U000000000   # <-- replace with real Slack user IDs
+  # - U111111111
+
+# (Optional) admins may additionally manage the allowlist / see audit info.
+admin:
+  - U000000000

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intercom-summary"
+version = "0.1.0"
+description = "Fetch Intercom agent conversations, export them, and QA-grade them with Claude."
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "openpyxl>=3.1",
+    "anthropic>=0.40",
+    "slack-bolt>=1.20",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "beautifulsoup4>=4.12",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "bcrypt>=4.1",
+    "itsdangerous>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+]
+
+[project.scripts]
+intercom-summary = "intercom_summary.cli:main"
+intercom-slack-bot = "intercom_summary.slack.app:main"
+intercom-web = "intercom_summary.web.api:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]

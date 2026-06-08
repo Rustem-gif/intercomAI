@@ -1,0 +1,204 @@
+"""Persist and query fetched conversations (the browse/slice cache for the UI)."""
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+from intercom_summary.intercom.models import Conversation
+from intercom_summary.settings import settings
+from intercom_summary.storage.db import connect
+
+
+class ConversationsStore:
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self._conn: sqlite3.Connection = connect(db_path or settings.db_path)
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def save(self, convo: Conversation) -> None:
+        # Preserve any custom_tags an analyst has already set on this conversation.
+        existing = self._conn.execute(
+            "SELECT custom_tags FROM conversations WHERE id=?", (convo.id,)
+        ).fetchone()
+        custom_tags = existing["custom_tags"] if existing else ""
+
+        self._conn.execute(
+            """INSERT OR REPLACE INTO conversations
+               (id, agent_name, agent_email, customer_name, customer_email, state,
+                subject, created_at, updated_at, message_count, csat_rating, tags,
+                custom_tags, payload_json, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                convo.id,
+                convo.assignee_name,
+                convo.assignee.email if convo.assignee else "",
+                convo.contact.name,
+                convo.contact.email,
+                convo.state,
+                convo.display_subject,
+                convo.created_at.isoformat() if convo.created_at else None,
+                convo.updated_at.isoformat() if convo.updated_at else None,
+                convo.message_count,
+                convo.csat_rating,
+                ",".join(convo.tags),
+                custom_tags,
+                json.dumps(convo.to_dict()),
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def save_many(self, convos: list[Conversation]) -> int:
+        for c in convos:
+            self.save(c)
+        return len(convos)
+
+    def get(self, conversation_id: str) -> Conversation | None:
+        row = self._conn.execute(
+            "SELECT payload_json FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()
+        return Conversation.from_dict(json.loads(row["payload_json"])) if row else None
+
+    def update_agent(self, conversation_id: str, agent_name: str, agent_email: str) -> None:
+        """Patch agent_name / agent_email on a stored conversation (used by the repair job)."""
+        # Also patch the payload_json so the drawer shows the correct assignee.
+        row = self._conn.execute(
+            "SELECT payload_json FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()
+        if not row:
+            return
+        payload = json.loads(row["payload_json"])
+        if agent_name:
+            existing_assignee = payload.get("assignee") or {}
+            payload["assignee"] = {
+                "id":    existing_assignee.get("id", ""),   # preserve; Admin requires it
+                "name":  agent_name,
+                "email": agent_email,
+            }
+        self._conn.execute(
+            "UPDATE conversations SET agent_name=?, agent_email=?, payload_json=? WHERE id=?",
+            (agent_name, agent_email, json.dumps(payload), conversation_id),
+        )
+        self._conn.commit()
+
+    def update_custom_tags(self, conversation_id: str, tags: list[str]) -> bool:
+        cur = self._conn.execute(
+            "UPDATE conversations SET custom_tags=? WHERE id=?",
+            (",".join(t.strip() for t in tags if t.strip()), conversation_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def all_custom_tags(self) -> list[str]:
+        """Distinct non-empty custom tags across all conversations, sorted."""
+        rows = self._conn.execute(
+            "SELECT custom_tags FROM conversations WHERE custom_tags <> ''"
+        ).fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            for t in row["custom_tags"].split(","):
+                t = t.strip()
+                if t:
+                    seen.add(t)
+        return sorted(seen)
+
+    def get_empty_agent_ids(self) -> list[str]:
+        """IDs of conversations that have no agent_name (need repair)."""
+        rows = self._conn.execute(
+            "SELECT id FROM conversations WHERE agent_name IS NULL OR agent_name = ''"
+        ).fetchall()
+        return [r["id"] for r in rows]
+
+    def query(
+        self,
+        agents: list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        state: str | None = None,
+        min_score: int | None = None,
+        search: str | None = None,
+        tag: str | None = None,
+        sort: str = "created_at",
+        descending: bool = True,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """Return (rows, total). Rows are summary dicts joined with the latest grade."""
+        where: list[str] = []
+        args: list[object] = []
+        if agents:
+            where.append(f"c.agent_name IN ({','.join('?' * len(agents))})")
+            args.extend(agents)
+        if since:
+            where.append("c.created_at >= ?")
+            args.append(since)
+        if until:
+            where.append("c.created_at <= ?")
+            args.append(until)
+        if state:
+            where.append("c.state = ?")
+            args.append(state)
+        if min_score is not None:
+            where.append("g.overall_score >= ?")
+            args.append(min_score)
+        if search:
+            where.append("(c.subject LIKE ? OR c.customer_name LIKE ? OR c.customer_email LIKE ?)")
+            like = f"%{search}%"
+            args.extend([like, like, like])
+        if tag:
+            # Match exact tag in comma-separated list using delimiter padding.
+            where.append("(',' || c.custom_tags || ',') LIKE ?")
+            args.append(f"%,{tag},%")
+
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        sort_col = {
+            "created_at": "c.created_at",
+            "score": "g.overall_score",
+            "messages": "c.message_count",
+            "agent": "c.agent_name",
+        }.get(sort, "c.created_at")
+        direction = "DESC" if descending else "ASC"
+
+        base = f"FROM conversations c LEFT JOIN grades g ON g.conversation_id = c.id {clause}"
+        total = self._conn.execute(f"SELECT COUNT(*) AS n {base}", args).fetchone()["n"]
+        rows = self._conn.execute(
+            f"""SELECT c.id, c.agent_name, c.customer_name, c.customer_email, c.state,
+                       c.subject, c.created_at, c.message_count, c.csat_rating, c.tags,
+                       c.custom_tags,
+                       COALESCE(g.human_score, g.overall_score) AS score,
+                       g.overall_score AS ai_score,
+                       g.human_score,
+                       g.summary AS grade_summary
+                {base}
+                ORDER BY {sort_col} {direction} NULLS LAST
+                LIMIT ? OFFSET ?""",
+            [*args, limit, offset],
+        ).fetchall()
+        return [dict(r) for r in rows], total
+
+    def agents(self) -> list[str]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT agent_name FROM conversations WHERE agent_name <> '' ORDER BY agent_name"
+        ).fetchall()
+        return [r["agent_name"] for r in rows]
+
+    def delete(self, conversation_id: str) -> bool:
+        cur = self._conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def delete_many(self, conversation_ids: list[str]) -> int:
+        if not conversation_ids:
+            return 0
+        placeholders = ",".join("?" * len(conversation_ids))
+        cur = self._conn.execute(
+            f"DELETE FROM conversations WHERE id IN ({placeholders})", conversation_ids
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def count(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]

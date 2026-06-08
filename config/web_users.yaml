@@ -1,0 +1,23 @@
+# Web dashboard users.
+#
+# Roles:
+#   admin / analyst → full access (fetch, run QA, edit rules)
+#   viewer          → read-only (browse, overview, export)
+#
+# Each user takes EITHER a plaintext `password:` (simplest) OR a bcrypt `password_hash:`.
+# Plaintext is fine for a small trusted/internal tool — just don't commit this file to a
+# public repo or share backups of it.
+#
+#   (optional) hash instead of plaintext:
+#   python -c "from intercom_summary.web.auth import hash_password; print(hash_password('pw'))"
+
+users:
+  admin:
+    password: admin          # <-- change this
+    role: admin
+  # analyst1:
+  #   password: secret1
+  #   role: analyst
+  # viewer1:
+  #   password: secret2
+  #   role: viewer

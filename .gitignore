@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+build/
+dist/
+data/*.db
+data/exports/
+data/eval/
+.pytest_cache/
+.DS_Store
+node_modules/
+src/intercom_summary/web/frontend/dist/
