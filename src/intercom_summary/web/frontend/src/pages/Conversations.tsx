@@ -20,7 +20,9 @@ export default function Conversations() {
   const [agentText, setAgentText] = useState("");
   const [state, setState] = useState("");
   const [tag, setTag] = useState("");
-  const [sort, setSort] = useState("created_at");
+  const [sort, setSort] = useState("created_at:desc");
+  const [since, setSince] = useState("");
+  const [until, setUntil] = useState("");
   const [offset, setOffset] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -31,12 +33,17 @@ export default function Conversations() {
   // The effective agent filter: dropdown value takes precedence over text input
   const effectiveAgent = agent || agentText.trim();
 
+  const [sortField, sortDir] = sort.includes(":") ? sort.split(":") : [sort, "desc"];
+
   const params = new URLSearchParams();
   if (search) params.set("search", search);
   if (effectiveAgent) params.set("agent", effectiveAgent);
   if (state) params.set("state", state);
   if (tag) params.set("tag", tag);
-  params.set("sort", sort);
+  if (since) params.set("since", since);
+  if (until) params.set("until", until + "T23:59:59");
+  params.set("sort", sortField);
+  if (sortDir === "asc") params.set("descending", "false");
   params.set("limit", String(PAGE));
   params.set("offset", String(offset));
 
@@ -64,6 +71,8 @@ export default function Conversations() {
     setAgentText("");
     setState("");
     setTag("");
+    setSince("");
+    setUntil("");
     setOffset(0);
   };
 
@@ -251,7 +260,8 @@ export default function Conversations() {
           value={sort}
           onChange={(e) => setSort(e.target.value)}
         >
-          <option value="created_at">Newest</option>
+          <option value="created_at:desc">Newest first</option>
+          <option value="created_at:asc">Oldest first</option>
           <option value="score">Lowest score</option>
           <option value="messages">Most messages</option>
         </select>
@@ -267,7 +277,23 @@ export default function Conversations() {
             ))}
           </select>
         )}
-        {(search || effectiveAgent || state || tag) && (
+        <Input
+          type="date"
+          className="h-9 w-36 px-2 text-sm"
+          title="From date"
+          value={since}
+          max={until || undefined}
+          onChange={(e) => { setSince(e.target.value); setOffset(0); }}
+        />
+        <Input
+          type="date"
+          className="h-9 w-36 px-2 text-sm"
+          title="To date"
+          value={until}
+          min={since || undefined}
+          onChange={(e) => { setUntil(e.target.value); setOffset(0); }}
+        />
+        {(search || effectiveAgent || state || tag || since || until) && (
           <Button variant="ghost" size="sm" onClick={resetFilters}>
             Clear filters
           </Button>

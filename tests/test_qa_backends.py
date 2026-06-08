@@ -3,8 +3,7 @@ import pytest
 from intercom_summary.qa.backends import get_grader
 from intercom_summary.qa.ollama_grader import OllamaGrader, _is_valid_grade
 from intercom_summary.qa.prompt import extract_grade_dict
-from intercom_summary.qa.schema import ConversationGrade, _aggregate_score
-from intercom_summary.qa.casino_prompt import DIMENSION_WEIGHTS
+from intercom_summary.qa.schema import ConversationGrade, _compute_score
 
 
 def test_factory_selects_backend():
@@ -20,12 +19,15 @@ def test_ollama_output_coerces_non_string_fields():
     """Qwen sometimes returns summary/evidence as objects; these must become strings
     so the SQLite write doesn't fail with 'type dict is not supported'."""
     data = {
-        "weighted_score": 80,
+        "overall_score": 90,
+        "critical_fail": False,
         "summary": {"strengths": "polite", "weaknesses": "slow"},  # object, not string
-        "scorecard": {"empathy": {"score": 4, "evidence": {"turn": 2, "quote": "hi"}}},
-        "improvement_actions": [{"action": "be faster"}],
-        "critical_errors": [],
-        "major_issues": [],
+        "criteria": [{"id": "open-greet", "v": "pass", "ded": 0, "ev": {"turn": 1, "quote": "hi"}}],
+        "flags": [],
+        "risk": "low",
+        "violations": [],
+        "coaching": [{"action": "be faster"}],
+        "confidence": "High",
     }
     g = ConversationGrade.from_ollama_output("c1", "Ada", data)
     assert isinstance(g.summary, str) and "polite" in g.summary
@@ -33,57 +35,80 @@ def test_ollama_output_coerces_non_string_fields():
     assert all(isinstance(r.evidence, str) for r in g.rule_results)
 
 
-def test_is_valid_grade_requires_scorecard():
-    # A real grade has a populated scorecard; empty/wrong JSON must be rejected
-    # so it is retried/skipped rather than saved as a bogus 0/100.
-    assert _is_valid_grade({"scorecard": {"empathy": {"score": 4}}, "weighted_score": 80})
-    assert _is_valid_grade({"scorecard": {"a": {"score": "5"}}})  # numeric string ok
-    assert not _is_valid_grade({"scorecard": {}})
+def test_is_valid_grade_requires_criteria():
+    # A real grade has a populated criteria list with at least one evaluated item.
+    assert _is_valid_grade({"criteria": [{"v": "pass", "ded": 0, "id": "open-greet", "ev": "hi"}]})
+    assert _is_valid_grade({"criteria": [{"v": "fail", "ded": -8, "id": "res-effort", "ev": "no effort"}]})
+    assert _is_valid_grade({"criteria": [{"v": "n/a", "ded": 0, "id": "crit-rg-care", "ev": "n/a"}]})
+    assert not _is_valid_grade({"criteria": []})
     assert not _is_valid_grade({"weighted_score": 0})
     assert not _is_valid_grade({})
-    # all dimensions N/A = model declined to evaluate → not a usable grade
-    assert not _is_valid_grade({"scorecard": {"a": {"score": "N/A"}, "b": {"score": "N/A"}}})
 
 
-def test_dimension_schema_forces_numeric_score():
-    # Regression: Qwen 2.5 14B, under grammar-constrained structured output, emitted the
-    # `score` enum value BEFORE writing any reasoning and grabbed the lazy "N/A" for every
-    # dimension — an all-N/A scorecard that collapses to 0/100, fails _is_valid_grade, and
-    # gets the conversation skipped (~75% skip rate). The schema must (1) list reasoning &
-    # evidence before score so the model commits to a number only after reasoning, and
-    # (2) NOT offer "N/A" so the grammar forces a real 1-5 judgement.
-    from intercom_summary.qa.casino_prompt import _DIMENSION_SCHEMA
-
-    enum = _DIMENSION_SCHEMA["properties"]["score"]["enum"]
-    assert "N/A" not in enum
-    assert enum == ["1", "2", "3", "4", "5"]
-    order = list(_DIMENSION_SCHEMA["properties"])
-    assert order.index("score") > order.index("reasoning")
-    assert order.index("score") > order.index("evidence")
-
-
-def test_aggregate_score_computes_weighted_band():
-    all5 = {d: {"score": "5"} for d in DIMENSION_WEIGHTS}
-    assert _aggregate_score(all5, False) == (100, "Excellent", "PASS")
-    all1 = {d: {"score": "1"} for d in DIMENSION_WEIGHTS}
-    assert _aggregate_score(all1, False) == (20, "Critical", "FAIL")
-    # N/A dimensions are renormalised out (all-3 except some N/A still averages to 3 -> 60)
-    mixed = {d: {"score": "3"} for d in DIMENSION_WEIGHTS}
-    mixed["efficiency"] = {"score": "N/A"}
-    assert _aggregate_score(mixed, False)[0] == 60
-    # Critical error caps the score at 39 / FAIL even with perfect dimensions.
-    assert _aggregate_score(all5, True) == (39, "Critical", "FAIL")
+def test_compute_score_deduction_based():
+    # No fails → 100 / Excellent / PASS
+    assert _compute_score([], False) == (100, "Excellent", "PASS")
+    # One high-severity fail
+    assert _compute_score([{"v": "fail", "ded": -15}], False) == (85, "Good", "PASS")
+    # Multiple fails that drop below 90
+    criteria = [{"v": "fail", "ded": -10}, {"v": "fail", "ded": -8}]
+    assert _compute_score(criteria, False) == (82, "Good", "PASS")
+    # Pass and n/a items contribute 0 deduction
+    mixed = [{"v": "pass", "ded": 0}, {"v": "n/a", "ded": 0}, {"v": "fail", "ded": -5}]
+    assert _compute_score(mixed, False) == (95, "Excellent", "PASS")
+    # Score cannot go below 0
+    heavy = [{"v": "fail", "ded": -100}]
+    assert _compute_score(heavy, False)[0] == 0
+    # Critical fail overrides everything regardless of deductions
+    assert _compute_score([], True) == (0, "Critical", "FAIL")
+    assert _compute_score([{"v": "pass", "ded": 0}], True) == (0, "Critical", "FAIL")
 
 
-def test_from_ollama_output_uses_computed_score_not_model_arithmetic():
-    # Model returns weighted_score=0 (bad math) but real per-dimension scores -> we recompute.
+def test_from_ollama_output_recomputes_score():
+    # Model might return a wrong overall_score — we ignore it and recompute from deductions.
     data = {
-        "weighted_score": 0, "overall_result": "PASS", "summary": "ok",
-        "scorecard": {d: {"score": "5", "reasoning": "", "evidence": ""} for d in DIMENSION_WEIGHTS},
-        "critical_errors": [], "major_issues": [], "improvement_actions": [],
+        "overall_score": 999,  # bogus value that should be ignored
+        "critical_fail": False,
+        "criteria": [
+            {"id": "open-greet", "v": "pass", "ded": 0, "ev": "Hi there"},
+            {"id": "res-no-fake-close", "v": "fail", "ded": -15, "ev": "closed without resolution"},
+        ],
+        "flags": ["fake_closure_signal"],
+        "risk": "high",
+        "violations": ["Fake closure detected"],
+        "summary": "Agent closed without resolving the issue.",
+        "coaching": ["Confirm resolution before closing."],
+        "confidence": "High",
     }
     g = ConversationGrade.from_ollama_output("c1", "Ada", data)
-    assert g.overall_score == 100 and g.overall_result == "PASS" and g.band == "Excellent"
+    assert g.overall_score == 85  # 100 - 15, not the bogus 999
+    assert g.band == "Good"
+    assert g.overall_result == "PASS"
+    assert g.signal_flags == ["fake_closure_signal"]
+    assert g.business_risk == "high"
+    assert g.rule_results[0].title == "Greeting"
+    assert g.rule_results[1].title == "No Fake Closure"
+    assert g.rule_results[1].verdict == "fail"
+
+
+def test_from_ollama_output_critical_fail():
+    data = {
+        "overall_score": 0,
+        "critical_fail": True,
+        "criteria": [
+            {"id": "crit-data-care", "v": "fail", "ded": 0, "ev": "asked for password"},
+        ],
+        "flags": [],
+        "risk": "critical",
+        "violations": ["Agent asked for password"],
+        "summary": "Critical data security failure.",
+        "coaching": ["Never request passwords."],
+        "confidence": "High",
+    }
+    g = ConversationGrade.from_ollama_output("c2", "Bob", data)
+    assert g.overall_score == 0
+    assert g.band == "Critical"
+    assert g.overall_result == "FAIL"
 
 
 def test_extract_grade_dict_variants():

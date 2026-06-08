@@ -53,22 +53,13 @@ _CONNECT_RETRY_BACKOFF = [2, 5, 10, 20, 30]
 
 
 def _is_valid_grade(data: dict) -> bool:
-    """A real casino grade has a scorecard with at least one numerically-scored (1-5)
-    dimension. An empty scorecard, or one where the model marked every dimension "N/A"
-    (declining to evaluate), yields a meaningless 0/100 — treat it as a failed grade so
-    it's retried/skipped instead of saved."""
-    scorecard = data.get("scorecard")
-    if not isinstance(scorecard, dict) or not scorecard:
+    """A real grade has a non-empty criteria list with at least one evaluated item.
+    An empty list or one where the model declined to evaluate everything is rejected
+    so it can be retried rather than saved as a meaningless 0/100."""
+    criteria = data.get("criteria")
+    if not isinstance(criteria, list) or not criteria:
         return False
-    for dd in scorecard.values():
-        if not isinstance(dd, dict):
-            continue
-        try:
-            if 1 <= int(dd.get("score")) <= 5:
-                return True
-        except (TypeError, ValueError):
-            continue
-    return False
+    return any(c.get("v") in ("pass", "fail", "n/a") for c in criteria)
 
 
 # Transcripts longer than this are truncated to the most-recent turns.

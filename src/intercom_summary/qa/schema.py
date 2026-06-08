@@ -10,33 +10,18 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-def _aggregate_score(scorecard: dict, has_critical_error: bool) -> tuple[int, str, str]:
-    """Compute (weighted_score, band, overall_result) from per-dimension scores.
+def _compute_score(criteria: list[dict], critical_fail: bool) -> tuple[int, str, str]:
+    """Compute (score, band, overall_result) from the deduction-based criteria list.
 
-    Mirrors the prompt's methodology: weighted average over applicable (non-N/A)
-    dimensions, renormalised by the weights that applied; capped at 39 on any critical
-    error; then mapped to a band/PASS-FAIL. Done in code because the model is unreliable
-    at the arithmetic even when its per-dimension scores are sound.
+    Done in code rather than trusting the model's arithmetic. Formula:
+        score = max(0, 100 − sum of absolute deductions for failed criteria)
+    Critical fail overrides everything to 0/Critical/FAIL.
     """
-    from intercom_summary.qa.casino_prompt import DIMENSION_WEIGHTS
+    if critical_fail:
+        return 0, "Critical", "FAIL"
 
-    num = den = 0
-    for dim, dd in (scorecard or {}).items():
-        weight = DIMENSION_WEIGHTS.get(dim)
-        if weight is None or not isinstance(dd, dict):
-            continue
-        raw = dd.get("score")
-        try:
-            sv = int(raw)
-        except (TypeError, ValueError):
-            continue  # "N/A" or non-numeric → excluded, weight renormalised out
-        if 1 <= sv <= 5:
-            num += sv * weight
-            den += weight
-
-    score = round((num / den) / 5 * 100) if den else 0
-    if has_critical_error:
-        score = min(score, 39)
+    total_ded = sum(abs(c.get("ded", 0)) for c in (criteria or []) if c.get("v") == "fail")
+    score = max(0, 100 - total_ded)
 
     if score >= 90:
         band, result = "Excellent", "PASS"
@@ -95,11 +80,13 @@ class ConversationGrade:
     rules_version: str = ""
     model: str = ""
     graded_at: str = ""
-    # casino/iGaming QA enrichment (ollama backend only; empty for legacy grades):
-    classification: dict = field(default_factory=dict)
-    scorecard_raw: dict = field(default_factory=dict)
+    # iGaming QA enrichment (ollama backend only; empty for legacy grades):
+    classification: dict = field(default_factory=dict)   # kept for backwards compat
+    scorecard_raw: dict = field(default_factory=dict)    # stores criteria dict keyed by id
     overall_result: str = ""                 # "PASS" | "FAIL"
     band: str = ""                           # Excellent/Good/Acceptable/Poor/Critical
+    signal_flags: list = field(default_factory=list)     # active signal flags from the grade
+    business_risk: str = ""                  # low/medium/high/critical
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -128,38 +115,25 @@ class ConversationGrade:
 
     @classmethod
     def from_ollama_output(cls, conversation_id: str, agent_name: str, data: dict[str, Any]) -> "ConversationGrade":
-        """Build a ConversationGrade from the casino QA JSON produced by the Ollama grader."""
-        scorecard = data.get("scorecard", {})
-        rule_results = []
-        for dim_name, dim_data in scorecard.items():
-            score = dim_data.get("score", "N/A")
-            if score == "N/A":
-                verdict = "n/a"
-            else:
-                verdict = "pass" if int(score) >= 3 else "fail"
-            rule_results.append(
-                RuleResult(
-                    rule_id=dim_name,
-                    title=dim_name.replace("_", " ").title(),
-                    verdict=verdict,
-                    evidence=_as_text(dim_data.get("evidence", "")),
-                    comment=_as_text(dim_data.get("reasoning", "")),
-                )
-            )
+        """Build a ConversationGrade from the deduction-based QA JSON produced by the Ollama grader."""
+        from intercom_summary.qa.casino_prompt import CRITERION_TITLES
 
-        critical_errors = data.get("critical_errors") or []
-        violations = [
-            f"[CRITICAL] {e.get('type', '')}: {e.get('quote', '')}"
-            for e in critical_errors
-        ] + [
-            f"[MAJOR] {i.get('dimension', '')}: {i.get('description', '')}"
-            for i in data.get("major_issues", [])
+        criteria = data.get("criteria") or []
+        critical_fail = bool(data.get("critical_fail"))
+
+        rule_results = [
+            RuleResult(
+                rule_id=c.get("id", ""),
+                title=CRITERION_TITLES.get(c.get("id", ""), c.get("id", "").replace("-", " ").title()),
+                verdict=c.get("v", "n/a"),
+                evidence=_as_text(c.get("ev", "")),
+                comment="",
+            )
+            for c in criteria
         ]
 
-        # Compute the weighted score deterministically from the per-dimension scores.
-        # The model scores each dimension reliably but is unreliable at the arithmetic
-        # (it often returns weighted_score=0), so we own the aggregation.
-        score, band, result = _aggregate_score(scorecard, bool(critical_errors))
+        # Recompute score from deductions — the model's arithmetic is unreliable.
+        score, band, result = _compute_score(criteria, critical_fail)
 
         grade = cls(
             conversation_id=conversation_id,
@@ -167,13 +141,14 @@ class ConversationGrade:
             overall_score=score,
             summary=_as_text(data.get("summary", "")),
             rule_results=rule_results,
-            violations=[_as_text(v) for v in violations],
-            suggestions=[_as_text(s) for s in data.get("improvement_actions", [])],
+            violations=[_as_text(v) for v in data.get("violations", [])],
+            suggestions=[_as_text(s) for s in data.get("coaching", [])],
         )
-        grade.classification = data.get("classification", {})
-        grade.scorecard_raw = scorecard
+        grade.scorecard_raw = {c["id"]: c for c in criteria if "id" in c}
         grade.overall_result = result
         grade.band = band
+        grade.signal_flags = data.get("flags") or []
+        grade.business_risk = data.get("risk", "")
         return grade
 
     @classmethod
@@ -188,6 +163,8 @@ class ConversationGrade:
         g.scorecard_raw = d.get("scorecard_raw", {})
         g.overall_result = d.get("overall_result", "")
         g.band = d.get("band", "")
+        g.signal_flags = d.get("signal_flags", [])
+        g.business_risk = d.get("business_risk", "")
         return g
 
 

@@ -47,11 +47,24 @@ class GradesStore:
         ).fetchone()["n"]
 
     def save(self, grade: ConversationGrade) -> None:
+        # Use upsert (INSERT … ON CONFLICT DO UPDATE) so that human overrides
+        # (human_score, override_reason, overridden_by, overridden_at) are never
+        # clobbered when the AI re-grades a conversation. INSERT OR REPLACE would
+        # delete the row and re-insert it with NULL override columns.
         self._conn.execute(
-            """INSERT OR REPLACE INTO grades
+            """INSERT INTO grades
                (conversation_id, agent_name, agent_email, overall_score, summary,
                 rules_version, model, graded_at, payload_json)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                   agent_name    = excluded.agent_name,
+                   agent_email   = excluded.agent_email,
+                   overall_score = excluded.overall_score,
+                   summary       = excluded.summary,
+                   rules_version = excluded.rules_version,
+                   model         = excluded.model,
+                   graded_at     = excluded.graded_at,
+                   payload_json  = excluded.payload_json""",
             (
                 grade.conversation_id,
                 grade.agent_name,

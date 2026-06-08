@@ -6,13 +6,16 @@ Long-running fetch/review run as background jobs the frontend polls via /api/job
 from __future__ import annotations
 
 import asyncio
+import base64
+import secrets
 import tempfile
 import threading
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from intercom_summary import service
@@ -43,9 +46,49 @@ FRONTEND_DIST = Path(__file__).parent / "frontend" / "dist"
 _review_cancel_events: dict[str, threading.Event] = {}
 
 
+class BasicAuthMiddleware(BaseHTTPMiddleware):
+    """Optional HTTP Basic Auth guard in front of the entire app.
+
+    Enabled by setting WEB_BASIC_AUTH=username:password in the environment.
+    When active, every request (including the SPA and all /api/* routes) must
+    carry a valid Authorization: Basic ... header. The browser shows its own
+    credential dialog, providing a network-level lock before the app login form.
+    """
+
+    def __init__(self, app, username: str, password: str) -> None:
+        super().__init__(app)
+        self._username = username
+        self._password = password
+
+    async def dispatch(self, request: Request, call_next):
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth_header[6:]).decode("utf-8", errors="replace")
+                supplied_user, _, supplied_pass = decoded.partition(":")
+                user_ok = secrets.compare_digest(supplied_user, self._username)
+                pass_ok = secrets.compare_digest(supplied_pass, self._password)
+                if user_ok and pass_ok:
+                    return await call_next(request)
+            except Exception:
+                pass
+        return Response(
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="Intercom QA Dashboard"'},
+            content="Unauthorized",
+        )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Intercom QA Dashboard")
     app.add_middleware(SessionMiddleware, secret_key=settings.web_secret_key, same_site="lax")
+
+    if settings.web_basic_auth:
+        if ":" not in settings.web_basic_auth:
+            raise RuntimeError("WEB_BASIC_AUTH must be in 'username:password' format")
+        ba_user, _, ba_pass = settings.web_basic_auth.partition(":")
+        app.add_middleware(BasicAuthMiddleware, username=ba_user, password=ba_pass)
+        log.info("HTTP Basic Auth enabled (user: %s)", ba_user)
 
     @app.on_event("startup")
     def _reconcile_orphaned_jobs() -> None:

@@ -72,6 +72,9 @@ class Settings:
     web_host: str = field(default_factory=lambda: _env("WEB_HOST", "127.0.0.1"))
     web_port: int = field(default_factory=lambda: int(_env("WEB_PORT", "8000")))
     web_base_url: str = field(default_factory=lambda: _env("WEB_BASE_URL", "http://127.0.0.1:8000"))
+    # Optional HTTP Basic Auth guard (network-level, before the app login form).
+    # Format: "username:password"  — leave blank to disable.
+    web_basic_auth: str = field(default_factory=lambda: _env("WEB_BASIC_AUTH", ""))
 
     # Paths
     db_path: Path = field(default_factory=lambda: Path(_env("DB_PATH", "./data/grades.db")))
