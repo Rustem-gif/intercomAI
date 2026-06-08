@@ -18,7 +18,7 @@ import httpx
 
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
-from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA, CASINO_QA_SYSTEM_PROMPT
+from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA, load_qa_prompt
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
 from intercom_summary.qa.rules import Ruleset, load_ruleset
 from intercom_summary.qa.schema import ConversationGrade
@@ -90,10 +90,18 @@ class OllamaGrader:
         self._ruleset = ruleset or load_ruleset()
         self._model = model or settings.ollama_model
         self._base_url = (base_url or settings.ollama_base_url).rstrip("/")
+        # Load the QA prompt from disk so admin edits via the web UI take effect
+        # at grader construction time (once per batch, not once per conversation).
+        qa_prompt = load_qa_prompt()
+        self._system_prompt = qa_prompt.text
+        self._prompt_version = qa_prompt.version
 
     @property
     def rules_version(self) -> str:
-        return self._ruleset.version
+        # Use the QA prompt version — this is what Ollama actually grades against.
+        # Changing the prompt via the web UI bumps the hash, causing ungraded status
+        # on all existing conversations so they get re-evaluated on the next run.
+        return self._prompt_version
 
     def _call(self, transcript: str, temperature: float) -> str:
         options: dict = {"temperature": temperature}
@@ -107,7 +115,7 @@ class OllamaGrader:
         payload = {
             "model": self._model,
             "messages": [
-                {"role": "system", "content": CASINO_QA_SYSTEM_PROMPT},
+                {"role": "system", "content": self._system_prompt},
                 {"role": "user", "content": transcript},
             ],
             "stream": False,

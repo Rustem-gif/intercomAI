@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from intercom_summary.logging_setup import get_logger
-from intercom_summary.qa.casino_prompt import CASINO_QA_SYSTEM_PROMPT
+from intercom_summary.qa.casino_prompt import load_qa_prompt
 from intercom_summary.settings import settings
 
 log = get_logger(__name__)
@@ -84,9 +84,7 @@ TOOLS: list[dict] = [
     },
 ]
 
-_SYSTEM = (
-    CASINO_QA_SYSTEM_PROMPT
-    + """
+_AGENT_SUFFIX = """
 
 ---
 
@@ -102,7 +100,10 @@ Use your tools proactively:
 
 Keep answers concise and evidence-based. Reference specific conversation IDs and scores when available.
 """
-)
+
+
+def _build_system() -> str:
+    return load_qa_prompt().text + _AGENT_SUFFIX
 
 
 # ── Tool execution (local DB only — no Intercom API calls) ─────────────────────
@@ -270,7 +271,7 @@ async def run_agent(
                 f"{base}/api/chat",
                 json={
                     "model": settings.ollama_model,
-                    "messages": [{"role": "system", "content": _SYSTEM}, *messages],
+                    "messages": [{"role": "system", "content": _build_system()}, *messages],
                     "tools": TOOLS,
                     "stream": False,
                     "options": {"temperature": 0.1},

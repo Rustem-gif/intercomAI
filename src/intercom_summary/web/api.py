@@ -408,6 +408,23 @@ def create_app() -> FastAPI:
 
         return {"ok": True, "version": load_ruleset().version}
 
+    @app.get("/api/qa-prompt")
+    def get_qa_prompt(user: dict = Depends(auth.current_user)):
+        from intercom_summary.qa.casino_prompt import load_qa_prompt
+
+        qp = load_qa_prompt()
+        return {"text": qp.text, "version": qp.version}
+
+    @app.put("/api/qa-prompt")
+    def put_qa_prompt(body: RulesIn, user: dict = Depends(auth.require_admin)):
+        from intercom_summary.qa.casino_prompt import load_qa_prompt
+
+        settings.qa_prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.qa_prompt_path.write_text(body.text, encoding="utf-8")
+        qp = load_qa_prompt()
+        log.info("QA system prompt updated by admin (version %s)", qp.version)
+        return {"ok": True, "version": qp.version}
+
     # ── AI agent (Qwen + MCP-style Intercom tools) ───────────────────────────
     @app.post("/api/ai/agent")
     async def ai_agent(body: AiChatRequest, user: dict = Depends(auth.current_user)):

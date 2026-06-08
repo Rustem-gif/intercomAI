@@ -8,7 +8,7 @@ import httpx
 
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
-from intercom_summary.qa.casino_prompt import CASINO_QA_SYSTEM_PROMPT
+from intercom_summary.qa.casino_prompt import load_qa_prompt
 from intercom_summary.settings import settings
 
 log = get_logger(__name__)
@@ -37,7 +37,7 @@ async def stream_chat(
     Yields ``data: {"token": "..."}`` lines while the model is generating,
     then ``data: [DONE]``. On error yields ``data: {"error": "..."}`` and stops.
     """
-    system_prompt = CASINO_QA_SYSTEM_PROMPT + _TRANSCRIPT_SUFFIX.format(
+    system_prompt = load_qa_prompt().text + _TRANSCRIPT_SUFFIX.format(
         transcript=conversation.transcript_text()
     )
     messages = [*history, {"role": "user", "content": message}]

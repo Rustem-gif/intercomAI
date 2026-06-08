@@ -11,9 +11,11 @@ from intercom_summary.storage.conversations_store import ConversationsStore
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    # Point DB + users file at temp locations.
+    # Point DB + users file at temp locations; disable Basic Auth so tests can hit
+    # the login endpoint without needing to send Authorization headers.
     object.__setattr__(settings, "db_path", tmp_path / "web.db")
     object.__setattr__(settings, "eval_dir", tmp_path / "eval")
+    object.__setattr__(settings, "web_basic_auth", "")
 
     users_file = tmp_path / "web_users.yaml"
     from intercom_summary.web.auth import hash_password
