@@ -47,20 +47,37 @@ _review_cancel_events: dict[str, threading.Event] = {}
 
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
-    """Optional HTTP Basic Auth guard in front of the entire app.
+    """Optional HTTP Basic Auth gate in front of the entire app.
 
     Enabled by setting WEB_BASIC_AUTH=username:password in the environment.
-    When active, every request (including the SPA and all /api/* routes) must
-    carry a valid Authorization: Basic ... header. The browser shows its own
-    credential dialog, providing a network-level lock before the app login form.
+
+    First visit: the browser shows its native credential dialog. On success a
+    long-lived _gate cookie is set. All subsequent requests — including every
+    AJAX call from the SPA — pass by presenting the cookie, so the browser
+    never prompts again after the initial entry.
+
+    The cookie value is a deterministic HMAC of the credentials + the app
+    secret key, so it survives server restarts and is automatically invalidated
+    if WEB_BASIC_AUTH or WEB_SECRET_KEY changes.
     """
 
-    def __init__(self, app, username: str, password: str) -> None:
+    _COOKIE = "_gate"
+
+    def __init__(self, app, username: str, password: str, secret: str) -> None:
         super().__init__(app)
         self._username = username
         self._password = password
+        import hashlib
+        self._token = hashlib.sha256(
+            f"{username}:{password}:{secret}".encode()
+        ).hexdigest()
 
     async def dispatch(self, request: Request, call_next):
+        # Fast path: browser already has the gate cookie from a previous auth.
+        if request.cookies.get(self._COOKIE) == self._token:
+            return await call_next(request)
+
+        # Slow path: validate the Basic Auth header.
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Basic "):
             try:
@@ -69,9 +86,19 @@ class BasicAuthMiddleware(BaseHTTPMiddleware):
                 user_ok = secrets.compare_digest(supplied_user, self._username)
                 pass_ok = secrets.compare_digest(supplied_pass, self._password)
                 if user_ok and pass_ok:
-                    return await call_next(request)
+                    response = await call_next(request)
+                    # Set the gate cookie so the browser skips the dialog from now on.
+                    response.set_cookie(
+                        self._COOKIE,
+                        self._token,
+                        max_age=365 * 24 * 3600,
+                        httponly=True,
+                        samesite="lax",
+                    )
+                    return response
             except Exception:
                 pass
+
         return Response(
             status_code=401,
             headers={"WWW-Authenticate": 'Basic realm="Intercom QA Dashboard"'},
@@ -87,8 +114,9 @@ def create_app() -> FastAPI:
         if ":" not in settings.web_basic_auth:
             raise RuntimeError("WEB_BASIC_AUTH must be in 'username:password' format")
         ba_user, _, ba_pass = settings.web_basic_auth.partition(":")
-        app.add_middleware(BasicAuthMiddleware, username=ba_user, password=ba_pass)
-        log.info("HTTP Basic Auth enabled (user: %s)", ba_user)
+        app.add_middleware(BasicAuthMiddleware, username=ba_user, password=ba_pass,
+                           secret=settings.web_secret_key)
+        log.info("HTTP Basic Auth gate enabled (user: %s)", ba_user)
 
     @app.on_event("startup")
     def _reconcile_orphaned_jobs() -> None:
