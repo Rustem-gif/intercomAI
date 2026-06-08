@@ -306,7 +306,10 @@ def create_app() -> FastAPI:
     @app.post("/api/fetch", response_model=JobOut)
     def fetch(body: FetchRequest, background: BackgroundTasks,
               user: dict = Depends(auth.require_write)):
-        settings.require_intercom()
+        try:
+            settings.require_intercom()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
         js = JobsStore()
         job_id = js.create("fetch", body.model_dump())
         js.close()
@@ -318,7 +321,10 @@ def create_app() -> FastAPI:
                user: dict = Depends(auth.require_write)):
         if body.backend and body.backend.lower() not in ("ollama", "api"):
             raise HTTPException(400, f"Unsupported grading backend '{body.backend}'. Use 'ollama' or 'api'.")
-        settings.require_qa()
+        try:
+            settings.require_qa()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
         js = JobsStore()
         try:
             # Only one review may run at a time — a single local model can't grade two
