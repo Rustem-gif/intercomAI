@@ -87,3 +87,22 @@ class AgentLinkOut(BaseModel):
     created_by: str
     created_at: str
     expires_at: str | None
+
+
+class CoachingSessionCreate(BaseModel):
+    agent_name: str
+    title: str
+    notes: str = ""
+    due_date: str | None = None  # YYYY-MM-DD
+
+
+class CoachingSessionUpdate(BaseModel):
+    title: str | None = None
+    notes: str | None = None
+    due_date: str | None = None
+    status: str | None = None  # 'open' | 'done'
+
+
+class CoachingItemIn(BaseModel):
+    conversation_id: str
+    note: str = ""

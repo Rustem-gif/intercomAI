@@ -9,6 +9,7 @@ import {
   ClipboardCheck,
   AlertTriangle,
   BookOpen,
+  GraduationCap,
   Moon,
   Sun,
   LogOut,
@@ -28,6 +29,7 @@ const nav = [
   { to: "/evaluation", label: "Evaluation", icon: ClipboardCheck },
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
+  { to: "/coaching", label: "Coaching", icon: GraduationCap },
   { to: "/ruleset", label: "Ruleset", icon: ScrollText },
 ];
 

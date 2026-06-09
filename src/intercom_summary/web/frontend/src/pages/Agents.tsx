@@ -1,11 +1,14 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Bar, BarChart, Cell, Line, LineChart, ResponsiveContainer,
+  Tooltip, XAxis, YAxis, CartesianGrid,
+} from "recharts";
 import { api, Overview } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/primitives";
 import { scoreColor } from "@/lib/utils";
-import { Link2 } from "lucide-react";
+import { Link2, ChevronDown, ChevronUp } from "lucide-react";
 import GenerateLinkModal from "@/components/GenerateLinkModal";
 
 function barColor(score: number) {
@@ -14,9 +17,19 @@ function barColor(score: number) {
   return "#ef4444";
 }
 
+function lineColor(score: number) {
+  if (score >= 85) return "#10b981";
+  if (score >= 70) return "#f59e0b";
+  return "#ef4444";
+}
+
 export default function Agents() {
-  const { data, isLoading } = useQuery({ queryKey: ["overview"], queryFn: () => api.get<Overview>("/api/overview") });
+  const { data, isLoading } = useQuery({
+    queryKey: ["overview"],
+    queryFn: () => api.get<Overview>("/api/overview"),
+  });
   const [linkAgent, setLinkAgent] = useState<string | null>(null);
+  const [trendAgent, setTrendAgent] = useState<string | null>(null);
 
   if (isLoading || !data) {
     return (
@@ -79,26 +92,50 @@ export default function Agents() {
                 <th className="py-2 font-medium">Agent</th>
                 <th className="py-2 font-medium">Graded</th>
                 <th className="py-2 text-right font-medium">Avg score</th>
+                <th className="py-2 text-right font-medium">Trend</th>
                 <th className="py-2 text-right font-medium">Review link</th>
               </tr>
             </thead>
             <tbody>
               {board.map((a) => (
-                <tr key={a.agent} className="border-t">
-                  <td className="py-2 font-medium">{a.agent}</td>
-                  <td className="py-2 text-muted-foreground">{a.count}</td>
-                  <td className={`py-2 text-right font-semibold ${scoreColor(a.avg_score)}`}>{a.avg_score}</td>
-                  <td className="py-2 text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      title="Generate shareable review link"
-                      onClick={() => setLinkAgent(a.agent)}
-                    >
-                      <Link2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </td>
-                </tr>
+                <>
+                  <tr key={a.agent} className="border-t">
+                    <td className="py-2 font-medium">{a.agent}</td>
+                    <td className="py-2 text-muted-foreground">{a.count}</td>
+                    <td className={`py-2 text-right font-semibold ${scoreColor(a.avg_score)}`}>{a.avg_score}</td>
+                    <td className="py-2 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Show score trend"
+                        onClick={() => setTrendAgent(trendAgent === a.agent ? null : a.agent)}
+                      >
+                        {trendAgent === a.agent ? (
+                          <ChevronUp className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </td>
+                    <td className="py-2 text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Generate shareable review link"
+                        onClick={() => setLinkAgent(a.agent)}
+                      >
+                        <Link2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </td>
+                  </tr>
+                  {trendAgent === a.agent && (
+                    <tr key={`${a.agent}-trend`} className="border-t bg-muted/30">
+                      <td colSpan={5} className="px-2 py-3">
+                        <AgentTrendChart agent={a.agent} avgScore={a.avg_score} />
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))}
             </tbody>
           </table>
@@ -108,6 +145,74 @@ export default function Agents() {
       {linkAgent && (
         <GenerateLinkModal agentName={linkAgent} onClose={() => setLinkAgent(null)} />
       )}
+    </div>
+  );
+}
+
+function AgentTrendChart({ agent, avgScore }: { agent: string; avgScore: number }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["agent-trend", agent],
+    queryFn: () => api.get<{ trend: { day: string; avg_score: number; count: number }[] }>(
+      `/api/agents/trend?agent=${encodeURIComponent(agent)}`
+    ),
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex h-24 items-center justify-center">
+        <Spinner className="h-4 w-4 text-primary" />
+      </div>
+    );
+  }
+
+  const trend = data?.trend ?? [];
+
+  if (trend.length < 2) {
+    return (
+      <p className="py-4 text-center text-xs text-muted-foreground">
+        Not enough grading history to show a trend.
+      </p>
+    );
+  }
+
+  const color = lineColor(avgScore);
+
+  return (
+    <div>
+      <p className="mb-2 text-xs font-medium text-muted-foreground">
+        Score history for <span className="font-semibold text-foreground">{agent}</span>
+        {" "}({trend.length} grading day{trend.length !== 1 ? "s" : ""})
+      </p>
+      <ResponsiveContainer width="100%" height={140}>
+        <LineChart data={trend} margin={{ top: 4, right: 8, left: -28, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+          <XAxis
+            dataKey="day"
+            tick={{ fontSize: 10 }}
+            stroke="hsl(var(--muted-foreground))"
+            tickFormatter={(v) => v.slice(5)}
+          />
+          <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" />
+          <Tooltip
+            contentStyle={{
+              background: "hsl(var(--card))",
+              border: "1px solid hsl(var(--border))",
+              borderRadius: 6,
+              fontSize: 11,
+            }}
+            formatter={(v: number) => [`${v}`, "Avg score"]}
+            labelFormatter={(l) => `Date: ${l}`}
+          />
+          <Line
+            type="monotone"
+            dataKey="avg_score"
+            stroke={color}
+            strokeWidth={2}
+            dot={{ fill: color, r: 3 }}
+            activeDot={{ r: 5 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }

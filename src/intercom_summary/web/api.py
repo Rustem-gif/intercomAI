@@ -30,6 +30,9 @@ from intercom_summary.web.schemas import (
     AgentLinkCreate,
     AgentLinkOut,
     AiChatRequest,
+    CoachingItemIn,
+    CoachingSessionCreate,
+    CoachingSessionUpdate,
     DeleteConversationsRequest,
     FetchRequest,
     IconicCaseCommentUpdate,
@@ -682,6 +685,42 @@ def create_app() -> FastAPI:
             "total": total,
         }
 
+    @app.post("/api/review/{token}/conversations/{conversation_id}/acknowledge")
+    def acknowledge_conversation(token: str, conversation_id: str):
+        from intercom_summary.storage.acknowledgments_store import AcknowledgmentsStore
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        tstore = AgentTokensStore()
+        try:
+            if not tstore.get(token):
+                raise HTTPException(404, "Invalid or expired link.")
+        finally:
+            tstore.close()
+        astore = AcknowledgmentsStore()
+        try:
+            acknowledged = astore.acknowledge(token, conversation_id)
+        finally:
+            astore.close()
+        return {"acknowledged": acknowledged}
+
+    @app.get("/api/review/{token}/acknowledgments")
+    def get_acknowledgments(token: str):
+        from intercom_summary.storage.acknowledgments_store import AcknowledgmentsStore
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        tstore = AgentTokensStore()
+        try:
+            if not tstore.get(token):
+                raise HTTPException(404, "Invalid or expired link.")
+        finally:
+            tstore.close()
+        astore = AcknowledgmentsStore()
+        try:
+            ids = list(astore.get_acknowledged_ids(token))
+        finally:
+            astore.close()
+        return {"acknowledged_ids": ids}
+
     @app.get("/api/review/{token}/conversations/{conversation_id}")
     def review_portal_detail(token: str, conversation_id: str):
         from intercom_summary.storage.agent_tokens_store import AgentTokensStore
@@ -720,6 +759,165 @@ def create_app() -> FastAPI:
         finally:
             cstore.close()
             gstore.close()
+
+    # ── Per-agent score trend ──────────────────────────────────────────────────
+    @app.get("/api/agents/trend")
+    def agent_trend(agent: str, user: dict = Depends(auth.current_user)):
+        gstore = GradesStore()
+        try:
+            rows = gstore._conn.execute(
+                """SELECT DATE(graded_at) AS day,
+                          ROUND(AVG(COALESCE(human_score, overall_score)), 1) AS avg_score,
+                          COUNT(*) AS count
+                   FROM grades
+                   WHERE agent_name = ? AND graded_at IS NOT NULL
+                   GROUP BY day
+                   ORDER BY day ASC""",
+                (agent,),
+            ).fetchall()
+            return {"trend": [dict(r) for r in rows]}
+        finally:
+            gstore.close()
+
+    # ── Coaching sessions ──────────────────────────────────────────────────────
+    @app.get("/api/coaching")
+    def list_coaching_sessions(
+        agent: str | None = None,
+        user: dict = Depends(auth.current_user),
+    ):
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        store = CoachingStore()
+        try:
+            sessions = store.list_sessions(agent_name=agent)
+        finally:
+            store.close()
+        return {"items": sessions}
+
+    @app.post("/api/coaching")
+    def create_coaching_session(
+        body: CoachingSessionCreate,
+        user: dict = Depends(auth.require_write),
+    ):
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        store = CoachingStore()
+        try:
+            session_id = store.create_session(
+                agent_name=body.agent_name,
+                title=body.title,
+                notes=body.notes,
+                due_date=body.due_date,
+                created_by=user["username"],
+            )
+            session = store.get_session(session_id)
+        finally:
+            store.close()
+        return session
+
+    @app.get("/api/coaching/{session_id}")
+    def get_coaching_session(session_id: str, user: dict = Depends(auth.current_user)):
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        store = CoachingStore()
+        cstore = ConversationsStore()
+        gstore = GradesStore()
+        try:
+            session = store.get_session(session_id)
+            if not session:
+                raise HTTPException(404, "Coaching session not found")
+            raw_items = store.get_items(session_id)
+            items = []
+            for item in raw_items:
+                cid = item["conversation_id"]
+                row = cstore._conn.execute(
+                    """SELECT c.id, c.agent_name, c.customer_name, c.subject, c.state,
+                              c.created_at, COALESCE(g.human_score, g.overall_score) AS score
+                       FROM conversations c
+                       LEFT JOIN grades g ON g.conversation_id = c.id
+                       WHERE c.id=?""",
+                    (cid,),
+                ).fetchone()
+                items.append({**item, "conversation": dict(row) if row else None})
+        finally:
+            store.close()
+            cstore.close()
+            gstore.close()
+        return {**session, "items": items}
+
+    @app.put("/api/coaching/{session_id}")
+    def update_coaching_session(
+        session_id: str,
+        body: CoachingSessionUpdate,
+        user: dict = Depends(auth.require_write),
+    ):
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        store = CoachingStore()
+        try:
+            if not store.update_session(
+                session_id,
+                title=body.title,
+                notes=body.notes,
+                due_date=body.due_date,
+                status=body.status,
+            ):
+                raise HTTPException(404, "Coaching session not found")
+            session = store.get_session(session_id)
+        finally:
+            store.close()
+        return session
+
+    @app.delete("/api/coaching/{session_id}")
+    def delete_coaching_session(session_id: str, user: dict = Depends(auth.require_write)):
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        store = CoachingStore()
+        try:
+            if not store.delete_session(session_id):
+                raise HTTPException(404, "Coaching session not found")
+        finally:
+            store.close()
+        return {"ok": True}
+
+    @app.post("/api/coaching/{session_id}/items")
+    def add_coaching_item(
+        session_id: str,
+        body: CoachingItemIn,
+        user: dict = Depends(auth.require_write),
+    ):
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        cstore = ConversationsStore()
+        try:
+            if not cstore.get(body.conversation_id):
+                raise HTTPException(404, "Conversation not found")
+        finally:
+            cstore.close()
+        store = CoachingStore()
+        try:
+            if not store.get_session(session_id):
+                raise HTTPException(404, "Coaching session not found")
+            store.add_item(session_id, body.conversation_id, body.note)
+        finally:
+            store.close()
+        return {"ok": True}
+
+    @app.delete("/api/coaching/{session_id}/items/{conversation_id}")
+    def remove_coaching_item(
+        session_id: str,
+        conversation_id: str,
+        user: dict = Depends(auth.require_write),
+    ):
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        store = CoachingStore()
+        try:
+            if not store.remove_item(session_id, conversation_id):
+                raise HTTPException(404, "Item not found")
+        finally:
+            store.close()
+        return {"ok": True}
 
     # ── Serve the built SPA (must be mounted last) ──────────────────────────────
     if FRONTEND_DIST.exists():
