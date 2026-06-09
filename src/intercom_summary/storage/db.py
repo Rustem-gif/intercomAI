@@ -62,6 +62,19 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+
+-- Shareable review links: manager generates a token per agent (+ optional tag filter).
+-- The token URL is opened by the agent without any login requirement.
+CREATE TABLE IF NOT EXISTS agent_review_tokens (
+    token       TEXT PRIMARY KEY,  -- secrets.token_urlsafe(24)
+    agent_name  TEXT NOT NULL,
+    tag         TEXT,              -- optional custom_tag filter (NULL = all convos)
+    label       TEXT NOT NULL,     -- friendly name shown on the review page
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT               -- NULL = never expires
+);
+CREATE INDEX IF NOT EXISTS idx_art_agent ON agent_review_tokens(agent_name);
 """
 
 

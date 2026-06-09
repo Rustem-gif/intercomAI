@@ -1,8 +1,12 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, Overview } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
+import { Button } from "@/components/ui/primitives";
 import { scoreColor } from "@/lib/utils";
+import { Link2 } from "lucide-react";
+import GenerateLinkModal from "@/components/GenerateLinkModal";
 
 function barColor(score: number) {
   if (score >= 85) return "#10b981";
@@ -12,6 +16,7 @@ function barColor(score: number) {
 
 export default function Agents() {
   const { data, isLoading } = useQuery({ queryKey: ["overview"], queryFn: () => api.get<Overview>("/api/overview") });
+  const [linkAgent, setLinkAgent] = useState<string | null>(null);
 
   if (isLoading || !data) {
     return (
@@ -74,6 +79,7 @@ export default function Agents() {
                 <th className="py-2 font-medium">Agent</th>
                 <th className="py-2 font-medium">Graded</th>
                 <th className="py-2 text-right font-medium">Avg score</th>
+                <th className="py-2 text-right font-medium">Review link</th>
               </tr>
             </thead>
             <tbody>
@@ -82,12 +88,26 @@ export default function Agents() {
                   <td className="py-2 font-medium">{a.agent}</td>
                   <td className="py-2 text-muted-foreground">{a.count}</td>
                   <td className={`py-2 text-right font-semibold ${scoreColor(a.avg_score)}`}>{a.avg_score}</td>
+                  <td className="py-2 text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Generate shareable review link"
+                      onClick={() => setLinkAgent(a.agent)}
+                    >
+                      <Link2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </CardContent>
       </Card>
+
+      {linkAgent && (
+        <GenerateLinkModal agentName={linkAgent} onClose={() => setLinkAgent(null)} />
+      )}
     </div>
   );
 }

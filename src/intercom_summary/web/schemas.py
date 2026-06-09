@@ -70,3 +70,20 @@ class IconicCaseIn(BaseModel):
 
 class IconicCaseCommentUpdate(BaseModel):
     comment: str
+
+
+class AgentLinkCreate(BaseModel):
+    agent_name: str
+    label: str
+    tag: str | None = None
+    expires_in_days: int | None = None  # None = never expires
+
+
+class AgentLinkOut(BaseModel):
+    token: str
+    agent_name: str
+    tag: str | None
+    label: str
+    created_by: str
+    created_at: str
+    expires_at: str | None

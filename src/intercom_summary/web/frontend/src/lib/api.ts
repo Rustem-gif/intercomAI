@@ -165,6 +165,25 @@ export interface IconicCase {
   } | null;
 }
 
+export interface AgentLink {
+  token: string;
+  agent_name: string;
+  tag: string | null;
+  label: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string | null;
+}
+
+export interface ReviewPortal {
+  agent_name: string;
+  label: string;
+  tag: string | null;
+  expires_at: string | null;
+  conversations: ConversationRow[];
+  total: number;
+}
+
 export interface EvalStats {
   total: number;
   graded: number;

@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./lib/auth";
 import { Spinner } from "./components/ui/primitives";
 import AppShell from "./components/AppShell";
@@ -11,8 +11,9 @@ import Ruleset from "./pages/Ruleset";
 import Evaluation from "./pages/Evaluation";
 import NeedsAttention from "./pages/NeedsAttention";
 import KnowledgeBase from "./pages/KnowledgeBase";
+import AgentReview from "./pages/AgentReview";
 
-export default function App() {
+function AuthenticatedApp() {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -40,4 +41,19 @@ export default function App() {
       </Routes>
     </AppShell>
   );
+}
+
+export default function App() {
+  const location = useLocation();
+
+  // Public review portal — accessible without login
+  if (location.pathname.startsWith("/review/")) {
+    return (
+      <Routes>
+        <Route path="/review/:token" element={<AgentReview />} />
+      </Routes>
+    );
+  }
+
+  return <AuthenticatedApp />;
 }
