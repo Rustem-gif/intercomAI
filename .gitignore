@@ -9,6 +9,7 @@ dist/
 data/*.db
 data/exports/
 data/eval/
+data/backups/
 .pytest_cache/
 .DS_Store
 node_modules/

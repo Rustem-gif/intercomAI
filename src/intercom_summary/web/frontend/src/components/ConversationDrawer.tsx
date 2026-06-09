@@ -6,7 +6,7 @@ import { Button, Spinner } from "./ui/primitives";
 import GradePanel from "./GradePanel";
 import AiChatPanel from "./AiChatPanel";
 import TagEditor from "./TagEditor";
-import { X, Bot, ClipboardList } from "lucide-react";
+import { X, Bot, ClipboardList, BookOpen, BookMarked } from "lucide-react";
 import { fmtDate, fmtTime, fmtGap, gapSeconds } from "@/lib/utils";
 
 type RightPanel = "grade" | "chat";
@@ -17,6 +17,7 @@ export default function ConversationDrawer({ id, onClose }: { id: string; onClos
   const writer = canWrite(user?.role);
   const [rightPanel, setRightPanel] = useState<RightPanel>("grade");
   const [savingTags, setSavingTags] = useState(false);
+  const [togglingIconic, setTogglingIconic] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["conversation", id],
@@ -28,9 +29,44 @@ export default function ConversationDrawer({ id, onClose }: { id: string; onClos
       <div className="flex h-full w-full max-w-4xl flex-col bg-background shadow-xl">
         <div className="flex h-14 shrink-0 items-center justify-between border-b px-5">
           <h2 className="font-semibold">Conversation {id}</h2>
-          <Button variant="ghost" size="icon" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {writer && data && (
+              <Button
+                variant={data.iconic ? "default" : "outline"}
+                size="sm"
+                disabled={togglingIconic}
+                title={data.iconic ? "Remove from Knowledge Base" : "Add to Knowledge Base"}
+                onClick={async () => {
+                  setTogglingIconic(true);
+                  try {
+                    if (data.iconic) {
+                      await api.delete(`/api/iconic-cases/${id}`);
+                    } else {
+                      await api.post("/api/iconic-cases", { conversation_id: id, comment: "" });
+                    }
+                    qc.invalidateQueries({ queryKey: ["conversation", id] });
+                    qc.invalidateQueries({ queryKey: ["iconic-cases"] });
+                  } finally {
+                    setTogglingIconic(false);
+                  }
+                }}
+              >
+                {togglingIconic ? (
+                  <Spinner className="h-3.5 w-3.5" />
+                ) : data.iconic ? (
+                  <BookMarked className="h-3.5 w-3.5" />
+                ) : (
+                  <BookOpen className="h-3.5 w-3.5" />
+                )}
+                <span className="hidden sm:inline">
+                  {data.iconic ? "In Knowledge Base" : "Add to Knowledge Base"}
+                </span>
+              </Button>
+            )}
+            <Button variant="ghost" size="icon" onClick={onClose}>
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
         {isLoading || !data ? (
