@@ -352,6 +352,7 @@ export default function Conversations() {
                         className="rounded"
                         checked={selected.has(c.id)}
                         onChange={() => toggleRow(c.id)}
+                        onClick={(e) => e.stopPropagation()}
                       />
                     </td>
                   )}
