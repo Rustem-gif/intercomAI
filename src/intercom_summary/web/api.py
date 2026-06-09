@@ -27,6 +27,8 @@ from intercom_summary.storage.iconic_cases_store import IconicCasesStore
 from intercom_summary.storage.jobs_store import JobsStore
 from intercom_summary.web import auth
 from intercom_summary.web.schemas import (
+    AgentLinkCreate,
+    AgentLinkOut,
     AiChatRequest,
     DeleteConversationsRequest,
     FetchRequest,
@@ -593,6 +595,131 @@ def create_app() -> FastAPI:
         out = Path(tempfile.mkdtemp()) / "qa_report.xlsx"
         report_xlsx(grades, out)
         return FileResponse(out, filename="qa_report.xlsx")
+
+    # ── Agent review links (shareable, token-gated) ───────────────────────────
+    @app.post("/api/agent-links", response_model=AgentLinkOut)
+    def create_agent_link(body: AgentLinkCreate, user: dict = Depends(auth.require_write)):
+        from datetime import datetime, timedelta, timezone
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        token = secrets.token_urlsafe(24)
+        expires_at = None
+        if body.expires_in_days:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)
+            ).isoformat()
+        store = AgentTokensStore()
+        try:
+            store.create(
+                token=token,
+                agent_name=body.agent_name,
+                label=body.label,
+                created_by=user["username"],
+                tag=body.tag or None,
+                expires_at=expires_at,
+            )
+            result = store.get(token)
+        finally:
+            store.close()
+        return result
+
+    @app.get("/api/agent-links")
+    def list_agent_links(
+        agent: str | None = None,
+        user: dict = Depends(auth.require_write),
+    ):
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        store = AgentTokensStore()
+        try:
+            links = store.list_by_agent(agent) if agent else store.list_all()
+        finally:
+            store.close()
+        return {"items": links}
+
+    @app.delete("/api/agent-links/{token}")
+    def delete_agent_link(token: str, user: dict = Depends(auth.require_write)):
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        store = AgentTokensStore()
+        try:
+            if not store.delete(token):
+                raise HTTPException(404, "Link not found")
+        finally:
+            store.close()
+        return {"ok": True}
+
+    # ── Public review portal (no session required) ─────────────────────────────
+    @app.get("/api/review/{token}")
+    def review_portal(token: str):
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        tstore = AgentTokensStore()
+        try:
+            link = tstore.get(token)
+        finally:
+            tstore.close()
+        if not link:
+            raise HTTPException(404, "This review link is invalid or has expired.")
+
+        cstore = ConversationsStore()
+        try:
+            rows, total = cstore.query(
+                agents=[link["agent_name"]],
+                tag=link["tag"] or None,
+                sort="created_at",
+                descending=True,
+                limit=500,
+            )
+        finally:
+            cstore.close()
+        return {
+            "agent_name": link["agent_name"],
+            "label": link["label"],
+            "tag": link["tag"],
+            "expires_at": link["expires_at"],
+            "conversations": rows,
+            "total": total,
+        }
+
+    @app.get("/api/review/{token}/conversations/{conversation_id}")
+    def review_portal_detail(token: str, conversation_id: str):
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        tstore = AgentTokensStore()
+        try:
+            link = tstore.get(token)
+        finally:
+            tstore.close()
+        if not link:
+            raise HTTPException(404, "This review link is invalid or has expired.")
+
+        cstore = ConversationsStore()
+        gstore = GradesStore()
+        try:
+            convo = cstore.get(conversation_id)
+            if not convo:
+                raise HTTPException(404, "Conversation not found")
+            # Verify this conversation belongs to the agent the token was issued for.
+            if convo.agent_name != link["agent_name"]:
+                raise HTTPException(403, "This conversation is not part of your review.")
+            row = cstore._conn.execute(
+                "SELECT custom_tags FROM conversations WHERE id=?", (conversation_id,)
+            ).fetchone()
+            convo_dict = convo.to_dict()
+            convo_dict["custom_tags"] = row["custom_tags"] if row else ""
+            return {
+                "conversation": convo_dict,
+                "transcript": convo.transcript_text(),
+                "grade": gstore.get(conversation_id),
+                "sla": convo.sla_summary(
+                    settings.sla_first_response_sec, settings.sla_followup_sec
+                ),
+                "iconic": None,
+            }
+        finally:
+            cstore.close()
+            gstore.close()
 
     # ── Serve the built SPA (must be mounted last) ──────────────────────────────
     if FRONTEND_DIST.exists():
