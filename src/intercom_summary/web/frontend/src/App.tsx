@@ -10,6 +10,7 @@ import Accuracy from "./pages/Accuracy";
 import Ruleset from "./pages/Ruleset";
 import Evaluation from "./pages/Evaluation";
 import NeedsAttention from "./pages/NeedsAttention";
+import KnowledgeBase from "./pages/KnowledgeBase";
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="/ruleset" element={<Ruleset />} />
         <Route path="/evaluation" element={<Evaluation />} />
         <Route path="/needs-attention" element={<NeedsAttention />} />
+        <Route path="/knowledge-base" element={<KnowledgeBase />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>

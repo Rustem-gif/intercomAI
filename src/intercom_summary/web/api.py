@@ -23,12 +23,15 @@ from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import settings
 from intercom_summary.storage.conversations_store import ConversationsStore
 from intercom_summary.storage.grades_store import GradesStore
+from intercom_summary.storage.iconic_cases_store import IconicCasesStore
 from intercom_summary.storage.jobs_store import JobsStore
 from intercom_summary.web import auth
 from intercom_summary.web.schemas import (
     AiChatRequest,
     DeleteConversationsRequest,
     FetchRequest,
+    IconicCaseCommentUpdate,
+    IconicCaseIn,
     JobOut,
     LoginRequest,
     OverrideRequest,
@@ -198,6 +201,7 @@ def create_app() -> FastAPI:
     def conversation_detail(conversation_id: str, user: dict = Depends(auth.current_user)):
         cstore = ConversationsStore()
         gstore = GradesStore()
+        icstore = IconicCasesStore()
         try:
             convo = cstore.get(conversation_id)
             if not convo:
@@ -208,6 +212,7 @@ def create_app() -> FastAPI:
             ).fetchone()
             convo_dict = convo.to_dict()
             convo_dict["custom_tags"] = row["custom_tags"] if row else ""
+            iconic = icstore.get(conversation_id)
             return {
                 "conversation": convo_dict,
                 "transcript": convo.transcript_text(),
@@ -215,10 +220,12 @@ def create_app() -> FastAPI:
                 "sla": convo.sla_summary(
                     settings.sla_first_response_sec, settings.sla_followup_sec
                 ),
+                "iconic": iconic,
             }
         finally:
             cstore.close()
             gstore.close()
+            icstore.close()
 
     @app.get("/api/tags")
     def list_tags(user: dict = Depends(auth.current_user)):
@@ -261,6 +268,71 @@ def create_app() -> FastAPI:
             return gstore.accuracy_stats()
         finally:
             gstore.close()
+
+    # ── Knowledge base (iconic cases) ─────────────────────────────────────────
+    @app.get("/api/iconic-cases")
+    def list_iconic_cases(user: dict = Depends(auth.current_user)):
+        icstore = IconicCasesStore()
+        cstore = ConversationsStore()
+        gstore = GradesStore()
+        try:
+            cases = icstore.list_all()
+            enriched = []
+            for case in cases:
+                cid = case["conversation_id"]
+                row = cstore._conn.execute(
+                    """SELECT c.id, c.agent_name, c.customer_name, c.subject, c.state,
+                              c.created_at, COALESCE(g.human_score, g.overall_score) AS score
+                       FROM conversations c
+                       LEFT JOIN grades g ON g.conversation_id = c.id
+                       WHERE c.id=?""",
+                    (cid,),
+                ).fetchone()
+                enriched.append({
+                    **case,
+                    "conversation": dict(row) if row else None,
+                })
+            return {"items": enriched}
+        finally:
+            icstore.close()
+            cstore.close()
+            gstore.close()
+
+    @app.post("/api/iconic-cases")
+    def add_iconic_case(body: IconicCaseIn, user: dict = Depends(auth.require_write)):
+        cstore = ConversationsStore()
+        try:
+            if not cstore.get(body.conversation_id):
+                raise HTTPException(404, "Conversation not found")
+        finally:
+            cstore.close()
+        icstore = IconicCasesStore()
+        try:
+            icstore.add(body.conversation_id, user["username"], body.comment)
+        finally:
+            icstore.close()
+        return {"ok": True}
+
+    @app.delete("/api/iconic-cases/{conversation_id}")
+    def remove_iconic_case(conversation_id: str, user: dict = Depends(auth.require_write)):
+        icstore = IconicCasesStore()
+        try:
+            if not icstore.remove(conversation_id):
+                raise HTTPException(404, "Iconic case not found")
+        finally:
+            icstore.close()
+        return {"ok": True}
+
+    @app.put("/api/iconic-cases/{conversation_id}/comment")
+    def update_iconic_comment(conversation_id: str, body: IconicCaseCommentUpdate,
+                              user: dict = Depends(auth.require_write)):
+        icstore = IconicCasesStore()
+        try:
+            if not icstore.update_comment(conversation_id, body.comment):
+                raise HTTPException(404, "Iconic case not found")
+        finally:
+            icstore.close()
+        return {"ok": True}
 
     @app.post("/api/repair/agent-names", response_model=JobOut)
     def repair_agent_names(background: BackgroundTasks,

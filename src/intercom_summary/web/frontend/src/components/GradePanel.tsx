@@ -172,7 +172,7 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
                 <span className="text-sm font-medium">{r.title || r.rule_id}</span>
                 <Badge className="ml-auto border-border text-muted-foreground">{r.rule_id}</Badge>
               </div>
-              {r.evidence && (
+              {r.evidence && r.evidence.toLowerCase() !== "n/a" && (
                 <p className="mt-1 border-l-2 border-border pl-2 text-xs italic text-muted-foreground">
                   "{r.evidence}"
                 </p>

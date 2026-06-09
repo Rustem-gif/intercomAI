@@ -42,6 +42,14 @@ CREATE INDEX IF NOT EXISTS idx_convo_agent ON conversations(agent_name);
 CREATE INDEX IF NOT EXISTS idx_convo_created ON conversations(created_at);
 CREATE INDEX IF NOT EXISTS idx_convo_state ON conversations(state);
 
+-- Knowledge base of iconic / representative cases curated by managers.
+CREATE TABLE IF NOT EXISTS iconic_cases (
+    conversation_id  TEXT PRIMARY KEY,
+    added_by         TEXT NOT NULL,
+    added_at         TEXT NOT NULL,   -- ISO timestamp
+    manager_comment  TEXT NOT NULL DEFAULT ''
+);
+
 -- Background jobs (fetch / review) so the UI and Slack can poll progress.
 CREATE TABLE IF NOT EXISTS jobs (
     id           TEXT PRIMARY KEY,

@@ -62,22 +62,30 @@ def _is_valid_grade(data: dict) -> bool:
     return any(c.get("v") in ("pass", "fail", "n/a") for c in criteria)
 
 
-# Transcripts longer than this are truncated to the most-recent turns.
-# A 14B-parameter model on a typical GPU processes ~500-800 tokens/s;
-# shorter transcripts = dramatically faster inference with minimal quality loss.
-_MAX_TRANSCRIPT_CHARS = 6_000
+# Transcripts longer than this are split into head + tail so that opening
+# greetings (name use, initial tone) are never lost to truncation.
+# Budget: qwen2.5:14b with num_ctx=8192 → ~6 700 tokens free after system prompt +
+# output; at ~4 chars/token that's ~26 800 chars. 15 000 gives comfortable margin.
+_MAX_TRANSCRIPT_CHARS = 15_000
+_HEAD_CHARS = 2_000   # always keep the opening — greeting, name use, first impression
+_TAIL_CHARS = _MAX_TRANSCRIPT_CHARS - _HEAD_CHARS
 
 
 def _trim_transcript(text: str) -> str:
-    """Keep as many recent turns as fit in _MAX_TRANSCRIPT_CHARS."""
+    """Keep head + tail so the greeting is never truncated away."""
     if len(text) <= _MAX_TRANSCRIPT_CHARS:
         return text
-    truncated = text[-_MAX_TRANSCRIPT_CHARS:]
-    # Avoid cutting mid-line.
-    first_newline = truncated.find("\n")
-    if first_newline > 0:
-        truncated = truncated[first_newline + 1:]
-    return f"[... transcript truncated for length ...]\n{truncated}"
+    head = text[:_HEAD_CHARS]
+    # Avoid cutting mid-line at the head boundary.
+    last_nl = head.rfind("\n")
+    if last_nl > 0:
+        head = head[:last_nl]
+    tail = text[-_TAIL_CHARS:]
+    # Avoid cutting mid-line at the tail boundary.
+    first_nl = tail.find("\n")
+    if first_nl > 0:
+        tail = tail[first_nl + 1:]
+    return f"{head}\n[... transcript truncated for length ...]\n{tail}"
 
 
 class OllamaGrader:

@@ -80,6 +80,7 @@ export interface ConversationRow {
   custom_tags: string;
   score: number | null;
   grade_summary: string | null;
+  graded_at: string | null;
 }
 
 export interface ConversationList {
@@ -127,6 +128,7 @@ export interface ConversationDetail {
   transcript: string;
   grade: Grade | null;
   sla?: Sla;
+  iconic: { conversation_id: string; added_by: string; added_at: string; manager_comment: string } | null;
 }
 
 export interface Job {
@@ -145,6 +147,22 @@ export interface JobListItem {
   error: string | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface IconicCase {
+  conversation_id: string;
+  added_by: string;
+  added_at: string;
+  manager_comment: string;
+  conversation: {
+    id: string;
+    agent_name: string;
+    customer_name: string;
+    subject: string;
+    state: string;
+    created_at: string;
+    score: number | null;
+  } | null;
 }
 
 export interface EvalStats {

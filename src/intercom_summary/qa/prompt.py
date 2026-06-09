@@ -79,9 +79,11 @@ def _csat_block(conversation: Conversation) -> str:
 
 
 def transcript_block(conversation: Conversation) -> str:
+    customer_name = conversation.contact.name or conversation.contact.email or "unknown"
     return (
         f"Conversation ID: {conversation.id}\n"
         f"Assigned agent: {conversation.assignee_name or 'unknown'}\n"
+        f"Customer name: {customer_name}\n"
         f"Subject: {conversation.subject}\n"
         f"State: {conversation.state}\n\n"
         f"{_timing_block(conversation)}\n\n"

@@ -8,6 +8,7 @@ import {
   BarChart3,
   ClipboardCheck,
   AlertTriangle,
+  BookOpen,
   Moon,
   Sun,
   LogOut,
@@ -26,6 +27,7 @@ const nav = [
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/evaluation", label: "Evaluation", icon: ClipboardCheck },
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
+  { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
   { to: "/ruleset", label: "Ruleset", icon: ScrollText },
 ];
 
@@ -162,6 +164,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <main className="flex-1 overflow-auto p-6">{children}</main>
+        <footer className="px-6 py-1.5 text-center text-[10px] text-muted-foreground/30 select-none">
+          Created and administered by Rustem Samoilenko
+        </footer>
       </div>
 
       {/* Draggable Qwen chat button */}

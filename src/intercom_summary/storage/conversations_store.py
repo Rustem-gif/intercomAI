@@ -159,6 +159,7 @@ class ConversationsStore:
             "score": "g.overall_score",
             "messages": "c.message_count",
             "agent": "c.agent_name",
+            "graded_at": "g.graded_at",
         }.get(sort, "c.created_at")
         direction = "DESC" if descending else "ASC"
 
@@ -171,7 +172,8 @@ class ConversationsStore:
                        COALESCE(g.human_score, g.overall_score) AS score,
                        g.overall_score AS ai_score,
                        g.human_score,
-                       g.summary AS grade_summary
+                       g.summary AS grade_summary,
+                       g.graded_at
                 {base}
                 ORDER BY {sort_col} {direction} NULLS LAST
                 LIMIT ? OFFSET ?""",

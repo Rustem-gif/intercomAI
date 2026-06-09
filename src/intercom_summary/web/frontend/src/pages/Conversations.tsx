@@ -262,7 +262,10 @@ export default function Conversations() {
         >
           <option value="created_at:desc">Newest first</option>
           <option value="created_at:asc">Oldest first</option>
-          <option value="score">Lowest score</option>
+          <option value="score:asc">Lowest score</option>
+          <option value="score:desc">Highest score</option>
+          <option value="graded_at:asc">Oldest graded</option>
+          <option value="graded_at:desc">Recently graded</option>
           <option value="messages">Most messages</option>
         </select>
         {knownTags.length > 0 && (
@@ -330,6 +333,7 @@ export default function Conversations() {
                 <th className="px-4 py-2.5 font-medium">State</th>
                 <th className="px-4 py-2.5 font-medium">Msgs</th>
                 <th className="px-4 py-2.5 font-medium">Created</th>
+                <th className="px-4 py-2.5 font-medium">Graded</th>
                 <th className="px-4 py-2.5 text-right font-medium">Score</th>
                 {writer && <th className="w-8 px-3 py-2.5" />}
               </tr>
@@ -370,6 +374,7 @@ export default function Conversations() {
                   </td>
                   <td className="px-4 py-2.5">{c.message_count}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(c.created_at)}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(c.graded_at)}</td>
                   <td className={`px-4 py-2.5 text-right font-semibold ${scoreColor(c.score)}`}>
                     {c.score ?? "—"}
                   </td>

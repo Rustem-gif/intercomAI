@@ -61,3 +61,12 @@ class AiChatRequest(BaseModel):
     conversation_id: str
     message: str
     history: list[dict] = []
+
+
+class IconicCaseIn(BaseModel):
+    conversation_id: str
+    comment: str = ""
+
+
+class IconicCaseCommentUpdate(BaseModel):
+    comment: str
