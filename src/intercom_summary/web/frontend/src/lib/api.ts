@@ -175,6 +175,35 @@ export interface AgentLink {
   expires_at: string | null;
 }
 
+export interface CoachingSession {
+  id: string;
+  agent_name: string;
+  title: string;
+  notes: string;
+  due_date: string | null;
+  status: "open" | "done";
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  item_count?: number;
+  items?: CoachingItem[];
+}
+
+export interface CoachingItem {
+  session_id: string;
+  conversation_id: string;
+  note: string;
+  conversation: {
+    id: string;
+    agent_name: string;
+    customer_name: string;
+    subject: string;
+    state: string;
+    created_at: string;
+    score: number | null;
+  } | null;
+}
+
 export interface ReviewPortal {
   agent_name: string;
   label: string;

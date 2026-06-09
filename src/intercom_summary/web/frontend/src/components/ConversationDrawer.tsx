@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ConversationDetail } from "@/lib/api";
+import { api, ConversationDetail, CoachingSession } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import { Button, Spinner } from "./ui/primitives";
 import GradePanel from "./GradePanel";
 import AiChatPanel from "./AiChatPanel";
 import TagEditor from "./TagEditor";
-import { X, Bot, ClipboardList, BookOpen, BookMarked } from "lucide-react";
+import { X, Bot, ClipboardList, BookOpen, BookMarked, GraduationCap, Check } from "lucide-react";
 import { fmtDate, fmtTime, fmtGap, gapSeconds } from "@/lib/utils";
 
 type RightPanel = "grade" | "chat";
@@ -26,6 +26,14 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
   const [rightPanel, setRightPanel] = useState<RightPanel>("grade");
   const [savingTags, setSavingTags] = useState(false);
   const [togglingIconic, setTogglingIconic] = useState(false);
+  const [coachingOpen, setCoachingOpen] = useState(false);
+  const [addingToSession, setAddingToSession] = useState<string | null>(null);
+
+  const { data: coachingSessions } = useQuery({
+    queryKey: ["coaching"],
+    queryFn: () => api.get<{ items: CoachingSession[] }>("/api/coaching"),
+    enabled: writer && coachingOpen,
+  });
 
   const fetchUrl = detailUrl ?? `/api/conversations/${id}`;
   const { data, isLoading } = useQuery({
@@ -71,6 +79,54 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                   {data.iconic ? "In Knowledge Base" : "Add to Knowledge Base"}
                 </span>
               </Button>
+            )}
+            {writer && (
+              <div className="relative">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  title="Add to coaching session"
+                  onClick={() => setCoachingOpen((v) => !v)}
+                >
+                  <GraduationCap className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Coaching</span>
+                </Button>
+                {coachingOpen && (
+                  <div className="absolute right-0 top-full z-20 mt-1 w-64 rounded-md border bg-card p-2 shadow-lg">
+                    <p className="mb-1.5 px-1 text-xs font-medium text-muted-foreground">Add to session:</p>
+                    {!coachingSessions?.items.length ? (
+                      <p className="px-1 text-xs text-muted-foreground">No open sessions. Create one on the Coaching page.</p>
+                    ) : (
+                      coachingSessions.items
+                        .filter((s) => s.status === "open")
+                        .map((s) => (
+                          <button
+                            key={s.id}
+                            className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted"
+                            onClick={async () => {
+                              setAddingToSession(s.id);
+                              try {
+                                await api.post(`/api/coaching/${s.id}/items`, { conversation_id: id, note: "" });
+                                qc.invalidateQueries({ queryKey: ["coaching-detail", s.id] });
+                              } finally {
+                                setAddingToSession(null);
+                                setCoachingOpen(false);
+                              }
+                            }}
+                          >
+                            {addingToSession === s.id ? (
+                              <Spinner className="h-3 w-3 shrink-0" />
+                            ) : (
+                              <Check className="h-3 w-3 shrink-0 opacity-0" />
+                            )}
+                            <span className="truncate">{s.title}</span>
+                            <span className="ml-auto shrink-0 text-xs text-muted-foreground">{s.agent_name}</span>
+                          </button>
+                        ))
+                    )}
+                  </div>
+                )}
+              </div>
             )}
             <Button variant="ghost" size="icon" onClick={onClose}>
               <X className="h-4 w-4" />

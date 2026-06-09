@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { api, AgentLink } from "@/lib/api";
 import { Button, Spinner } from "./ui/primitives";
-import { X, Copy, Check, Trash2, Link2 } from "lucide-react";
+import { X, Copy, Check, Trash2, Link2, CheckCircle2 } from "lucide-react";
 import { fmtDate } from "@/lib/utils";
 
 interface Props {
@@ -163,42 +163,76 @@ export default function GenerateLinkModal({ agentName, onClose }: Props) {
             ) : (
               <div className="space-y-1.5">
                 {linksData.items.map((link) => (
-                  <div key={link.token} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                    <div className="min-w-0">
-                      <div className="truncate font-medium">{link.label}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {link.tag ? `tag: ${link.tag} · ` : ""}
-                        created {fmtDate(link.created_at)}
-                        {link.expires_at ? ` · expires ${fmtDate(link.expires_at)}` : " · no expiry"}
-                      </div>
-                    </div>
-                    <div className="ml-2 flex shrink-0 items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        title="Copy link"
-                        onClick={() => {
-                          navigator.clipboard.writeText(`${window.location.origin}/review/${link.token}`);
-                        }}
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        title="Revoke link"
-                        disabled={deleteMutation.isPending}
-                        onClick={() => deleteMutation.mutate(link.token)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      </Button>
-                    </div>
-                  </div>
+                  <LinkRow
+                    key={link.token}
+                    link={link}
+                    onRevoke={() => deleteMutation.mutate(link.token)}
+                    revoking={deleteMutation.isPending}
+                  />
                 ))}
               </div>
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LinkRow({
+  link,
+  onRevoke,
+  revoking,
+}: {
+  link: AgentLink;
+  onRevoke: () => void;
+  revoking: boolean;
+}) {
+  const { data: ackData } = useQuery({
+    queryKey: ["review-acks", link.token],
+    queryFn: () =>
+      api.get<{ acknowledged_ids: string[] }>(`/api/review/${link.token}/acknowledgments`),
+  });
+  const viewedCount = ackData?.acknowledged_ids.length ?? 0;
+
+  return (
+    <div className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+      <div className="min-w-0">
+        <div className="truncate font-medium">{link.label}</div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          {link.tag ? <span>tag: {link.tag}</span> : null}
+          <span>created {fmtDate(link.created_at)}</span>
+          {link.expires_at ? (
+            <span>expires {fmtDate(link.expires_at)}</span>
+          ) : (
+            <span>no expiry</span>
+          )}
+          {viewedCount > 0 && (
+            <span className="flex items-center gap-0.5 text-emerald-600">
+              <CheckCircle2 className="h-3 w-3" />
+              {viewedCount} reviewed
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="ml-2 flex shrink-0 items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Copy link"
+          onClick={() => navigator.clipboard.writeText(`${window.location.origin}/review/${link.token}`)}
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          title="Revoke link"
+          disabled={revoking}
+          onClick={onRevoke}
+        >
+          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+        </Button>
       </div>
     </div>
   );

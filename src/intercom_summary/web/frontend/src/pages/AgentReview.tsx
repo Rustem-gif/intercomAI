@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ConversationRow, ReviewPortal } from "@/lib/api";
 import { Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import { scoreColor, fmtDate } from "@/lib/utils";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle } from "lucide-react";
 
 export default function AgentReview() {
   const { token } = useParams<{ token: string }>();
+  const qc = useQueryClient();
   const [openId, setOpenId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
@@ -16,6 +17,22 @@ export default function AgentReview() {
     queryFn: () => api.get<ReviewPortal>(`/api/review/${token}`),
     retry: false,
   });
+
+  const { data: ackData } = useQuery({
+    queryKey: ["review-acks", token],
+    queryFn: () => api.get<{ acknowledged_ids: string[] }>(`/api/review/${token}/acknowledgments`),
+    enabled: !!data,
+  });
+
+  const ackMutation = useMutation({
+    mutationFn: (convId: string) =>
+      api.post<{ acknowledged: boolean }>(`/api/review/${token}/conversations/${convId}/acknowledge`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["review-acks", token] }),
+  });
+
+  const acknowledgedIds = new Set(ackData?.acknowledged_ids ?? []);
+  const viewedCount = acknowledgedIds.size;
+  const totalCount = data?.total ?? 0;
 
   if (isLoading) {
     return (
@@ -46,12 +63,19 @@ export default function AgentReview() {
       {/* Minimal header */}
       <div className="border-b bg-card px-6 py-4">
         <h1 className="text-lg font-bold">{data.label}</h1>
-        <p className="text-sm text-muted-foreground">
-          Conversations assigned to <span className="font-medium text-foreground">{data.agent_name}</span>
-          {data.tag ? ` · tagged "${data.tag}"` : ""}
-          {" · "}
-          {data.total} conversation{data.total !== 1 ? "s" : ""}
-        </p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-3">
+          <p className="text-sm text-muted-foreground">
+            Conversations for{" "}
+            <span className="font-medium text-foreground">{data.agent_name}</span>
+            {data.tag ? ` · tagged "${data.tag}"` : ""}
+          </p>
+          {totalCount > 0 && (
+            <span className={`flex items-center gap-1 text-sm font-medium ${viewedCount === totalCount ? "text-emerald-600" : "text-muted-foreground"}`}>
+              <CheckCircle2 className="h-4 w-4" />
+              {viewedCount}/{totalCount} reviewed
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Conversation list */}
@@ -65,6 +89,7 @@ export default function AgentReview() {
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-3 font-medium">Reviewed</th>
                   <th className="px-4 py-3 font-medium">Date</th>
                   <th className="px-4 py-3 font-medium">Customer</th>
                   <th className="px-4 py-3 font-medium">Subject</th>
@@ -73,43 +98,59 @@ export default function AgentReview() {
                 </tr>
               </thead>
               <tbody>
-                {data.conversations.map((c: ConversationRow) => (
-                  <tr
-                    key={c.id}
-                    onClick={() => setOpenId(c.id)}
-                    className="cursor-pointer border-t transition-colors hover:bg-muted/40"
-                  >
-                    <td className="px-4 py-3 tabular-nums text-muted-foreground">
-                      {fmtDate(c.created_at)}
-                    </td>
-                    <td className="px-4 py-3 font-medium">{c.customer_name || "—"}</td>
-                    <td className="max-w-xs truncate px-4 py-3 text-muted-foreground">
-                      {c.subject || "(no subject)"}
-                    </td>
-                    <td className="px-4 py-3">
-                      {c.custom_tags
-                        ? c.custom_tags
-                            .split(",")
-                            .filter(Boolean)
-                            .map((t) => (
-                              <span
-                                key={t}
-                                className="mr-1 inline-block rounded-full border px-2 py-0.5 text-xs text-muted-foreground"
-                              >
-                                {t}
-                              </span>
-                            ))
-                        : null}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {c.score != null ? (
-                        <span className={`font-semibold ${scoreColor(c.score)}`}>{c.score}</span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {data.conversations.map((c: ConversationRow) => {
+                  const isAcked = acknowledgedIds.has(c.id);
+                  return (
+                    <tr
+                      key={c.id}
+                      onClick={() => setOpenId(c.id)}
+                      className={`cursor-pointer border-t transition-colors hover:bg-muted/40 ${isAcked ? "opacity-60" : ""}`}
+                    >
+                      <td
+                        className="px-4 py-3"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          ackMutation.mutate(c.id);
+                        }}
+                      >
+                        {isAcked ? (
+                          <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                        ) : (
+                          <Circle className="h-4 w-4 text-muted-foreground/40 hover:text-emerald-400 transition-colors" />
+                        )}
+                      </td>
+                      <td className="px-4 py-3 tabular-nums text-muted-foreground">
+                        {fmtDate(c.created_at)}
+                      </td>
+                      <td className="px-4 py-3 font-medium">{c.customer_name || "—"}</td>
+                      <td className="max-w-xs truncate px-4 py-3 text-muted-foreground">
+                        {c.subject || "(no subject)"}
+                      </td>
+                      <td className="px-4 py-3">
+                        {c.custom_tags
+                          ? c.custom_tags
+                              .split(",")
+                              .filter(Boolean)
+                              .map((t) => (
+                                <span
+                                  key={t}
+                                  className="mr-1 inline-block rounded-full border px-2 py-0.5 text-xs text-muted-foreground"
+                                >
+                                  {t}
+                                </span>
+                              ))
+                          : null}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {c.score != null ? (
+                          <span className={`font-semibold ${scoreColor(c.score)}`}>{c.score}</span>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

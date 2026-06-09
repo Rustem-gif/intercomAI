@@ -75,6 +75,36 @@ CREATE TABLE IF NOT EXISTS agent_review_tokens (
     expires_at  TEXT               -- NULL = never expires
 );
 CREATE INDEX IF NOT EXISTS idx_art_agent ON agent_review_tokens(agent_name);
+
+-- Acknowledgments: agents mark conversations as reviewed through the portal.
+CREATE TABLE IF NOT EXISTS review_acknowledgments (
+    token           TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    acknowledged_at TEXT NOT NULL,
+    PRIMARY KEY (token, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ack_token ON review_acknowledgments(token);
+
+-- Coaching sessions: manager groups conversations for an agent with notes + due date.
+CREATE TABLE IF NOT EXISTS coaching_sessions (
+    id          TEXT PRIMARY KEY,
+    agent_name  TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    notes       TEXT NOT NULL DEFAULT '',
+    due_date    TEXT,                            -- YYYY-MM-DD, nullable
+    status      TEXT NOT NULL DEFAULT 'open',   -- 'open' | 'done'
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cs_agent ON coaching_sessions(agent_name);
+
+CREATE TABLE IF NOT EXISTS coaching_items (
+    session_id      TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    note            TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (session_id, conversation_id)
+);
 """
 
 
