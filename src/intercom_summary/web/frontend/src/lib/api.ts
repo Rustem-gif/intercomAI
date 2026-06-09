@@ -205,12 +205,23 @@ export interface CoachingItem {
 }
 
 export interface ReviewPortal {
+  mode: "review" | "coaching";
   agent_name: string;
   label: string;
   tag: string | null;
   expires_at: string | null;
+  // review mode
   conversations: ConversationRow[];
   total: number;
+  // coaching mode
+  session: {
+    id: string;
+    title: string;
+    notes: string;
+    due_date: string | null;
+    status: "open" | "done";
+  } | null;
+  items: CoachingItem[];
 }
 
 export interface EvalStats {

@@ -25,13 +25,14 @@ class AgentTokensStore:
         created_by: str,
         tag: str | None = None,
         expires_at: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             """INSERT INTO agent_review_tokens
-               (token, agent_name, tag, label, created_by, created_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (token, agent_name, tag, label, created_by, now, expires_at),
+               (token, agent_name, tag, label, created_by, created_at, expires_at, session_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (token, agent_name, tag, label, created_by, now, expires_at, session_id),
         )
         self._conn.commit()
 

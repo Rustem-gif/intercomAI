@@ -611,15 +611,29 @@ def create_app() -> FastAPI:
             expires_at = (
                 datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)
             ).isoformat()
+        # When linking to a coaching session, validate it exists and grab agent_name.
+        agent_name = body.agent_name
+        if body.session_id:
+            from intercom_summary.storage.coaching_store import CoachingStore
+            cs = CoachingStore()
+            try:
+                session = cs.get_session(body.session_id)
+            finally:
+                cs.close()
+            if not session:
+                raise HTTPException(404, "Coaching session not found")
+            agent_name = session["agent_name"]
+
         store = AgentTokensStore()
         try:
             store.create(
                 token=token,
-                agent_name=body.agent_name,
+                agent_name=agent_name,
                 label=body.label,
                 created_by=user["username"],
                 tag=body.tag or None,
                 expires_at=expires_at,
+                session_id=body.session_id or None,
             )
             result = store.get(token)
         finally:
@@ -665,6 +679,54 @@ def create_app() -> FastAPI:
         if not link:
             raise HTTPException(404, "This review link is invalid or has expired.")
 
+        # Coaching mode: return session data + per-item notes instead of a raw list.
+        if link.get("session_id"):
+            from intercom_summary.storage.coaching_store import CoachingStore
+            cs = CoachingStore()
+            gstore = GradesStore()
+            cstore = ConversationsStore()
+            try:
+                session = cs.get_session(link["session_id"])
+                if not session:
+                    raise HTTPException(404, "Coaching session not found.")
+                raw_items = cs.get_items(link["session_id"])
+                items = []
+                for item in raw_items:
+                    cid = item["conversation_id"]
+                    row = cstore._conn.execute(
+                        """SELECT c.id, c.agent_name, c.customer_name, c.subject,
+                                  c.state, c.created_at,
+                                  COALESCE(g.human_score, g.overall_score) AS score
+                           FROM conversations c
+                           LEFT JOIN grades g ON g.conversation_id = c.id
+                           WHERE c.id=?""",
+                        (cid,),
+                    ).fetchone()
+                    items.append({**item, "conversation": dict(row) if row else None})
+            finally:
+                cs.close()
+                gstore.close()
+                cstore.close()
+            return {
+                "mode": "coaching",
+                "agent_name": link["agent_name"],
+                "label": link["label"],
+                "expires_at": link["expires_at"],
+                "session": {
+                    "id": session["id"],
+                    "title": session["title"],
+                    "notes": session["notes"],
+                    "due_date": session["due_date"],
+                    "status": session["status"],
+                },
+                "items": items,
+                "total": len(items),
+                # plain-review fields set to None for type compat
+                "tag": None,
+                "conversations": [],
+            }
+
+        # Plain review mode: filtered conversation list.
         cstore = ConversationsStore()
         try:
             rows, total = cstore.query(
@@ -677,13 +739,38 @@ def create_app() -> FastAPI:
         finally:
             cstore.close()
         return {
+            "mode": "review",
             "agent_name": link["agent_name"],
             "label": link["label"],
             "tag": link["tag"],
             "expires_at": link["expires_at"],
             "conversations": rows,
             "total": total,
+            "session": None,
+            "items": [],
         }
+
+    @app.post("/api/review/{token}/finish")
+    def finish_coaching(token: str):
+        """Agent marks the coaching session as done through the portal."""
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+        from intercom_summary.storage.coaching_store import CoachingStore
+
+        tstore = AgentTokensStore()
+        try:
+            link = tstore.get(token)
+        finally:
+            tstore.close()
+        if not link:
+            raise HTTPException(404, "Invalid or expired link.")
+        if not link.get("session_id"):
+            raise HTTPException(400, "This link is not tied to a coaching session.")
+        cs = CoachingStore()
+        try:
+            cs.update_session(link["session_id"], status="done")
+        finally:
+            cs.close()
+        return {"ok": True}
 
     @app.post("/api/review/{token}/conversations/{conversation_id}/acknowledge")
     def acknowledge_conversation(token: str, conversation_id: str):

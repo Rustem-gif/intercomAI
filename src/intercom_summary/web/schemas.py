@@ -77,6 +77,7 @@ class AgentLinkCreate(BaseModel):
     label: str
     tag: str | None = None
     expires_in_days: int | None = None  # None = never expires
+    session_id: str | None = None       # if set, link points to a coaching session
 
 
 class AgentLinkOut(BaseModel):
@@ -87,6 +88,7 @@ class AgentLinkOut(BaseModel):
     created_by: str
     created_at: str
     expires_at: str | None
+    session_id: str | None = None
 
 
 class CoachingSessionCreate(BaseModel):
