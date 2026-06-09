@@ -7,7 +7,7 @@ import ConversationDrawer from "@/components/ConversationDrawer";
 import { scoreColor, fmtDate } from "@/lib/utils";
 import {
   Plus, Pencil, Trash2, Check, X, ChevronDown, ChevronRight,
-  BookMarked, CircleDot, CircleCheck,
+  BookMarked, CircleDot, CircleCheck, Link2, Copy, CheckCheck,
 } from "lucide-react";
 
 export default function Coaching() {
@@ -19,6 +19,7 @@ export default function Coaching() {
   const [openConvId, setOpenConvId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [sharingId, setSharingId] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["coaching"],
@@ -106,6 +107,7 @@ export default function Coaching() {
               expandedId={expandedId}
               detailData={detailData}
               editingId={editingId}
+              sharingId={sharingId}
               writer={writer}
               onExpand={(id) => setExpandedId(expandedId === id ? null : id)}
               onEdit={(id) => setEditingId(id)}
@@ -118,6 +120,7 @@ export default function Coaching() {
               }}
               onDelete={(id) => { if (confirm("Delete this coaching session?")) deleteMutation.mutate(id); }}
               onToggleStatus={(id, status) => statusMutation.mutate({ id, status })}
+              onShare={(id) => setSharingId(sharingId === id ? null : id)}
               onOpenConv={(id) => setOpenConvId(id)}
               onRemoveItem={(sessionId, convId) => removeItemMutation.mutate({ sessionId, convId })}
             />
@@ -130,6 +133,7 @@ export default function Coaching() {
               expandedId={expandedId}
               detailData={detailData}
               editingId={editingId}
+              sharingId={sharingId}
               writer={writer}
               onExpand={(id) => setExpandedId(expandedId === id ? null : id)}
               onEdit={(id) => setEditingId(id)}
@@ -142,6 +146,7 @@ export default function Coaching() {
               }}
               onDelete={(id) => { if (confirm("Delete this coaching session?")) deleteMutation.mutate(id); }}
               onToggleStatus={(id, status) => statusMutation.mutate({ id, status })}
+              onShare={(id) => setSharingId(sharingId === id ? null : id)}
               onOpenConv={(id) => setOpenConvId(id)}
               onRemoveItem={(sessionId, convId) => removeItemMutation.mutate({ sessionId, convId })}
             />
@@ -158,14 +163,15 @@ export default function Coaching() {
 
 // ── Session group (Open / Done) ────────────────────────────────────────────────
 function SessionGroup({
-  label, sessions, expandedId, detailData, editingId, writer,
-  onExpand, onEdit, onCancelEdit, onSaveEdit, onDelete, onToggleStatus, onOpenConv, onRemoveItem,
+  label, sessions, expandedId, detailData, editingId, sharingId, writer,
+  onExpand, onEdit, onCancelEdit, onSaveEdit, onDelete, onToggleStatus, onShare, onOpenConv, onRemoveItem,
 }: {
   label: string;
   sessions: CoachingSession[];
   expandedId: string | null;
   detailData: CoachingSession | undefined;
   editingId: string | null;
+  sharingId: string | null;
   writer: boolean;
   onExpand: (id: string) => void;
   onEdit: (id: string) => void;
@@ -173,6 +179,7 @@ function SessionGroup({
   onSaveEdit: (id: string, values: any) => Promise<void>;
   onDelete: (id: string) => void;
   onToggleStatus: (id: string, status: string) => void;
+  onShare: (id: string) => void;
   onOpenConv: (id: string) => void;
   onRemoveItem: (sessionId: string, convId: string) => void;
 }) {
@@ -218,6 +225,14 @@ function SessionGroup({
                     <CircleDot className="h-4 w-4 text-muted-foreground" />
                   )}
                 </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Share coaching link"
+                  onClick={() => onShare(session.id)}
+                >
+                  <Link2 className={`h-3.5 w-3.5 ${sharingId === session.id ? "text-primary" : ""}`} />
+                </Button>
                 <Button variant="ghost" size="icon" onClick={() => onEdit(session.id)}>
                   <Pencil className="h-3.5 w-3.5" />
                 </Button>
@@ -227,6 +242,12 @@ function SessionGroup({
               </div>
             )}
           </div>
+
+          {sharingId === session.id && (
+            <div className="border-t px-5 py-3 bg-muted/30" onClick={(e) => e.stopPropagation()}>
+              <ShareCoachingLink session={session} />
+            </div>
+          )}
 
           {expandedId === session.id && (
             <div className="border-t px-5 pb-5 pt-4">
@@ -323,6 +344,77 @@ function SessionItems({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── Share coaching link panel ─────────────────────────────────────────────────
+function ShareCoachingLink({ session }: { session: CoachingSession }) {
+  const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const generate = async () => {
+    setGenerating(true);
+    setError(null);
+    try {
+      const res = await api.post<{ token: string }>("/api/agent-links", {
+        agent_name: session.agent_name,
+        label: session.title,
+        session_id: session.id,
+        expires_in_days: null,
+      });
+      const url = `${window.location.origin}/review/${res.token}`;
+      setGeneratedUrl(url);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to generate link");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const copy = () => {
+    if (!generatedUrl) return;
+    navigator.clipboard.writeText(generatedUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Share coaching link with {session.agent_name}
+      </p>
+      {!generatedUrl ? (
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={generate} disabled={generating}>
+            {generating ? <Spinner className="h-3.5 w-3.5" /> : <Link2 className="h-3.5 w-3.5" />}
+            Generate link
+          </Button>
+          {error && <span className="text-xs text-destructive">{error}</span>}
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <input
+            readOnly
+            value={generatedUrl}
+            className="flex-1 rounded-md border bg-background px-3 py-1.5 text-xs font-mono text-muted-foreground outline-none"
+            onFocus={(e) => e.target.select()}
+          />
+          <Button size="sm" variant="outline" onClick={copy}>
+            {copied ? <CheckCheck className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Copied!" : "Copy"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setGeneratedUrl(null)}>
+            New link
+          </Button>
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">
+        The agent opens this link — no login needed. They'll see the conversations, manager notes, and a "Finish Coaching" button.
+      </p>
     </div>
   );
 }

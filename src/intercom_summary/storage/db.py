@@ -126,6 +126,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE grades ADD COLUMN {col} {definition}")
     conn.commit()
 
+    # Link a review token to a specific coaching session (NULL = plain review link).
+    token_cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_review_tokens)").fetchall()}
+    if "session_id" not in token_cols:
+        conn.execute("ALTER TABLE agent_review_tokens ADD COLUMN session_id TEXT")
+        conn.commit()
+
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
