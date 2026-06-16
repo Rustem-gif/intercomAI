@@ -1,12 +1,12 @@
-import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ConversationDetail, CoachingSession } from "@/lib/api";
+import { useState, useRef } from "react";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
+import { api, ConversationDetail, CoachingSession, Comment } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import { Button, Spinner } from "./ui/primitives";
 import GradePanel from "./GradePanel";
 import AiChatPanel from "./AiChatPanel";
 import TagEditor from "./TagEditor";
-import { X, Bot, ClipboardList, BookOpen, BookMarked, GraduationCap, Check } from "lucide-react";
+import { X, Bot, ClipboardList, BookOpen, BookMarked, GraduationCap, Check, MessageSquare, Trash2, Send } from "lucide-react";
 import { fmtDate, fmtTime, fmtGap, gapSeconds } from "@/lib/utils";
 
 type RightPanel = "grade" | "chat";
@@ -29,10 +29,35 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
   const [coachingOpen, setCoachingOpen] = useState(false);
   const [addingToSession, setAddingToSession] = useState<string | null>(null);
 
+  const [commentText, setCommentText] = useState("");
+  const commentInputRef = useRef<HTMLTextAreaElement>(null);
+
   const { data: coachingSessions } = useQuery({
     queryKey: ["coaching"],
     queryFn: () => api.get<{ items: CoachingSession[] }>("/api/coaching"),
     enabled: writer && coachingOpen,
+  });
+
+  const commentsKey = ["comments", id];
+  const { data: commentsData } = useQuery({
+    queryKey: commentsKey,
+    queryFn: () => api.get<{ comments: Comment[] }>(`/api/conversations/${id}/comments`),
+    enabled: !readOnly,
+  });
+
+  const addCommentMutation = useMutation({
+    mutationFn: (text: string) =>
+      api.post<Comment>(`/api/conversations/${id}/comments`, { text }),
+    onSuccess: () => {
+      setCommentText("");
+      qc.invalidateQueries({ queryKey: commentsKey });
+    },
+  });
+
+  const deleteCommentMutation = useMutation({
+    mutationFn: (commentId: string) =>
+      api.delete(`/api/conversations/${id}/comments/${commentId}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: commentsKey }),
   });
 
   const fetchUrl = detailUrl ?? `/api/conversations/${id}`;
@@ -234,6 +259,68 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                   );
                 })}
               </div>
+
+              {/* Manager comments */}
+              {!readOnly && (
+                <div className="mt-6 border-t pt-4">
+                  <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Manager comments
+                  </p>
+                  <div className="space-y-2">
+                    {commentsData?.comments.map((c) => (
+                      <div key={c.id} className="group relative rounded-md border bg-card px-3 py-2 text-sm">
+                        <div className="mb-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className="font-medium text-foreground">{c.author}</span>
+                          <span>{fmtDate(c.created_at)}</span>
+                        </div>
+                        <p className="whitespace-pre-wrap">{c.text}</p>
+                        {writer && (
+                          <button
+                            className="absolute right-2 top-2 hidden rounded p-0.5 text-muted-foreground hover:text-destructive group-hover:block"
+                            title="Delete comment"
+                            onClick={() => deleteCommentMutation.mutate(c.id)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {commentsData?.comments.length === 0 && (
+                      <p className="text-xs text-muted-foreground">No comments yet.</p>
+                    )}
+                  </div>
+                  {writer && (
+                    <div className="mt-3 flex gap-2">
+                      <textarea
+                        ref={commentInputRef}
+                        rows={2}
+                        className="flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                        placeholder="Leave a comment…"
+                        value={commentText}
+                        onChange={(e) => setCommentText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && commentText.trim()) {
+                            addCommentMutation.mutate(commentText.trim());
+                          }
+                        }}
+                      />
+                      <Button
+                        size="sm"
+                        className="self-end"
+                        disabled={!commentText.trim() || addCommentMutation.isPending}
+                        onClick={() => addCommentMutation.mutate(commentText.trim())}
+                      >
+                        {addCommentMutation.isPending ? (
+                          <Spinner className="h-3.5 w-3.5" />
+                        ) : (
+                          <Send className="h-3.5 w-3.5" />
+                        )}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Right panel — Grade or AI chat */}
