@@ -108,3 +108,7 @@ class CoachingSessionUpdate(BaseModel):
 class CoachingItemIn(BaseModel):
     conversation_id: str
     note: str = ""
+
+
+class CommentIn(BaseModel):
+    text: str

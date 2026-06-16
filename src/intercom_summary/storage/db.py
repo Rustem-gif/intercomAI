@@ -105,6 +105,16 @@ CREATE TABLE IF NOT EXISTS coaching_items (
     note            TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, conversation_id)
 );
+
+-- Manager comments on individual conversations.
+CREATE TABLE IF NOT EXISTS conversation_comments (
+    id              TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    author          TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cc_conversation ON conversation_comments(conversation_id);
 """
 
 
@@ -130,6 +140,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
     token_cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_review_tokens)").fetchall()}
     if "session_id" not in token_cols:
         conn.execute("ALTER TABLE agent_review_tokens ADD COLUMN session_id TEXT")
+        conn.commit()
+
+    # Manager comments on conversations (added after initial release).
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "conversation_comments" not in tables:
+        conn.execute("""
+            CREATE TABLE conversation_comments (
+                id              TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                author          TEXT NOT NULL,
+                text            TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            )""")
+        conn.execute("CREATE INDEX idx_cc_conversation ON conversation_comments(conversation_id)")
         conn.commit()
 
 

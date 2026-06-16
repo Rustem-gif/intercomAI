@@ -33,6 +33,7 @@ from intercom_summary.web.schemas import (
     CoachingItemIn,
     CoachingSessionCreate,
     CoachingSessionUpdate,
+    CommentIn,
     DeleteConversationsRequest,
     FetchRequest,
     IconicCaseCommentUpdate,
@@ -236,7 +237,7 @@ def create_app() -> FastAPI:
     def list_tags(user: dict = Depends(auth.current_user)):
         store = ConversationsStore()
         try:
-            return {"tags": store.all_custom_tags()}
+            return {"tags": store.all_tags()}
         finally:
             store.close()
 
@@ -250,6 +251,54 @@ def create_app() -> FastAPI:
         finally:
             store.close()
         return {"tags": body.tags}
+
+    # ── Manager comments on conversations ─────────────────────────────────────
+    @app.get("/api/conversations/{conversation_id}/comments")
+    def list_comments(conversation_id: str, user: dict = Depends(auth.current_user)):
+        from intercom_summary.storage.conversation_comments_store import ConversationCommentsStore
+
+        store = ConversationCommentsStore()
+        try:
+            return {"comments": store.list(conversation_id)}
+        finally:
+            store.close()
+
+    @app.post("/api/conversations/{conversation_id}/comments")
+    def add_comment(conversation_id: str, body: CommentIn,
+                    user: dict = Depends(auth.require_write)):
+        if not body.text.strip():
+            raise HTTPException(422, "Comment text is required")
+        from intercom_summary.storage.conversation_comments_store import ConversationCommentsStore
+
+        cstore = ConversationsStore()
+        try:
+            if not cstore.get(conversation_id):
+                raise HTTPException(404, "Conversation not found")
+        finally:
+            cstore.close()
+        store = ConversationCommentsStore()
+        try:
+            comment = store.add(conversation_id, user["username"], body.text.strip())
+        finally:
+            store.close()
+        return comment
+
+    @app.delete("/api/conversations/{conversation_id}/comments/{comment_id}")
+    def delete_comment(conversation_id: str, comment_id: str,
+                       user: dict = Depends(auth.require_write)):
+        from intercom_summary.storage.conversation_comments_store import ConversationCommentsStore
+
+        store = ConversationCommentsStore()
+        try:
+            comment = store.get(comment_id)
+            if not comment or comment["conversation_id"] != conversation_id:
+                raise HTTPException(404, "Comment not found")
+            if user["role"] != "admin" and comment["author"] != user["username"]:
+                raise HTTPException(403, "You can only delete your own comments")
+            store.delete(comment_id)
+        finally:
+            store.close()
+        return {"ok": True}
 
     @app.post("/api/conversations/{conversation_id}/override")
     def override_grade(conversation_id: str, body: OverrideRequest,
@@ -827,13 +876,13 @@ def create_app() -> FastAPI:
             if not convo:
                 raise HTTPException(404, "Conversation not found")
             # Verify this conversation belongs to the agent the token was issued for.
-            if convo.agent_name != link["agent_name"]:
-                raise HTTPException(403, "This conversation is not part of your review.")
-            row = cstore._conn.execute(
-                "SELECT custom_tags FROM conversations WHERE id=?", (conversation_id,)
+            db_row = cstore._conn.execute(
+                "SELECT agent_name, custom_tags FROM conversations WHERE id=?", (conversation_id,)
             ).fetchone()
+            if not db_row or db_row["agent_name"] != link["agent_name"]:
+                raise HTTPException(403, "This conversation is not part of your review.")
             convo_dict = convo.to_dict()
-            convo_dict["custom_tags"] = row["custom_tags"] if row else ""
+            convo_dict["custom_tags"] = db_row["custom_tags"] if db_row else ""
             return {
                 "conversation": convo_dict,
                 "transcript": convo.transcript_text(),

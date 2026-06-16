@@ -105,6 +105,20 @@ class ConversationsStore:
                     seen.add(t)
         return sorted(seen)
 
+    def all_tags(self) -> list[str]:
+        """Distinct non-empty tags (native Intercom + custom) across all conversations, sorted."""
+        rows = self._conn.execute(
+            "SELECT tags, custom_tags FROM conversations WHERE tags <> '' OR custom_tags <> ''"
+        ).fetchall()
+        seen: set[str] = set()
+        for row in rows:
+            for col in ("tags", "custom_tags"):
+                for t in (row[col] or "").split(","):
+                    t = t.strip()
+                    if t:
+                        seen.add(t)
+        return sorted(seen)
+
     def get_empty_agent_ids(self) -> list[str]:
         """IDs of conversations that have no agent_name (need repair)."""
         rows = self._conn.execute(
@@ -149,9 +163,12 @@ class ConversationsStore:
             like = f"%{search}%"
             args.extend([like, like, like])
         if tag:
-            # Match exact tag in comma-separated list using delimiter padding.
-            where.append("(',' || c.custom_tags || ',') LIKE ?")
-            args.append(f"%,{tag},%")
+            # Match exact tag in either native Intercom tags or analyst-set custom_tags.
+            where.append(
+                "((',' || c.tags || ',') LIKE ? OR (',' || c.custom_tags || ',') LIKE ?)"
+            )
+            pattern = f"%,{tag},%"
+            args.extend([pattern, pattern])
 
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         sort_col = {

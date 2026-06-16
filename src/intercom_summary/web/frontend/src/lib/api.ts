@@ -123,6 +123,14 @@ export interface Sla {
   first_response_breached: boolean;
 }
 
+export interface Comment {
+  id: string;
+  conversation_id: string;
+  author: string;
+  text: string;
+  created_at: string;
+}
+
 export interface ConversationDetail {
   conversation: any;
   transcript: string;
