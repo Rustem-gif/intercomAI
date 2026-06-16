@@ -45,11 +45,11 @@ class Settings:
 
     # Ollama local inference backend (Qwen)
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://localhost:11434"))
-    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen2.5:14b"))
+    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen2.5:7b"))
     # How long Ollama keeps the model resident after a request. The server's own
     # OLLAMA_KEEP_ALIVE may be 0 (unload immediately) — we override it per-request so a
     # grading batch doesn't reload the (multi-GB) model between every conversation.
-    ollama_keep_alive: str = field(default_factory=lambda: _env("QA_OLLAMA_KEEP_ALIVE", "30m"))
+    ollama_keep_alive: str = field(default_factory=lambda: _env("QA_OLLAMA_KEEP_ALIVE", "10m"))
     # Optional overrides — leave at 0 to use Ollama's defaults (recommended). Setting
     # num_ctx higher avoids truncating long transcripts but slows prefill; setting
     # num_predict can change how much the model generates, so only set if you know you need it.
