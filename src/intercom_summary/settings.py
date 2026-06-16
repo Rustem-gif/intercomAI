@@ -45,7 +45,7 @@ class Settings:
 
     # Ollama local inference backend (Qwen)
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://localhost:11434"))
-    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen2.5:7b"))
+    ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen2.5:14b"))
     # How long Ollama keeps the model resident after a request. The server's own
     # OLLAMA_KEEP_ALIVE may be 0 (unload immediately) — we override it per-request so a
     # grading batch doesn't reload the (multi-GB) model between every conversation.
