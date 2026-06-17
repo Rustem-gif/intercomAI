@@ -232,10 +232,24 @@ export interface ReviewPortal {
   items: CoachingItem[];
 }
 
+export interface OllamaHealth {
+  reachable: boolean;
+  models: string[];
+  error: string | null;
+}
+
+export interface OllamaRestart {
+  ok: boolean;
+  reachable: boolean;
+  message: string;
+}
+
 export interface EvalStats {
   total: number;
   graded: number;
   pending: number;
+  /** Graded under an older ruleset version (re-grading will refresh them). */
+  stale?: number;
   active_job: {
     id: string;
     status: string;

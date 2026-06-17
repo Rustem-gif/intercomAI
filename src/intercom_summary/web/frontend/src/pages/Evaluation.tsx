@@ -8,8 +8,9 @@ import {
   Clock,
   AlertCircle,
   Ban,
+  Power,
 } from "lucide-react";
-import { api, EvalStats, Job, JobListItem } from "@/lib/api";
+import { api, EvalStats, Job, JobListItem, OllamaHealth, OllamaRestart } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import {
   Button,
@@ -325,6 +326,93 @@ function StatCard({
   );
 }
 
+// ── Ollama service panel ──────────────────────────────────────────────────────
+
+function OllamaPanel({ writer }: { writer: boolean }) {
+  const { data: health, refetch } = useQuery<OllamaHealth>({
+    queryKey: ["ollamaHealth"],
+    queryFn: () => api.get("/api/ollama/health"),
+    // Poll faster while down so the card recovers promptly after a restart.
+    refetchInterval: (q) => (q.state.data?.reachable === false ? 4000 : 30000),
+  });
+
+  const [restarting, setRestarting] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const reachable = health?.reachable;
+  // Don't show anything until the first health check resolves.
+  if (health === undefined) return null;
+
+  // When the server is healthy, keep the panel minimal — only surface a control
+  // when it's down (the crash case) or for writers who may want to recycle it.
+  if (reachable && !writer) return null;
+
+  const restart = async () => {
+    if (!confirm("Restart the Ollama service? Any in-flight grade will be interrupted.")) return;
+    setRestarting(true);
+    setMsg("");
+    try {
+      const r = await api.post<OllamaRestart>("/api/ollama/restart");
+      setMsg(
+        r.reachable
+          ? "Ollama is back online."
+          : "Restart requested, but the server hasn't responded yet — give it a moment.",
+      );
+      refetch();
+    } catch (e: any) {
+      setMsg(e.message || "Failed to restart Ollama.");
+    } finally {
+      setRestarting(false);
+    }
+  };
+
+  return (
+    <Card className={cn(!reachable && "border-destructive")}>
+      <CardHeader>
+        <CardTitle className="flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <span
+              className={cn(
+                "inline-block h-2.5 w-2.5 rounded-full",
+                reachable ? "bg-emerald-500" : "bg-destructive",
+              )}
+            />
+            Ollama service
+          </span>
+          <Badge className={reachable ? "border-emerald-500 text-emerald-500" : "border-destructive text-destructive"}>
+            {reachable ? "Online" : "Offline"}
+          </Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {reachable ? (
+          <p className="text-xs text-muted-foreground">
+            Local grading model reachable
+            {health?.models?.length ? ` · ${health.models.length} model(s) loaded` : ""}.
+          </p>
+        ) : (
+          <p className="text-sm text-destructive">
+            The local Ollama server is not responding{health?.error ? ` (${health.error})` : ""}.
+            Grading will fail until it is restarted.
+          </p>
+        )}
+        {writer && (
+          <Button
+            variant={reachable ? "outline" : "destructive"}
+            size="sm"
+            onClick={restart}
+            disabled={restarting}
+          >
+            {restarting ? <Spinner className="h-3.5 w-3.5" /> : <Power className="h-3.5 w-3.5" />}
+            {restarting ? "Restarting…" : "Restart Ollama"}
+          </Button>
+        )}
+        {msg && <p className="text-xs text-muted-foreground">{msg}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Evaluation() {
@@ -376,6 +464,7 @@ export default function Evaluation() {
   const total = stats?.total ?? 0;
   const graded = stats?.graded ?? 0;
   const pending = stats?.pending ?? 0;
+  const stale = stats?.stale ?? 0;
   const coverage = pct(graded, total);
   const activeJob = stats?.active_job ?? null;
   const isActive =
@@ -399,7 +488,11 @@ export default function Evaluation() {
           label="Graded"
           value={graded.toLocaleString()}
           accent="text-emerald-500"
-          sub={`${coverage}% coverage`}
+          sub={
+            stale > 0
+              ? `${coverage}% coverage · ${stale.toLocaleString()} on an older ruleset`
+              : `${coverage}% coverage`
+          }
         />
         <StatCard
           icon={Clock}
@@ -424,6 +517,8 @@ export default function Evaluation() {
       <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
         {/* Left column: active job + history */}
         <div className="space-y-6">
+          <OllamaPanel writer={writer} />
+
           {activeJob && (
             <ActiveJobPanel
               job={activeJob}
