@@ -302,7 +302,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/conversations/{conversation_id}/override")
     def override_grade(conversation_id: str, body: OverrideRequest,
-                       user: dict = Depends(auth.require_admin)):
+                       user: dict = Depends(auth.require_write)):
         if not (0 <= body.score <= 100):
             raise HTTPException(422, "Score must be 0–100")
         if not body.reason.strip():
@@ -510,7 +510,13 @@ def create_app() -> FastAPI:
                 rules_version = get_grader().rules_version
             except Exception:
                 rules_version = None
-            graded = gstore.count_graded(rules_version)
+            # "Graded" = conversations that have a grade at all. Grades are stored
+            # one-per-conversation, so filtering by the *current* rules_version
+            # falsely reports 0 the moment the ruleset is edited (every existing
+            # grade still carries the old version). Report the true total, and
+            # surface how many were graded under an older ruleset separately.
+            graded = gstore.count_graded()
+            graded_current = gstore.count_graded(rules_version) if rules_version else graded
         finally:
             cstore.close()
             gstore.close()
@@ -536,6 +542,7 @@ def create_app() -> FastAPI:
             "total": total,
             "graded": graded,
             "pending": max(0, total - graded),
+            "stale": max(0, graded - graded_current),
             "active_job": active_job,
         }
 
@@ -552,6 +559,71 @@ def create_app() -> FastAPI:
         finally:
             js.close()
         return {"ok": True, "job_id": job_id}
+
+    # ── Ollama service control ────────────────────────────────────────────────
+    @app.get("/api/ollama/health")
+    def ollama_health(user: dict = Depends(auth.current_user)):
+        """Is the local Ollama server reachable? Used to surface a 'restart' button
+        when the grading model has crashed (e.g. an OOM/jetsam kill on this Mac)."""
+        import httpx as _httpx
+
+        try:
+            resp = _httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=3.0)
+            resp.raise_for_status()
+            models = [m.get("name") for m in resp.json().get("models", [])]
+            return {"reachable": True, "models": models, "error": None}
+        except Exception as exc:
+            return {"reachable": False, "models": [], "error": str(exc)}
+
+    @app.post("/api/ollama/restart")
+    def ollama_restart(user: dict = Depends(auth.require_write)):
+        """Restart the launchd-managed Ollama service via Homebrew.
+
+        Robust against the crash mode where repeated OOM kills leave the service
+        in a 'none' state with no respawn: `brew services restart` re-installs the
+        plist and bootstraps it whether it was running, stopped, or gone.
+        """
+        import shutil
+        import subprocess
+
+        brew = shutil.which("brew") or "/opt/homebrew/bin/brew"
+        env = {
+            "PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": str(Path.home()),
+        }
+        try:
+            proc = subprocess.run(
+                [brew, "services", "restart", "ollama"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(500, f"Homebrew not found ({brew}); cannot restart Ollama.") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(504, "Timed out restarting Ollama (>60s).") from exc
+
+        output = (proc.stdout + proc.stderr).strip()
+        if proc.returncode != 0:
+            log.error("Ollama restart failed (exit %s): %s", proc.returncode, output)
+            raise HTTPException(500, f"Restart failed: {output or 'unknown error'}")
+        log.info("Ollama service restarted by %s", user.get("username"))
+
+        # Poll briefly so the UI can report whether the server actually came back.
+        import time
+
+        import httpx as _httpx
+
+        reachable = False
+        for _ in range(15):
+            try:
+                _httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=2.0).raise_for_status()
+                reachable = True
+                break
+            except Exception:
+                time.sleep(1)
+        return {"ok": True, "reachable": reachable, "message": output or "Ollama restart requested."}
 
     # ── Ruleset ────────────────────────────────────────────────────────────────
     @app.get("/api/rules")

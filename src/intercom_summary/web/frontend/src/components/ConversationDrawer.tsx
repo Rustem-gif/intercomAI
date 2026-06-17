@@ -359,7 +359,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                     <GradePanel
                       grade={data.grade}
                       conversationId={id}
-                      canOverride={!readOnly && user?.role === "admin"}
+                      canOverride={writer}
                       onOverridden={() => {
                         qc.invalidateQueries({ queryKey: ["conversation", id] });
                         qc.invalidateQueries({ queryKey: ["conversations"] });

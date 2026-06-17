@@ -24,6 +24,9 @@ def client(tmp_path, monkeypatch):
           boss:
             password_hash: "{hash_password('pw')}"
             role: admin
+          ana:
+            password_hash: "{hash_password('pw')}"
+            role: analyst
           looker:
             password_hash: "{hash_password('pw')}"
             role: viewer
@@ -112,6 +115,53 @@ def test_viewer_cannot_fetch(client):
     _login(client, "looker", "pw")
     # A write-gated endpoint must reject viewers before running.
     assert client.post("/api/fetch", json={"agents": ["a@co.com"]}).status_code == 403
+
+
+def _seed_grade(rules_version="v-old"):
+    """Persist a grade for conversation 42 under a given ruleset version."""
+    from intercom_summary.qa.schema import ConversationGrade
+    from intercom_summary.storage.grades_store import GradesStore
+
+    gstore = GradesStore(settings.db_path)
+    gstore.save(ConversationGrade(
+        conversation_id="42", agent_name="Ada", overall_score=80,
+        summary="ok", rules_version=rules_version, model="test",
+        graded_at="2026-05-01T00:00:00+00:00",
+    ))
+    gstore.close()
+
+
+def test_analyst_can_override_grade(client):
+    _seed_grade()
+    _login(client, "ana", "pw")
+    r = client.post("/api/conversations/42/override",
+                    json={"score": 95, "reason": "Manager judged higher"})
+    assert r.status_code == 200
+    assert r.json()["human_score"] == 95
+    # The override is persisted and surfaced on the grade.
+    grade = client.get("/api/conversations/42").json()["grade"]
+    assert grade["human_score"] == 95
+    assert grade["overridden_by"] == "ana"
+
+
+def test_viewer_cannot_override_grade(client):
+    _seed_grade()
+    _login(client, "looker", "pw")
+    r = client.post("/api/conversations/42/override",
+                    json={"score": 95, "reason": "nope"})
+    assert r.status_code == 403
+
+
+def test_eval_stats_counts_grades_under_older_ruleset(client):
+    """A grade stored under a previous ruleset must still count as 'graded' —
+    editing the rules used to zero the count (regression)."""
+    _seed_grade(rules_version="some-old-version")
+    _login(client)
+    stats = client.get("/api/evaluation/stats").json()
+    assert stats["graded"] == 1
+    assert stats["pending"] == 0
+    # And it is flagged as graded under an older ruleset.
+    assert stats["stale"] == 1
 
 
 def test_admin_fetch_enqueues_job(client, monkeypatch):
