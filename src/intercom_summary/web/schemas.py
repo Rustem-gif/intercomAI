@@ -74,13 +74,21 @@ class TagsUpdate(BaseModel):
     tags: list[str]
 
 
+class ManualDeduction(BaseModel):
+    category: str          # an id from MANUAL_DEDUCTION_CATALOG (e.g. "info-correctness")
+    points: int            # points to subtract (1–100)
+    note: str = ""
+
+
 class OverrideRequest(BaseModel):
     reason: str
-    # Manual score override (the slider). Optional when `criteria` is provided.
+    # Manual score override (the slider). Optional when `criteria`/`manual_deductions` given.
     score: int | None = None
     # ScoreBuddy-style per-criterion override: {criterion_id: "pass"|"fail"|"n/a"}.
-    # When present, the server recomputes the score from these verdicts and ignores `score`.
+    # When present (or with manual_deductions), the server recomputes the score and ignores `score`.
     criteria: dict[str, str] | None = None
+    # Analyst manual deductions for things the AI can't verify (e.g. information correctness).
+    manual_deductions: list[ManualDeduction] | None = None
 
 
 class AiChatRequest(BaseModel):

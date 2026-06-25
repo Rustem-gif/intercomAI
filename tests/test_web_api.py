@@ -189,6 +189,52 @@ def test_criteria_override_requires_a_change(client):
     assert r.status_code == 422
 
 
+def test_manual_deduction_only(client):
+    _seed_casino_grade()  # AI score 85 (res-no-fake-close failed −15)
+    _login(client, "ana", "pw")
+    r = client.post("/api/conversations/42/override", json={
+        "manual_deductions": [{"category": "info-correctness", "points": 20, "note": "wrong bonus"}],
+        "reason": "Agent added the wrong bonus",
+    })
+    assert r.status_code == 200
+    assert r.json()["human_score"] == 65  # 85 − 20, no criterion change
+    grade = client.get("/api/conversations/42").json()["grade"]
+    assert grade["human_score"] == 65
+    assert grade["human_criteria"] is None
+    assert grade["human_deductions"][0]["category"] == "info-correctness"
+    assert grade["human_deductions"][0]["points"] == 20
+
+
+def test_criteria_plus_manual_deduction(client):
+    _seed_casino_grade()
+    _login(client, "ana", "pw")
+    # Flip the failed criterion to pass (→100) and deduct 10 for info correctness → 90.
+    r = client.post("/api/conversations/42/override", json={
+        "criteria": {"res-no-fake-close": "pass"},
+        "manual_deductions": [{"category": "info-correctness", "points": 10}],
+        "reason": "Resolved, but gave slightly wrong info",
+    })
+    assert r.status_code == 200
+    assert r.json()["human_score"] == 90
+
+
+def test_manual_deduction_validation(client):
+    _seed_casino_grade()
+    _login(client, "ana", "pw")
+    assert client.post("/api/conversations/42/override", json={
+        "manual_deductions": [{"category": "made-up", "points": 5}], "reason": "x",
+    }).status_code == 422
+    assert client.post("/api/conversations/42/override", json={
+        "manual_deductions": [{"category": "info-correctness", "points": 0}], "reason": "x",
+    }).status_code == 422
+
+
+def test_manual_deduction_catalog(client):
+    _login(client)
+    items = client.get("/api/qa/manual-deductions").json()["items"]
+    assert any(i["id"] == "info-correctness" for i in items)
+
+
 def test_analyst_can_override_grade(client):
     _seed_grade()
     _login(client, "ana", "pw")

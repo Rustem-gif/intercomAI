@@ -134,6 +134,20 @@ export interface Grade {
   overridden_at: string | null;
   /** Analyst per-criterion changes vs the AI ({criterion_id: verdict}); null if none. */
   human_criteria: Record<string, string> | null;
+  /** Analyst manual deductions for things the AI can't verify (e.g. information correctness). */
+  human_deductions: ManualDeduction[] | null;
+}
+
+export interface ManualDeduction {
+  category: string;
+  points: number;
+  note: string;
+}
+
+export interface ManualDeductionPreset {
+  id: string;
+  label: string;
+  description: string;
 }
 
 export interface Sla {

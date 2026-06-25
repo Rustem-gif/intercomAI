@@ -96,7 +96,7 @@ class GradesStore:
     def get(self, conversation_id: str) -> dict | None:
         row = self._conn.execute(
             """SELECT payload_json, human_score, override_reason, overridden_by,
-                      overridden_at, human_criteria
+                      overridden_at, human_criteria, human_deductions
                FROM grades WHERE conversation_id=?""",
             (conversation_id,),
         ).fetchone()
@@ -108,6 +108,7 @@ class GradesStore:
         d["overridden_by"] = row["overridden_by"]
         d["overridden_at"] = row["overridden_at"]
         d["human_criteria"] = json.loads(row["human_criteria"]) if row["human_criteria"] else None
+        d["human_deductions"] = json.loads(row["human_deductions"]) if row["human_deductions"] else None
         _annotate_criteria(d.get("rule_results"))
         return d
 
@@ -161,18 +162,21 @@ class GradesStore:
         reason: str,
         overridden_by: str,
         human_criteria: dict[str, str] | None = None,
+        human_deductions: list[dict] | None = None,
     ) -> bool:
         """Persist a human override. `human_criteria` (a {criterion_id: verdict} diff vs the
-        AI's verdicts) records ScoreBuddy-style per-criterion changes; pass None for a plain
-        score override, which clears any prior criterion changes."""
+        AI's verdicts) records ScoreBuddy-style per-criterion changes; `human_deductions` is
+        a list of analyst manual deductions ([{category, points, note}]). Pass None for both
+        on a plain score override, which clears any prior criterion changes/deductions."""
         cur = self._conn.execute(
             """UPDATE grades
                SET human_score=?, override_reason=?, overridden_by=?, overridden_at=?,
-                   human_criteria=?
+                   human_criteria=?, human_deductions=?
                WHERE conversation_id=?""",
             (
                 human_score, reason.strip(), overridden_by, _now(),
                 json.dumps(human_criteria) if human_criteria else None,
+                json.dumps(human_deductions) if human_deductions else None,
                 conversation_id,
             ),
         )
