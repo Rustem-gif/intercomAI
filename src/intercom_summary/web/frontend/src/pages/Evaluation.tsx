@@ -465,6 +465,7 @@ export default function Evaluation() {
   const graded = stats?.graded ?? 0;
   const pending = stats?.pending ?? 0;
   const stale = stats?.stale ?? 0;
+  const ignored = stats?.ignored ?? 0;
   const coverage = pct(graded, total);
   const activeJob = stats?.active_job ?? null;
   const isActive =
@@ -482,7 +483,12 @@ export default function Evaluation() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard icon={MessagesIcon} label="Conversations" value={total.toLocaleString()} />
+        <StatCard
+          icon={MessagesIcon}
+          label="Conversations"
+          value={total.toLocaleString()}
+          sub={ignored > 0 ? `${ignored.toLocaleString()} ignored by tag` : "gradeable"}
+        />
         <StatCard
           icon={CheckCircle2}
           label="Graded"

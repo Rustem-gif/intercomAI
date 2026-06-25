@@ -52,7 +52,7 @@ def test_review_and_store_then_overview(temp_db, monkeypatch):
 
     result = service.review_and_store(conversation_ids=["1", "2"])
     assert result == {
-        "graded": 2, "skipped": 0, "failed": 0, "total": 2,
+        "graded": 2, "skipped": 0, "failed": 0, "total": 2, "ignored": 0,
         "cancelled": False, "backend_unreachable": False,
     }
 

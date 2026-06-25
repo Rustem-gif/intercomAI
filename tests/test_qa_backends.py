@@ -111,6 +111,41 @@ def test_from_ollama_output_critical_fail():
     assert g.overall_result == "FAIL"
 
 
+def test_ollama_stamps_reported_rules_version(monkeypatch):
+    """Regression: the version stamped on a saved grade must equal the version the
+    grader reports via .rules_version. These previously diverged (the save used the
+    support_rules.md hash while the property returns the qa_system_prompt.txt hash),
+    which made every Ollama grade count as 'stale' and forced needless re-grading."""
+    import json
+    from datetime import datetime, timezone
+
+    from intercom_summary.intercom.models import Admin, Contact, Conversation, Message
+
+    grader = get_grader("ollama")
+    valid = json.dumps({
+        "overall_score": 90,
+        "critical_fail": False,
+        "criteria": [{"id": "open-greet", "v": "pass", "ded": 0, "ev": "Hi there"}],
+        "flags": [],
+        "risk": "low",
+        "violations": [],
+        "summary": "Good chat.",
+        "coaching": [],
+        "confidence": "High",
+    })
+    monkeypatch.setattr(grader, "_call", lambda transcript, temp: valid)
+
+    conv = Conversation(
+        id="c1", created_at=datetime(2026, 5, 1, tzinfo=timezone.utc), updated_at=None,
+        state="closed", subject="Login",
+        assignee=Admin(id="1", name="Ada", email="ada@co.com"),
+        contact=Contact(name="Cara"),
+        messages=[Message(0, "admin", "Ada", None, "Hi")],
+    )
+    grade = grader.grade(conv)
+    assert grade.rules_version == grader.rules_version
+
+
 def test_extract_grade_dict_variants():
     assert extract_grade_dict('{"overall_score": 90, "summary": "s", "rule_results": []}')["overall_score"] == 90
     fenced = 'sure:\n```json\n{"overall_score": 60, "summary": "s", "rule_results": []}\n```'

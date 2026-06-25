@@ -12,7 +12,7 @@ from typing import Any, Callable
 from intercom_summary.intercom.fetch import fetch_conversations_for_agents, normalise_conversation
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import settings
-from intercom_summary.storage.conversations_store import ConversationsStore
+from intercom_summary.storage.conversations_store import ConversationsStore, tags_are_ignored
 from intercom_summary.storage.grades_store import GradesStore
 
 log = get_logger("service")
@@ -202,6 +202,11 @@ def review_and_store(
             )
             convos = [c for r in rows if (c := convos_store.get(r["id"]))]
 
+        # Triage/noise chats (tagged spam, empty, test, Jira, Follow-Up, no request) are
+        # never graded — drop them here so they count as neither graded nor pending.
+        ignored = sum(1 for c in convos if tags_are_ignored(c.tags))
+        convos = [c for c in convos if not tags_are_ignored(c.tags)]
+
         grader = get_grader(backend)
         total = len(convos)
         concurrency = _REVIEW_CONCURRENCY.get(settings.qa_backend, 2)
@@ -214,7 +219,7 @@ def review_and_store(
             on_progress(0, skipped, total)
 
         if not pending:
-            return {"graded": 0, "skipped": skipped, "failed": 0, "total": total}
+            return {"graded": 0, "skipped": skipped, "failed": 0, "total": total, "ignored": ignored}
 
         graded_count = 0
         failed_count = 0
@@ -281,6 +286,7 @@ def review_and_store(
             "skipped": skipped + failed_count,
             "failed": failed_count,
             "total": total,
+            "ignored": ignored,
             "cancelled": cancelled,
             # True when the backend (Ollama) became unreachable mid-run; the caller marks
             # the job as errored instead of "done" so the partial run isn't mistaken for

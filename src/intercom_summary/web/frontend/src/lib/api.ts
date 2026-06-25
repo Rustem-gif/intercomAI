@@ -250,6 +250,8 @@ export interface EvalStats {
   pending: number;
   /** Graded under an older ruleset version (re-grading will refresh them). */
   stale?: number;
+  /** Conversations excluded from grading by tag (spam, empty, test, Jira, Follow-Up, no request). */
+  ignored?: number;
   active_job: {
     id: string;
     status: string;

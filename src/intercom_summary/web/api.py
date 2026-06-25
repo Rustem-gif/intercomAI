@@ -503,23 +503,23 @@ def create_app() -> FastAPI:
         """Counts of conversations vs graded vs active job, used by the Evaluation page."""
         from intercom_summary.qa.backends import get_grader
         cstore = ConversationsStore()
-        gstore = GradesStore()
         try:
-            total = cstore.count()
             try:
                 rules_version = get_grader().rules_version
             except Exception:
                 rules_version = None
-            # "Graded" = conversations that have a grade at all. Grades are stored
-            # one-per-conversation, so filtering by the *current* rules_version
-            # falsely reports 0 the moment the ruleset is edited (every existing
-            # grade still carries the old version). Report the true total, and
-            # surface how many were graded under an older ruleset separately.
-            graded = gstore.count_graded()
-            graded_current = gstore.count_graded(rules_version) if rules_version else graded
+            # Count over the *gradeable* population (conversations without IGNORE_TAGS);
+            # triage/noise chats are never graded, so excluding them lets coverage reach
+            # 100%. "graded" counts any grade (filtering by the current rules_version
+            # would falsely report 0 the moment the prompt is edited); "graded_current"
+            # is the subset under the live ruleset, surfaced separately as "stale".
+            counts = cstore.evaluation_counts(rules_version)
+            total = counts["total"]
+            graded = counts["graded"]
+            graded_current = counts["graded_current"]
+            ignored = counts["ignored"]
         finally:
             cstore.close()
-            gstore.close()
         # Find the active review job (running or queued).
         js = JobsStore()
         try:
@@ -543,6 +543,7 @@ def create_app() -> FastAPI:
             "graded": graded,
             "pending": max(0, total - graded),
             "stale": max(0, graded - graded_current),
+            "ignored": ignored,
             "active_job": active_job,
         }
 

@@ -198,7 +198,7 @@ class OllamaGrader:
             conversation.id, conversation.assignee_name, data
         )
         grade.agent_email = conversation.assignee.email if conversation.assignee else ""
-        grade.rules_version = self._ruleset.version
+        grade.rules_version = self._prompt_version  # match the .rules_version property (qa_system_prompt.txt)
         grade.model = f"ollama/{self._model}"
         grade.graded_at = datetime.now(timezone.utc).isoformat()
         log.info(
