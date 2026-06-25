@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS iconic_cases (
     conversation_id  TEXT PRIMARY KEY,
     added_by         TEXT NOT NULL,
     added_at         TEXT NOT NULL,   -- ISO timestamp
-    manager_comment  TEXT NOT NULL DEFAULT ''
+    manager_comment  TEXT NOT NULL DEFAULT '',
+    snapshot_json    TEXT             -- frozen conversation+grade exemplar (survives deletion)
 );
 
 -- Background jobs (fetch / review) so the UI and Slack can poll progress.
@@ -138,6 +139,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if col not in grade_cols:
             conn.execute(f"ALTER TABLE grades ADD COLUMN {col} {definition}")
     conn.commit()
+
+    # Frozen exemplar snapshot so knowledge-base cases stay viewable after the source
+    # conversation/grade is deleted (added after initial release).
+    iconic_cols = {row[1] for row in conn.execute("PRAGMA table_info(iconic_cases)").fetchall()}
+    if "snapshot_json" not in iconic_cols:
+        conn.execute("ALTER TABLE iconic_cases ADD COLUMN snapshot_json TEXT")
+        conn.commit()
 
     # Link a review token to a specific coaching session (NULL = plain review link).
     token_cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_review_tokens)").fetchall()}

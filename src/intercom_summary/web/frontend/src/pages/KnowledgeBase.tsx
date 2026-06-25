@@ -121,6 +121,9 @@ function CaseCard({
             {c?.subject || `#${item.conversation_id}`}
           </button>
           <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+            {item.archived && (
+              <span className="rounded bg-muted px-1 font-medium text-muted-foreground" title="Source conversation deleted — viewing the saved snapshot">archived</span>
+            )}
             {c?.agent_name && <span>Agent: <span className="text-foreground">{c.agent_name}</span></span>}
             {c?.customer_name && <span>Customer: {c.customer_name}</span>}
             {c?.created_at && <span>{fmtDate(c.created_at)}</span>}
@@ -232,6 +235,8 @@ export default function KnowledgeBase() {
         <ConversationDrawer
           id={openId}
           onClose={() => setOpenId(null)}
+          readOnly
+          detailUrl={`/api/iconic-cases/${openId}`}
         />
       )}
     </div>
