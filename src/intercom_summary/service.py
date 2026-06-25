@@ -298,6 +298,53 @@ def review_and_store(
         grades_store.close()
 
 
+def build_conversation_snapshot(conversation_id: str) -> dict[str, Any] | None:
+    """Freeze a conversation + its grade into a self-contained exemplar for the knowledge
+    base, so the case stays viewable after the source conversation/grade is deleted.
+
+    Returns the same shape as the conversation-detail API (conversation/transcript/grade/sla)
+    plus a denormalised `summary` for list views. None if the conversation isn't cached.
+    """
+    cstore = ConversationsStore()
+    gstore = GradesStore()
+    try:
+        convo = cstore.get(conversation_id)
+        if not convo:
+            return None
+        row = cstore._conn.execute(
+            "SELECT custom_tags FROM conversations WHERE id=?", (conversation_id,)
+        ).fetchone()
+        convo_dict = convo.to_dict()
+        convo_dict["custom_tags"] = row["custom_tags"] if row else ""
+        grade = gstore.get(conversation_id)
+        score = None
+        if grade:
+            score = grade.get("human_score")
+            if score is None:
+                score = grade.get("overall_score")
+        return {
+            "conversation": convo_dict,
+            "transcript": convo.transcript_text(),
+            "grade": grade,
+            "sla": convo.sla_summary(
+                settings.sla_first_response_sec, settings.sla_followup_sec
+            ),
+            "summary": {
+                "id": convo.id,
+                "agent_name": convo.assignee_name,
+                "customer_name": convo_dict.get("customer_name")
+                    or (convo.contact.name if convo.contact else ""),
+                "subject": convo_dict.get("subject", ""),
+                "state": convo_dict.get("state", ""),
+                "created_at": convo_dict.get("created_at"),
+                "score": score,
+            },
+        }
+    finally:
+        cstore.close()
+        gstore.close()
+
+
 # ── Overview (bento dashboard payload) ───────────────────────────────────────────
 def build_overview() -> dict[str, Any]:
     convos_store = ConversationsStore()

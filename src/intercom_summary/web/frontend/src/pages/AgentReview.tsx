@@ -14,6 +14,7 @@ export default function AgentReview() {
   const { token } = useParams<{ token: string }>();
   const qc = useQueryClient();
   const [openId, setOpenId] = useState<string | null>(null);
+  const [openKbId, setOpenKbId] = useState<string | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["review-portal", token],
@@ -53,6 +54,8 @@ export default function AgentReview() {
         <ReviewPortalView data={data} token={token!} onOpenConv={setOpenId} />
       )}
 
+      <KnowledgeBaseSection token={token!} onOpen={setOpenKbId} />
+
       {openId && (
         <ConversationDrawer
           id={openId}
@@ -61,7 +64,76 @@ export default function AgentReview() {
           detailUrl={`/api/review/${token}/conversations/${openId}`}
         />
       )}
+
+      {openKbId && (
+        <ConversationDrawer
+          id={openKbId}
+          onClose={() => setOpenKbId(null)}
+          readOnly
+          detailUrl={`/api/review/${token}/iconic-cases/${openKbId}`}
+        />
+      )}
     </>
+  );
+}
+
+// ── Knowledge base exemplars (read-only, survive conversation deletion) ──────────
+interface AgentIconicCase {
+  conversation_id: string;
+  manager_comment: string;
+  added_at: string;
+  conversation: {
+    id: string; agent_name: string; customer_name: string; subject: string;
+    state: string; created_at: string; score: number | null;
+  } | null;
+}
+
+function KnowledgeBaseSection({ token, onOpen }: { token: string; onOpen: (id: string) => void }) {
+  const { data } = useQuery({
+    queryKey: ["review-portal-kb", token],
+    queryFn: () => api.get<{ items: AgentIconicCase[]; total: number }>(
+      `/api/review/${token}/iconic-cases`
+    ),
+    retry: false,
+  });
+
+  const items = data?.items ?? [];
+  if (items.length === 0) return null;
+
+  return (
+    <div className="mx-auto max-w-3xl px-4 pb-10">
+      <div className="mb-2 flex items-center gap-2">
+        <BookMarked className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-semibold">Knowledge base — example chats</h2>
+        <span className="text-xs text-muted-foreground">({items.length})</span>
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">
+        Reviewed and re-scored chats your manager saved as examples. Available any time.
+      </p>
+      <div className="space-y-2">
+        {items.map((it) => {
+          const c = it.conversation;
+          return (
+            <button
+              key={it.conversation_id}
+              onClick={() => onOpen(it.conversation_id)}
+              className="block w-full rounded-lg border bg-card p-3 text-left shadow-sm hover:border-primary/50"
+            >
+              <div className="text-sm font-medium">{c?.subject || `#${it.conversation_id}`}</div>
+              <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+                {c?.created_at && <span>{fmtDate(c.created_at)}</span>}
+                {c?.score != null && (
+                  <span className={`font-semibold ${scoreColor(c.score)}`}>Score: {c.score}</span>
+                )}
+              </div>
+              {it.manager_comment && (
+                <p className="mt-1 text-xs italic text-muted-foreground">"{it.manager_comment}"</p>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
