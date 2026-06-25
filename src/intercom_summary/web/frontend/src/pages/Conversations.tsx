@@ -218,7 +218,7 @@ export default function Conversations() {
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
             className="w-64 pl-8"
-            placeholder="Search subject / customer…"
+            placeholder="Search by ID, subject, or customer…"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setOffset(0); }}
           />

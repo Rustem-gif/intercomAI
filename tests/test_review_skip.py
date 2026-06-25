@@ -41,6 +41,37 @@ class _FakeGrader:
         )
 
 
+def _conv_tagged(cid: str, tags: list[str]) -> Conversation:
+    c = _conv(cid)
+    c.tags = tags
+    return c
+
+
+def test_ignored_tag_conversations_are_not_graded(temp_db, monkeypatch):
+    cs = ConversationsStore()
+    cs.save(_conv("plain"))
+    cs.save(_conv_tagged("spammy", ["Spam"]))            # case-insensitive match
+    cs.save(_conv_tagged("followup", ["KYC", "Follow-Up"]))
+    cs.close()
+
+    monkeypatch.setattr(
+        "intercom_summary.qa.backends.get_grader", lambda backend=None: _FakeGrader()
+    )
+
+    result = service.review_and_store(regrade=True)  # bulk path
+    assert result["ignored"] == 2
+    assert result["graded"] == 1
+    assert result["total"] == 1
+
+    gs = GradesStore()
+    try:
+        assert gs.get("plain") is not None
+        assert gs.get("spammy") is None      # never graded
+        assert gs.get("followup") is None    # never graded
+    finally:
+        gs.close()
+
+
 def test_failed_grade_is_skipped_not_saved(temp_db, monkeypatch):
     cs = ConversationsStore()
     cs.save(_conv("good"))

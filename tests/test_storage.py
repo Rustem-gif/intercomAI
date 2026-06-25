@@ -60,6 +60,46 @@ def test_query_filters_and_score_join(tmp_path):
     assert total == 1  # only the graded one passes a score filter
 
 
+def _tagged(cid, tags):
+    c = _convo(cid)
+    c.tags = tags
+    return c
+
+
+def test_tags_are_ignored_helper():
+    from intercom_summary.storage.conversations_store import tags_are_ignored
+    assert tags_are_ignored(["Spam"])               # case-insensitive
+    assert tags_are_ignored(["KYC", "Follow-Up"])   # any match
+    assert not tags_are_ignored(["login"])
+    assert not tags_are_ignored([])
+    assert not tags_are_ignored(None)
+
+
+def test_evaluation_counts_excludes_ignored(tmp_path):
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_tagged("plain", ["login"]))
+    cstore.save(_tagged("spammy", ["Spam"]))
+    cstore.save(_tagged("jira", ["Jira"]))
+    gstore = GradesStore(db)
+    # Grade one gradeable and one ignored conversation, both on ruleset "v1".
+    for cid in ("plain", "spammy"):
+        gstore.save(ConversationGrade(
+            conversation_id=cid, agent_name="Ada", overall_score=90, summary="ok",
+            rules_version="v1", graded_at="2026-05-03T00:00:00+00:00",
+        ))
+
+    counts = cstore.evaluation_counts("v1")
+    assert counts["total"] == 1       # only "plain" is gradeable
+    assert counts["ignored"] == 2     # spammy + jira
+    assert counts["graded"] == 1      # the ignored "spammy" grade is excluded
+    assert counts["graded_current"] == 1
+    # A grade under a different ruleset is "stale" (graded but not graded_current).
+    assert cstore.evaluation_counts("v2")["graded_current"] == 0
+    cstore.close()
+    gstore.close()
+
+
 def test_jobs_lifecycle(tmp_path):
     js = JobsStore(tmp_path / "t.db")
     jid = js.create("fetch", {"agents": ["Ada"]})

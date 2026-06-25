@@ -11,6 +11,27 @@ from intercom_summary.settings import settings
 from intercom_summary.storage.db import connect
 
 
+# Conversations carrying any of these (native Intercom) tags are triage/noise and must
+# never be graded — they're excluded from the Evaluation population and skipped by the
+# grader. Compared case-insensitively. Keep this the single source of truth.
+IGNORE_TAGS: frozenset[str] = frozenset(
+    {"empty", "spam", "test", "jira", "follow-up", "no request"}
+)
+
+
+def tags_are_ignored(tags: "list[str] | None") -> bool:
+    """True if any of the conversation's tags is in IGNORE_TAGS (case-insensitive)."""
+    return any((t or "").strip().lower() in IGNORE_TAGS for t in (tags or []))
+
+
+def _ignore_sql(alias: str = "c") -> tuple[str, list[object]]:
+    """SQL predicate (+args) matching conversations that carry any IGNORE_TAGS in their
+    native `tags` column, case-insensitively. Mirrors `tags_are_ignored`."""
+    ors = [f"(',' || lower({alias}.tags) || ',') LIKE ?" for _ in IGNORE_TAGS]
+    args: list[object] = [f"%,{t},%" for t in sorted(IGNORE_TAGS)]
+    return "(" + " OR ".join(ors) + ")", args
+
+
 class ConversationsStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._conn: sqlite3.Connection = connect(db_path or settings.db_path)
@@ -159,9 +180,11 @@ class ConversationsStore:
             where.append("g.overall_score >= ?")
             args.append(min_score)
         if search:
-            where.append("(c.subject LIKE ? OR c.customer_name LIKE ? OR c.customer_email LIKE ?)")
+            where.append(
+                "(c.id LIKE ? OR c.subject LIKE ? OR c.customer_name LIKE ? OR c.customer_email LIKE ?)"
+            )
             like = f"%{search}%"
-            args.extend([like, like, like])
+            args.extend([like, like, like, like])
         if tag:
             # Match exact tag in either native Intercom tags or analyst-set custom_tags.
             where.append(
@@ -221,3 +244,37 @@ class ConversationsStore:
 
     def count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]
+
+    def evaluation_counts(self, rules_version: str | None = None) -> dict:
+        """Counts for the Evaluation page over the *gradeable* population (conversations
+        without any IGNORE_TAGS). Returns total, graded (any ruleset), graded_current
+        (under `rules_version`), and ignored (excluded by tag).
+
+        Counting graded over the same gradeable population keeps the numbers consistent:
+        a chat tagged e.g. 'spam' that was graded in the past is excluded from both total
+        and graded, so coverage can still reach 100%.
+        """
+        ign_sql, ign_args = _ignore_sql("c")
+        gradeable = f"FROM conversations c WHERE NOT {ign_sql}"
+        graded_base = (
+            f"FROM conversations c JOIN grades g ON g.conversation_id = c.id "
+            f"WHERE NOT {ign_sql}"
+        )
+        total = self._conn.execute(f"SELECT COUNT(*) AS n {gradeable}", ign_args).fetchone()["n"]
+        ignored = self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM conversations c WHERE {ign_sql}", ign_args
+        ).fetchone()["n"]
+        graded = self._conn.execute(f"SELECT COUNT(*) AS n {graded_base}", ign_args).fetchone()["n"]
+        if rules_version:
+            graded_current = self._conn.execute(
+                f"SELECT COUNT(*) AS n {graded_base} AND g.rules_version = ?",
+                [*ign_args, rules_version],
+            ).fetchone()["n"]
+        else:
+            graded_current = graded
+        return {
+            "total": total,
+            "graded": graded,
+            "graded_current": graded_current,
+            "ignored": ignored,
+        }

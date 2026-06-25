@@ -164,6 +164,25 @@ def test_eval_stats_counts_grades_under_older_ruleset(client):
     assert stats["stale"] == 1
 
 
+def test_eval_stats_current_ruleset_not_stale(client):
+    """A grade stamped with the live grader's rules_version must NOT be flagged stale."""
+    from intercom_summary.qa.backends import get_grader
+    _seed_grade(rules_version=get_grader().rules_version)
+    _login(client)
+    stats = client.get("/api/evaluation/stats").json()
+    assert stats["graded"] == 1
+    assert stats["stale"] == 0
+
+
+def test_search_matches_conversation_id(client):
+    """Search box also matches the Intercom conversation id (chat number)."""
+    _login(client)
+    r = client.get("/api/conversations", params={"search": "42"}).json()
+    assert r["total"] == 1 and r["items"][0]["id"] == "42"
+    # A non-matching id returns nothing (subject is "Login", customer "Cara").
+    assert client.get("/api/conversations", params={"search": "9999"}).json()["total"] == 0
+
+
 def test_admin_fetch_enqueues_job(client, monkeypatch):
     _login(client)
 
