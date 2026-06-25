@@ -91,6 +91,15 @@ export interface ConversationRow {
   graded_at: string | null;
 }
 
+export interface TrashItem {
+  conversation_id: string;
+  agent_name: string;
+  subject: string;
+  created_at: string;
+  deleted_at: string;
+  deleted_by: string;
+}
+
 export interface ConversationList {
   items: ConversationRow[];
   total: number;

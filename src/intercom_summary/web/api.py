@@ -44,6 +44,7 @@ from intercom_summary.web.schemas import (
     ReviewRequest,
     RulesIn,
     TagsUpdate,
+    TrashActionRequest,
     UserOut,
 )
 
@@ -187,6 +188,7 @@ def create_app() -> FastAPI:
         min_score: int | None = None,
         search: str | None = None,
         tag: str | None = None,
+        ungraded: bool = False,
         sort: str = "created_at",
         descending: bool = True,
         limit: int = 50,
@@ -196,8 +198,8 @@ def create_app() -> FastAPI:
         try:
             rows, total = store.query(
                 agents=agent, since=since, until=until, state=state,
-                min_score=min_score, search=search, tag=tag, sort=sort,
-                descending=descending, limit=limit, offset=offset,
+                min_score=min_score, search=search, tag=tag, ungraded=ungraded,
+                sort=sort, descending=descending, limit=limit, offset=offset,
             )
             return {"items": rows, "total": total, "limit": limit, "offset": offset}
         finally:
@@ -427,33 +429,90 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/conversations/{conversation_id}")
     def delete_conversation(conversation_id: str, user: dict = Depends(auth.require_write)):
-        cstore = ConversationsStore()
-        gstore = GradesStore()
+        from intercom_summary.storage.trash_store import TrashStore
+
+        tstore = TrashStore()
         try:
-            if not cstore.delete(conversation_id):
+            if not tstore.move_to_trash([conversation_id], user["username"]):
                 raise HTTPException(404, "Conversation not found")
-            gstore.delete(conversation_id)
+        finally:
+            tstore.close()
+        return {"deleted": 1}
+
+    def _delete_match_ids(body: DeleteConversationsRequest) -> list[str]:
+        """Resolve a delete request to the set of conversation ids it targets."""
+        if body.ids:
+            return body.ids
+        has_filter = any([
+            body.agent, body.since, body.until, body.state,
+            body.min_score is not None, body.search, body.tag, body.ungraded,
+        ])
+        if not has_filter and not body.all:
+            raise HTTPException(400, "Specify ids, at least one filter, or all=true.")
+        cstore = ConversationsStore()
+        try:
+            rows, _ = cstore.query(
+                agents=body.agent, since=body.since, until=body.until, state=body.state,
+                min_score=body.min_score, search=body.search, tag=body.tag,
+                ungraded=body.ungraded, limit=1_000_000,
+            )
         finally:
             cstore.close()
-            gstore.close()
-        return {"deleted": 1}
+        return [r["id"] for r in rows]
 
     @app.post("/api/conversations/delete")
     def bulk_delete_conversations(body: DeleteConversationsRequest, user: dict = Depends(auth.require_write)):
-        """Bulk delete. Pass ids=[] or omit to delete ALL conversations."""
-        cstore = ConversationsStore()
-        gstore = GradesStore()
+        """Move conversations to the trash — by explicit ids, by filter, or all=true.
+        Trashed items can be restored or purged via /api/trash."""
+        from intercom_summary.storage.trash_store import TrashStore
+
+        ids = _delete_match_ids(body)
+        tstore = TrashStore()
         try:
-            if not body.ids:
-                ids = [r["id"] for r in cstore.query(limit=100_000)[0]]
-            else:
-                ids = body.ids
-            deleted = cstore.delete_many(ids)
-            gstore.delete_many(ids)
+            deleted = tstore.move_to_trash(ids, user["username"])
         finally:
-            cstore.close()
-            gstore.close()
-        return {"deleted": deleted}
+            tstore.close()
+        return {"deleted": deleted, "ids": ids}
+
+    # ── Trash (soft-deleted conversations) ─────────────────────────────────────
+    @app.get("/api/trash")
+    def list_trash(user: dict = Depends(auth.require_write)):
+        from intercom_summary.storage.trash_store import TrashStore
+
+        tstore = TrashStore()
+        try:
+            return {"items": tstore.list_all(), "total": tstore.count()}
+        finally:
+            tstore.close()
+
+    @app.post("/api/trash/restore")
+    def restore_trash(body: TrashActionRequest, user: dict = Depends(auth.require_write)):
+        from intercom_summary.storage.trash_store import TrashStore
+
+        tstore = TrashStore()
+        try:
+            ids = body.ids
+            if not ids and body.all:
+                ids = [r["conversation_id"] for r in tstore.list_all(limit=1_000_000)]
+            if not ids:
+                raise HTTPException(400, "Specify ids or all=true.")
+            restored = tstore.restore(ids)
+        finally:
+            tstore.close()
+        return {"restored": restored}
+
+    @app.post("/api/trash/purge")
+    def purge_trash(body: TrashActionRequest, user: dict = Depends(auth.require_write)):
+        from intercom_summary.storage.trash_store import TrashStore
+
+        if not body.ids and not body.all:
+            raise HTTPException(400, "Specify ids or all=true to purge.")
+        tstore = TrashStore()
+        try:
+            purged = tstore.purge(body.ids if body.ids else None)
+        finally:
+            tstore.close()
+        return {"purged": purged}
 
     # ── Jobs (fetch / review) ──────────────────────────────────────────────────
     @app.post("/api/fetch", response_model=JobOut)
