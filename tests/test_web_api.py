@@ -131,6 +131,64 @@ def _seed_grade(rules_version="v-old"):
     gstore.close()
 
 
+def _seed_casino_grade():
+    """Persist an Ollama-style grade for conversation 42 with known QA criteria.
+    AI score 85 = 100 − 15 (res-no-fake-close failed)."""
+    from intercom_summary.qa.schema import ConversationGrade, RuleResult
+    from intercom_summary.storage.grades_store import GradesStore
+
+    gstore = GradesStore(settings.db_path)
+    gstore.save(ConversationGrade(
+        conversation_id="42", agent_name="Ada", overall_score=85, summary="ok",
+        rule_results=[
+            RuleResult("res-no-fake-close", "No Fake Closure", "fail", "closed early"),
+            RuleResult("open-greet", "Greeting", "pass", "hi"),
+        ],
+        rules_version="v1", model="ollama/test",
+        graded_at="2026-05-01T00:00:00+00:00",
+    ))
+    gstore.close()
+
+
+def test_criteria_override_recomputes_score(client):
+    _seed_casino_grade()
+    _login(client, "ana", "pw")
+    # Analyst flips the failed criterion to pass → score recomputes to 100.
+    r = client.post("/api/conversations/42/override", json={
+        "criteria": {"res-no-fake-close": "pass", "open-greet": "pass"},
+        "reason": "Issue was actually resolved in chat",
+    })
+    assert r.status_code == 200
+    assert r.json()["human_score"] == 100
+
+    grade = client.get("/api/conversations/42").json()["grade"]
+    assert grade["human_score"] == 100
+    # Only the changed criterion is stored (diff vs the AI verdicts).
+    assert grade["human_criteria"] == {"res-no-fake-close": "pass"}
+    # Rule checks are annotated with canonical deductions for the toggle UI.
+    by_id = {x["rule_id"]: x for x in grade["rule_results"]}
+    assert by_id["res-no-fake-close"]["deduction"] == 15
+
+
+def test_criteria_override_rejects_unknown_criterion(client):
+    _seed_casino_grade()
+    _login(client, "ana", "pw")
+    r = client.post("/api/conversations/42/override", json={
+        "criteria": {"made-up-id": "fail"}, "reason": "x",
+    })
+    assert r.status_code == 422
+
+
+def test_criteria_override_requires_a_change(client):
+    _seed_casino_grade()
+    _login(client, "ana", "pw")
+    # Submitting the AI's own verdicts unchanged is a no-op and rejected.
+    r = client.post("/api/conversations/42/override", json={
+        "criteria": {"res-no-fake-close": "fail", "open-greet": "pass"}, "reason": "x",
+    })
+    assert r.status_code == 422
+
+
 def test_analyst_can_override_grade(client):
     _seed_grade()
     _login(client, "ana", "pw")
@@ -181,6 +239,20 @@ def test_search_matches_conversation_id(client):
     assert r["total"] == 1 and r["items"][0]["id"] == "42"
     # A non-matching id returns nothing (subject is "Login", customer "Cara").
     assert client.get("/api/conversations", params={"search": "9999"}).json()["total"] == 0
+
+
+def test_agent_scores_endpoint(client):
+    _seed_grade(rules_version="v1")  # grade for conversation 42 (Ada), overall_score 80
+    _login(client)
+    r = client.get("/api/agents/scores?period=all").json()
+    assert r["period"] == "all" and r["since"] is None
+    agents = {a["agent"]: a for a in r["agents"]}
+    assert agents["Ada"]["avg_score"] == 80.0 and agents["Ada"]["count"] == 1
+
+
+def test_agent_scores_rejects_bad_period(client):
+    _login(client)
+    assert client.get("/api/agents/scores?period=decade").status_code == 422
 
 
 def test_admin_fetch_enqueues_job(client, monkeypatch):

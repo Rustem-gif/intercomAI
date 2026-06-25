@@ -53,8 +53,12 @@ class TagsUpdate(BaseModel):
 
 
 class OverrideRequest(BaseModel):
-    score: int
     reason: str
+    # Manual score override (the slider). Optional when `criteria` is provided.
+    score: int | None = None
+    # ScoreBuddy-style per-criterion override: {criterion_id: "pass"|"fail"|"n/a"}.
+    # When present, the server recomputes the score from these verdicts and ignores `score`.
+    criteria: dict[str, str] | None = None
 
 
 class AiChatRequest(BaseModel):

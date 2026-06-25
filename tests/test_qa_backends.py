@@ -64,6 +64,19 @@ def test_compute_score_deduction_based():
     assert _compute_score([{"v": "pass", "ded": 0}], True) == (0, "Critical", "FAIL")
 
 
+def test_score_from_verdicts():
+    from intercom_summary.qa.schema import score_from_verdicts
+    # All pass → 100 / Excellent / PASS
+    assert score_from_verdicts({"open-greet": "pass", "res-effort": "pass"}) == (100, "Excellent", "PASS")
+    # A single fail subtracts the canonical deduction (res-no-fake-close = 15)
+    assert score_from_verdicts({"res-no-fake-close": "fail"})[0] == 85
+    # n/a contributes nothing
+    assert score_from_verdicts({"res-no-fake-close": "n/a"})[0] == 100
+    # A failed critical criterion forces 0/FAIL regardless of the rest
+    s, _band, result = score_from_verdicts({"crit-data-care": "fail", "open-greet": "pass"})
+    assert (s, result) == (0, "FAIL")
+
+
 def test_from_ollama_output_recomputes_score():
     # Model might return a wrong overall_score — we ignore it and recompute from deductions.
     data = {

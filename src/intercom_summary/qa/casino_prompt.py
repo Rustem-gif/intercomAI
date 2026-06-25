@@ -49,6 +49,47 @@ CRITERION_TITLES: dict[str, str] = {
     "close-courtesy": "Closure Courtesy",
 }
 
+# Critical criteria: a FAIL on any of these forces the overall score to 0 (critical fail),
+# regardless of deductions. Used by manual re-scoring (ScoreBuddy-style) to mirror the
+# grader's "CRITICAL FAIL → score 0" rule.
+CRITICAL_CRITERIA: frozenset[str] = frozenset({"crit-data-care", "crit-rg-care"})
+
+# Canonical per-criterion deduction (the "Ded" column of the prompt below). This is the
+# single source of truth for recomputing a score when an analyst flips criteria by hand:
+# score = max(0, 100 − Σ deductions for failed criteria), 0 if any CRITICAL_CRITERIA failed.
+# crit-data-care / crit-rg-care are 0 here because they're handled as critical (force 0).
+# Keep in sync with the deduction table in CASINO_QA_SYSTEM_PROMPT.
+CRITERION_DEDUCTIONS: dict[str, int] = {
+    "crit-data-care": 0,
+    "crit-rg-care": 0,
+    "crit-no-unsupported-promises": 20,
+    "open-greet": 2,
+    "open-name-use": 1,
+    "req-understanding": 8,
+    "req-clarify": 5,
+    "req-case-type": 4,
+    "info-relevance": 7,
+    "info-actionable": 8,
+    "info-no-contradiction": 8,
+    "cf-friendly": 5,
+    "cf-ownership": 8,
+    "cf-clarity": 3,
+    "resp-no-ghost": 10,
+    "resp-no-template-abuse": 7,
+    "resp-delay-handling": 5,
+    "res-effort": 10,
+    "res-next-step": 8,
+    "res-no-fake-close": 15,
+    "esc-need-recognized": 8,
+    "esc-handoff-explained": 7,
+    "churn-detect-ack": 10,
+    "churn-retention-handling": 8,
+    "pay-withdrawal-sensitivity": 10,
+    "close-confirm": 3,
+    "close-courtesy": 2,
+}
+
+
 _CRITERION_SCHEMA = {
     "type": "object",
     "properties": {
