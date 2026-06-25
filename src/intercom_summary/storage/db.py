@@ -116,6 +116,19 @@ CREATE TABLE IF NOT EXISTS conversation_comments (
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cc_conversation ON conversation_comments(conversation_id);
+
+-- Soft-delete trash: deleting a conversation moves it (and its grade) here as a JSON
+-- snapshot so it can be restored. Purging removes it for good.
+CREATE TABLE IF NOT EXISTS deleted_conversations (
+    conversation_id TEXT PRIMARY KEY,
+    agent_name      TEXT,
+    subject         TEXT,
+    created_at      TEXT,           -- original conversation date (for sorting/presets)
+    deleted_at      TEXT NOT NULL,
+    deleted_by      TEXT NOT NULL,
+    snapshot_json   TEXT NOT NULL   -- {conversation: <row>, grade: <row|null>}
+);
+CREATE INDEX IF NOT EXISTS idx_trash_deleted ON deleted_conversations(deleted_at);
 """
 
 
@@ -153,8 +166,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE agent_review_tokens ADD COLUMN session_id TEXT")
         conn.commit()
 
-    # Manager comments on conversations (added after initial release).
+    # Soft-delete trash (added after initial release).
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "deleted_conversations" not in tables:
+        conn.execute("""
+            CREATE TABLE deleted_conversations (
+                conversation_id TEXT PRIMARY KEY,
+                agent_name      TEXT,
+                subject         TEXT,
+                created_at      TEXT,
+                deleted_at      TEXT NOT NULL,
+                deleted_by      TEXT NOT NULL,
+                snapshot_json   TEXT NOT NULL
+            )""")
+        conn.execute("CREATE INDEX idx_trash_deleted ON deleted_conversations(deleted_at)")
+        conn.commit()
+
+    # Manager comments on conversations (added after initial release).
     if "conversation_comments" not in tables:
         conn.execute("""
             CREATE TABLE conversation_comments (

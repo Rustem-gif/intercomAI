@@ -134,6 +134,40 @@ def test_agent_scores_period_and_override(tmp_path):
     gstore.close()
 
 
+def test_trash_round_trip_preserves_override(tmp_path):
+    from intercom_summary.storage.trash_store import TrashStore
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo("9", "Ada"))
+    cstore.close()
+    gstore = GradesStore(db)
+    gstore.save(ConversationGrade(
+        conversation_id="9", agent_name="Ada", overall_score=70, summary="s",
+        graded_at="2026-05-03T00:00:00+00:00",
+    ))
+    gstore.save_override("9", 95, "manager call", "boss")
+    gstore.close()
+
+    ts = TrashStore(db)
+    assert ts.move_to_trash(["9"], "boss") == 1
+    cs = ConversationsStore(db)
+    assert cs.get("9") is None        # gone from live tables
+    cs.close()
+    assert ts.count() == 1
+    assert ts.restore(["9"]) == 1     # restore re-inserts conversation + grade
+    ts.close()
+
+    gstore = GradesStore(db)
+    g = gstore.get("9")
+    gstore.close()
+    # The grade comes back verbatim, including the human override columns.
+    assert g["overall_score"] == 70 and g["human_score"] == 95
+    assert g["override_reason"] == "manager call"
+    cs = ConversationsStore(db)
+    assert cs.get("9") is not None
+    cs.close()
+
+
 def test_jobs_lifecycle(tmp_path):
     js = JobsStore(tmp_path / "t.db")
     jid = js.create("fetch", {"agents": ["Ada"]})

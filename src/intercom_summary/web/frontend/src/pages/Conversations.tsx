@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Search, Trash2, ChevronDown, Sparkles } from "lucide-react";
-import { api, ConversationList } from "@/lib/api";
+import { Download, Search, Trash2, ChevronDown, Sparkles, RotateCcw, Archive, X } from "lucide-react";
+import { api, ConversationList, TrashItem } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import { Badge, Button, Card, Input, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
@@ -29,6 +29,8 @@ export default function Conversations() {
   const [deleting, setDeleting] = useState(false);
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
   const [qaIds, setQaIds] = useState<string[] | null>(null);
+  const [lastDeleted, setLastDeleted] = useState<{ ids: string[]; label: string } | null>(null);
+  const [showTrash, setShowTrash] = useState(false);
 
   // The effective agent filter: dropdown value takes precedence over text input
   const effectiveAgent = agent || agentText.trim();
@@ -101,48 +103,105 @@ export default function Conversations() {
     qc.invalidateQueries({ queryKey: ["conversations"] });
     qc.invalidateQueries({ queryKey: ["overview"] });
     qc.invalidateQueries({ queryKey: ["agents"] });
+    qc.invalidateQueries({ queryKey: ["trash"] });
   };
 
-  const deleteOne = async (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm("Delete this conversation?")) return;
-    await api.delete(`/api/conversations/${id}`);
-    setSelected((prev) => { const n = new Set(prev); n.delete(id); return n; });
-    invalidate();
-  };
+  const { data: trashData } = useQuery({
+    queryKey: ["trash"],
+    queryFn: () => api.get<{ items: TrashItem[]; total: number }>("/api/trash"),
+    enabled: writer,
+  });
+  const trashCount = trashData?.total ?? 0;
 
-  const deleteBulk = async (ids: string[] | null, label: string) => {
-    if (!confirm(`Delete ${label}? This cannot be undone.`)) return;
+  // Filter object the delete endpoint understands (mirrors every active filter).
+  const currentFilters = (): Record<string, unknown> => {
+    const f: Record<string, unknown> = {};
+    if (search) f.search = search;
+    if (effectiveAgent) f.agent = [effectiveAgent];
+    if (state) f.state = state;
+    if (tag) f.tag = tag;
+    if (since) f.since = since;
+    if (until) f.until = until + "T23:59:59";
+    return f;
+  };
+  const hasFilters = !!(search || effectiveAgent || state || tag || since || until);
+
+  const runDelete = async (body: Record<string, unknown>, label: string) => {
     setDeleting(true);
     setShowDeleteMenu(false);
     try {
-      // null → delete all; [] → delete all (server interprets empty as "all")
-      await api.post("/api/conversations/delete", { ids });
+      const res = await api.post<{ deleted: number; ids: string[] }>(
+        "/api/conversations/delete", body,
+      );
       setSelected(new Set());
+      setLastDeleted(res.ids?.length ? { ids: res.ids, label } : null);
       invalidate();
     } finally {
       setDeleting(false);
     }
   };
 
-  const deleteSelected = () => deleteBulk([...selected], `${selected.size} selected conversation(s)`);
-  const deleteFiltered = () => {
-    // Re-query with current filters but no pagination to get all IDs
-    const filterParams = new URLSearchParams();
-    if (effectiveAgent) filterParams.set("agent", effectiveAgent);
-    if (state) filterParams.set("state", state);
-    if (search) filterParams.set("search", search);
-    filterParams.set("limit", "10000");
-    api.get<ConversationList>(`/api/conversations?${filterParams.toString()}`).then((res) => {
-      const ids = res.items.map((c) => c.id);
-      if (!ids.length) { alert("No conversations match the current filters."); return; }
-      deleteBulk(ids, `${ids.length} filtered conversation(s)`);
-    });
+  // Count what a filter set matches (server-side), then confirm before deleting.
+  const confirmAndDelete = async (
+    qs: URLSearchParams, body: Record<string, unknown>, label: string,
+  ) => {
+    setShowDeleteMenu(false);
+    qs.set("limit", "1");
+    const res = await api.get<ConversationList>(`/api/conversations?${qs.toString()}`);
+    if (res.total === 0) { alert(`No conversations match: ${label}.`); return; }
+    if (!confirm(
+      `Delete ${res.total.toLocaleString()} conversation(s) — ${label}?\n` +
+      `They move to Trash and can be restored.`
+    )) return;
+    runDelete(body, label);
   };
-  const deleteAll = () => deleteBulk(null, "ALL conversations");
+
+  const filtersToQuery = (f: Record<string, unknown>) => {
+    const qs = new URLSearchParams();
+    Object.entries(f).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach((x) => qs.append(k, String(x)));
+      else qs.set(k, String(v));
+    });
+    return qs;
+  };
+
+  const deleteOne = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("Delete this conversation? It moves to Trash and can be restored.")) return;
+    await api.delete(`/api/conversations/${id}`);
+    setSelected((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    setLastDeleted({ ids: [id], label: "1 conversation" });
+    invalidate();
+  };
+
+  const deleteSelected = () => {
+    if (!selected.size) return;
+    if (!confirm(
+      `Delete ${selected.size} selected conversation(s)?\nThey move to Trash and can be restored.`
+    )) return;
+    runDelete({ ids: [...selected] }, `${selected.size} selected`);
+  };
+  const deleteFiltered = () =>
+    confirmAndDelete(filtersToQuery(currentFilters()), currentFilters(), "current filters");
+  const deleteOlderThan = (days: number) => {
+    const until = new Date(Date.now() - days * 86400_000).toISOString();
+    confirmAndDelete(new URLSearchParams({ until }), { until }, `older than ${days} days`);
+  };
+  const deleteUngraded = () =>
+    confirmAndDelete(new URLSearchParams({ ungraded: "true" }), { ungraded: true }, "ungraded");
+  const deleteAll = () =>
+    confirmAndDelete(new URLSearchParams(), { all: true }, "ALL conversations");
+
+  const undoDelete = async () => {
+    if (!lastDeleted) return;
+    await api.post("/api/trash/restore", { ids: lastDeleted.ids });
+    setLastDeleted(null);
+    invalidate();
+  };
 
   const allOnPageSelected =
     (data?.items.length ?? 0) > 0 && (data?.items ?? []).every((c) => selected.has(c.id));
+  const moreThanPage = (data?.total ?? 0) > (data?.items.length ?? 0);
 
   return (
     <div className="space-y-4">
@@ -172,7 +231,7 @@ export default function Conversations() {
               </Button>
               {showDeleteMenu && (
                 <div
-                  className="absolute right-0 top-full z-20 mt-1 w-52 rounded-md border bg-card shadow-lg"
+                  className="absolute right-0 top-full z-20 mt-1 w-64 rounded-md border bg-card py-1 shadow-lg"
                   onMouseLeave={() => setShowDeleteMenu(false)}
                 >
                   {selected.size > 0 && (
@@ -184,15 +243,39 @@ export default function Conversations() {
                       Delete selected ({selected.size})
                     </button>
                   )}
-                  {(effectiveAgent || state || search) && (
+                  {hasFilters && (
                     <button
                       className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
                       onClick={deleteFiltered}
                     >
                       <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      Delete filtered results
+                      Delete all matching filters{data ? ` (${data.total})` : ""}
                     </button>
                   )}
+                  <div className="my-1 border-t" />
+                  <div className="px-3 py-1 text-[10px] font-semibold uppercase text-muted-foreground">Quick clean-up</div>
+                  <button
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                    onClick={() => deleteOlderThan(30)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                    Older than 30 days
+                  </button>
+                  <button
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                    onClick={() => deleteOlderThan(90)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                    Older than 90 days
+                  </button>
+                  <button
+                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                    onClick={deleteUngraded}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                    Ungraded conversations
+                  </button>
+                  <div className="my-1 border-t" />
                   <button
                     className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-destructive hover:bg-destructive/10"
                     onClick={deleteAll}
@@ -204,6 +287,11 @@ export default function Conversations() {
               )}
             </div>
           )}
+          {writer && (
+            <Button variant="outline" size="sm" onClick={() => setShowTrash(true)}>
+              <Archive className="h-4 w-4" /> Trash{trashCount > 0 ? ` (${trashCount})` : ""}
+            </Button>
+          )}
           <a href={`/api/export/conversations.xlsx${effectiveAgent ? `?agent=${encodeURIComponent(effectiveAgent)}` : ""}`}>
             <Button variant="outline" size="sm">
               <Download className="h-4 w-4" /> Export XLSX
@@ -211,6 +299,41 @@ export default function Conversations() {
           </a>
         </div>
       </div>
+
+      {/* Undo banner after a delete */}
+      {lastDeleted && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            Deleted <span className="font-medium text-foreground">{lastDeleted.label}</span> — moved to Trash.
+          </span>
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" onClick={undoDelete}>
+              <RotateCcw className="h-3.5 w-3.5" /> Undo
+            </Button>
+            <button onClick={() => setLastDeleted(null)} className="rounded p-1 text-muted-foreground hover:bg-muted">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Select-all-matching → cross-page delete */}
+      {writer && allOnPageSelected && moreThanPage && (
+        <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            All {data?.items.length} on this page selected.
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={hasFilters ? deleteFiltered : deleteAll}
+            disabled={deleting}
+          >
+            <Trash2 className="h-3.5 w-3.5 text-destructive" />
+            Delete all {(data?.total ?? 0).toLocaleString()} matching
+          </Button>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
@@ -434,6 +557,94 @@ export default function Conversations() {
           }}
         />
       )}
+
+      {showTrash && (
+        <TrashModal items={trashData?.items ?? []} onClose={() => setShowTrash(false)} onChanged={invalidate} />
+      )}
+    </div>
+  );
+}
+
+function TrashModal({
+  items, onClose, onChanged,
+}: {
+  items: TrashItem[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  const act = async (path: string, body: Record<string, unknown>, confirmMsg?: string) => {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    setBusy(true);
+    try {
+      await api.post(path, body);
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Archive className="h-4 w-4" /> Trash ({items.length})
+          </h2>
+          <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-muted">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {items.length > 0 && (
+          <div className="flex gap-2 border-b px-4 py-2">
+            <Button size="sm" variant="outline" disabled={busy}
+              onClick={() => act("/api/trash/restore", { all: true })}>
+              <RotateCcw className="h-3.5 w-3.5" /> Restore all
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy}
+              className="text-destructive"
+              onClick={() => act("/api/trash/purge", { all: true }, "Permanently delete everything in Trash? This cannot be undone.")}>
+              <Trash2 className="h-3.5 w-3.5" /> Empty trash
+            </Button>
+          </div>
+        )}
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {items.length === 0 ? (
+            <p className="p-8 text-center text-sm text-muted-foreground">Trash is empty.</p>
+          ) : (
+            <ul className="divide-y">
+              {items.map((it) => (
+                <li key={it.conversation_id} className="flex items-center gap-3 px-4 py-2 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">{it.subject || `#${it.conversation_id}`}</div>
+                    <div className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+                      {it.agent_name && <span>{it.agent_name}</span>}
+                      <span>· deleted {fmtDate(it.deleted_at)} by {it.deleted_by}</span>
+                    </div>
+                  </div>
+                  <button
+                    className="rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50"
+                    disabled={busy}
+                    onClick={() => act("/api/trash/restore", { ids: [it.conversation_id] })}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    className="rounded-md border px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    disabled={busy}
+                    onClick={() => act("/api/trash/purge", { ids: [it.conversation_id] }, "Permanently delete this conversation?")}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

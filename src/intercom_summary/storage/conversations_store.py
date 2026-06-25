@@ -156,6 +156,7 @@ class ConversationsStore:
         min_score: int | None = None,
         search: str | None = None,
         tag: str | None = None,
+        ungraded: bool = False,
         sort: str = "created_at",
         descending: bool = True,
         limit: int = 100,
@@ -179,6 +180,8 @@ class ConversationsStore:
         if min_score is not None:
             where.append("g.overall_score >= ?")
             args.append(min_score)
+        if ungraded:
+            where.append("g.conversation_id IS NULL")
         if search:
             where.append(
                 "(c.id LIKE ? OR c.subject LIKE ? OR c.customer_name LIKE ? OR c.customer_email LIKE ?)"

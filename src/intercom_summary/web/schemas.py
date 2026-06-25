@@ -45,7 +45,29 @@ class RulesIn(BaseModel):
 
 
 class DeleteConversationsRequest(BaseModel):
-    ids: list[str] | None = None  # None / omitted = delete all
+    """Move conversations to the trash. Provide exactly one of:
+    - `ids`: explicit conversation ids;
+    - filter fields (agent/since/until/state/min_score/search/tag/ungraded): delete every
+      conversation matching them (computed server-side);
+    - `all=True`: delete everything.
+    """
+    ids: list[str] | None = None
+    all: bool = False
+    # Filter-based delete (mirrors GET /api/conversations).
+    agent: list[str] | None = None
+    since: str | None = None
+    until: str | None = None
+    state: str | None = None
+    min_score: int | None = None
+    search: str | None = None
+    tag: str | None = None
+    ungraded: bool = False
+
+
+class TrashActionRequest(BaseModel):
+    """Restore or purge trashed conversations. None ids + all=True = whole trash."""
+    ids: list[str] | None = None
+    all: bool = False
 
 
 class TagsUpdate(BaseModel):

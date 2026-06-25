@@ -255,6 +255,69 @@ def test_agent_scores_rejects_bad_period(client):
     assert client.get("/api/agents/scores?period=decade").status_code == 422
 
 
+def _save_convo(cid, agent="Ada", created="2026-05-01", subject="S"):
+    cstore = ConversationsStore(settings.db_path)
+    cstore.save(Conversation(
+        id=cid, created_at=datetime.fromisoformat(created + "T00:00:00+00:00"), updated_at=None,
+        state="closed", subject=subject,
+        assignee=Admin(id="1", name=agent, email=f"{agent}@co.com"),
+        contact=Contact(name="Cara"),
+        messages=[Message(0, "admin", agent, None, "Hi")],
+    ))
+    cstore.close()
+
+
+def test_soft_delete_and_restore(client):
+    _seed_grade()  # grade for conversation 42
+    _login(client)
+    # Delete moves to trash and removes from the live list.
+    assert client.delete("/api/conversations/42").json()["deleted"] == 1
+    assert client.get("/api/conversations").json()["total"] == 0
+    trash = client.get("/api/trash").json()
+    assert trash["total"] == 1 and trash["items"][0]["conversation_id"] == "42"
+    # Restore brings the conversation AND its grade back intact.
+    assert client.post("/api/trash/restore", json={"ids": ["42"]}).json()["restored"] == 1
+    assert client.get("/api/conversations").json()["total"] == 1
+    assert client.get("/api/conversations/42").json()["grade"]["overall_score"] == 80
+    assert client.get("/api/trash").json()["total"] == 0
+
+
+def test_filter_based_delete(client):
+    _save_convo("100", agent="Bob")
+    _login(client)
+    # Delete everything matching the agent filter (Bob) — 42 (Ada) stays.
+    r = client.post("/api/conversations/delete", json={"agent": ["Bob"]}).json()
+    assert r["deleted"] == 1 and r["ids"] == ["100"]
+    assert client.get("/api/conversations").json()["total"] == 1
+    # No ids, no filter, not all → rejected (guards against accidental delete-all).
+    assert client.post("/api/conversations/delete", json={}).status_code == 400
+
+
+def test_delete_ungraded_preset(client):
+    _seed_grade()        # 42 is graded
+    _save_convo("100")   # 100 is ungraded
+    _login(client)
+    r = client.post("/api/conversations/delete", json={"ungraded": True}).json()
+    assert r["ids"] == ["100"]
+    assert client.get("/api/conversations").json()["total"] == 1
+
+
+def test_purge_trash(client):
+    _login(client)
+    client.delete("/api/conversations/42")
+    assert client.get("/api/trash").json()["total"] == 1
+    assert client.post("/api/trash/purge", json={"all": True}).json()["purged"] == 1
+    assert client.get("/api/trash").json()["total"] == 0
+
+
+def test_viewer_cannot_delete_or_use_trash(client):
+    _login(client, "looker", "pw")
+    assert client.delete("/api/conversations/42").status_code == 403
+    assert client.post("/api/conversations/delete", json={"all": True}).status_code == 403
+    assert client.get("/api/trash").status_code == 403
+    assert client.post("/api/trash/restore", json={"all": True}).status_code == 403
+
+
 def test_iconic_case_survives_deletion(client):
     _seed_grade(rules_version="v1")  # grade for conversation 42 (Ada, score 80)
     _login(client)
