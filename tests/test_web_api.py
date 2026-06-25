@@ -318,6 +318,53 @@ def test_viewer_cannot_delete_or_use_trash(client):
     assert client.post("/api/trash/restore", json={"all": True}).status_code == 403
 
 
+def test_iconic_case_survives_deletion(client):
+    _seed_grade(rules_version="v1")  # grade for conversation 42 (Ada, score 80)
+    _login(client)
+    assert client.post(
+        "/api/iconic-cases", json={"conversation_id": "42", "comment": "great handling"}
+    ).status_code == 200
+
+    # Deleting the source conversation + grade must NOT make the KB case disappear.
+    assert client.delete("/api/conversations/42").status_code == 200
+    assert client.get("/api/conversations/42").status_code == 404  # source is gone
+
+    items = client.get("/api/iconic-cases").json()["items"]
+    assert len(items) == 1
+    case = items[0]
+    assert case["archived"] is True
+    assert case["conversation"]["agent_name"] == "Ada"
+    assert case["conversation"]["score"] == 80
+
+    # The frozen exemplar is still fully viewable.
+    detail = client.get("/api/iconic-cases/42").json()
+    assert detail["grade"]["overall_score"] == 80
+    assert detail["conversation"]["subject"] == "Login"
+    assert detail["transcript"]
+
+
+def test_review_portal_exposes_agent_kb(client):
+    _seed_grade(rules_version="v1")
+    _login(client)
+    client.post("/api/iconic-cases", json={"conversation_id": "42", "comment": "exemplar"})
+
+    from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+    ts = AgentTokensStore(settings.db_path)
+    ts.create("tok-ada", agent_name="Ada", label="Ada review", created_by="boss")
+    ts.create("tok-bob", agent_name="Bob", label="Bob review", created_by="boss")
+    ts.close()
+
+    # Public portal (no login) lists the agent's exemplars and serves the snapshot.
+    listing = client.get("/api/review/tok-ada/iconic-cases").json()
+    assert listing["total"] == 1 and listing["items"][0]["conversation_id"] == "42"
+    detail = client.get("/api/review/tok-ada/iconic-cases/42").json()
+    assert detail["grade"]["overall_score"] == 80
+
+    # Another agent's token cannot see Ada's exemplar.
+    assert client.get("/api/review/tok-bob/iconic-cases").json()["total"] == 0
+    assert client.get("/api/review/tok-bob/iconic-cases/42").status_code == 403
+
+
 def test_admin_fetch_enqueues_job(client, monkeypatch):
     _login(client)
 

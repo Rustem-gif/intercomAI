@@ -357,41 +357,62 @@ def create_app() -> FastAPI:
     def list_iconic_cases(user: dict = Depends(auth.current_user)):
         icstore = IconicCasesStore()
         cstore = ConversationsStore()
-        gstore = GradesStore()
         try:
             cases = icstore.list_all()
             enriched = []
             for case in cases:
-                cid = case["conversation_id"]
-                row = cstore._conn.execute(
-                    """SELECT c.id, c.agent_name, c.customer_name, c.subject, c.state,
-                              c.created_at, COALESCE(g.human_score, g.overall_score) AS score
-                       FROM conversations c
-                       LEFT JOIN grades g ON g.conversation_id = c.id
-                       WHERE c.id=?""",
-                    (cid,),
-                ).fetchone()
+                snap = case.pop("snapshot", None)
+                # Prefer the frozen snapshot so the case renders even after the source
+                # conversation was deleted; fall back to live data for legacy cases.
+                convo = snap.get("summary") if snap else None
+                if convo is None:
+                    cid = case["conversation_id"]
+                    row = cstore._conn.execute(
+                        """SELECT c.id, c.agent_name, c.customer_name, c.subject, c.state,
+                                  c.created_at, COALESCE(g.human_score, g.overall_score) AS score
+                           FROM conversations c
+                           LEFT JOIN grades g ON g.conversation_id = c.id
+                           WHERE c.id=?""",
+                        (cid,),
+                    ).fetchone()
+                    convo = dict(row) if row else None
                 enriched.append({
                     **case,
-                    "conversation": dict(row) if row else None,
+                    "conversation": convo,
+                    "archived": not cstore.get(case["conversation_id"]),
                 })
             return {"items": enriched}
         finally:
             icstore.close()
             cstore.close()
-            gstore.close()
+
+    @app.get("/api/iconic-cases/{conversation_id}")
+    def iconic_case_detail(conversation_id: str, user: dict = Depends(auth.current_user)):
+        """Full frozen exemplar (conversation/transcript/grade/sla) for the KB drawer."""
+        icstore = IconicCasesStore()
+        try:
+            snap = icstore.get_snapshot(conversation_id)
+            case = icstore.get(conversation_id)
+        finally:
+            icstore.close()
+        if not case:
+            raise HTTPException(404, "Iconic case not found")
+        if snap:
+            return {**snap, "iconic": case}
+        # Legacy case without a snapshot: fall back to the live conversation if it exists.
+        snap = service.build_conversation_snapshot(conversation_id)
+        if not snap:
+            raise HTTPException(404, "This case's conversation was deleted before it was archived.")
+        return {**snap, "iconic": case}
 
     @app.post("/api/iconic-cases")
     def add_iconic_case(body: IconicCaseIn, user: dict = Depends(auth.require_write)):
-        cstore = ConversationsStore()
-        try:
-            if not cstore.get(body.conversation_id):
-                raise HTTPException(404, "Conversation not found")
-        finally:
-            cstore.close()
+        snapshot = service.build_conversation_snapshot(body.conversation_id)
+        if not snapshot:
+            raise HTTPException(404, "Conversation not found")
         icstore = IconicCasesStore()
         try:
-            icstore.add(body.conversation_id, user["username"], body.comment)
+            icstore.add(body.conversation_id, user["username"], body.comment, snapshot=snapshot)
         finally:
             icstore.close()
         return {"ok": True}
@@ -1054,6 +1075,56 @@ def create_app() -> FastAPI:
         finally:
             cstore.close()
             gstore.close()
+
+    def _token_agent(token: str) -> str:
+        """Resolve a review token to its agent_name, or 404 if invalid/expired."""
+        from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+
+        tstore = AgentTokensStore()
+        try:
+            link = tstore.get(token)
+        finally:
+            tstore.close()
+        if not link:
+            raise HTTPException(404, "This review link is invalid or has expired.")
+        return link["agent_name"]
+
+    @app.get("/api/review/{token}/iconic-cases")
+    def review_portal_iconic_cases(token: str):
+        """Knowledge-base exemplars for the agent this link belongs to (from frozen
+        snapshots, so they remain viewable regardless of conversation deletion)."""
+        agent = _token_agent(token)
+        icstore = IconicCasesStore()
+        try:
+            items = []
+            for case in icstore.list_all():
+                snap = case.pop("snapshot", None)
+                summary = snap.get("summary") if snap else None
+                if not summary or summary.get("agent_name") != agent:
+                    continue
+                items.append({
+                    "conversation_id": case["conversation_id"],
+                    "manager_comment": case["manager_comment"],
+                    "added_at": case["added_at"],
+                    "conversation": summary,
+                })
+        finally:
+            icstore.close()
+        return {"agent_name": agent, "items": items, "total": len(items)}
+
+    @app.get("/api/review/{token}/iconic-cases/{conversation_id}")
+    def review_portal_iconic_detail(token: str, conversation_id: str):
+        agent = _token_agent(token)
+        icstore = IconicCasesStore()
+        try:
+            snap = icstore.get_snapshot(conversation_id)
+        finally:
+            icstore.close()
+        if not snap:
+            raise HTTPException(404, "Exemplar not found")
+        if (snap.get("summary") or {}).get("agent_name") != agent:
+            raise HTTPException(403, "This exemplar is not part of your review.")
+        return {**snap, "iconic": None}
 
     # ── Per-agent score trend ──────────────────────────────────────────────────
     @app.get("/api/agents/trend")

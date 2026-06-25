@@ -185,6 +185,8 @@ export interface IconicCase {
   added_by: string;
   added_at: string;
   manager_comment: string;
+  /** True when the source conversation was deleted — the case shows from its frozen snapshot. */
+  archived?: boolean;
   conversation: {
     id: string;
     agent_name: string;
