@@ -305,32 +305,43 @@ def create_app() -> FastAPI:
     @app.post("/api/conversations/{conversation_id}/override")
     def override_grade(conversation_id: str, body: OverrideRequest,
                        user: dict = Depends(auth.require_write)):
+        from intercom_summary.qa.casino_prompt import MANUAL_DEDUCTION_IDS
         from intercom_summary.qa.schema import score_from_verdicts
 
         if not body.reason.strip():
             raise HTTPException(422, "Reason is required")
         gstore = GradesStore()
         try:
-            if body.criteria is not None:
-                # ScoreBuddy-style: recompute the score authoritatively from the analyst's
-                # criterion verdicts merged over the AI's, and store only the diff.
+            # Recompute path: criterion toggles and/or manual deductions (info correctness etc.).
+            if body.criteria is not None or body.manual_deductions:
                 grade = gstore.get(conversation_id)
                 if not grade:
                     raise HTTPException(404, "No grade found for this conversation — grade it first")
                 ai_verdicts = {r["rule_id"]: r["verdict"] for r in grade.get("rule_results", [])}
                 valid = {"pass", "fail", "n/a"}
-                for cid, v in body.criteria.items():
+                for cid, v in (body.criteria or {}).items():
                     if cid not in ai_verdicts:
                         raise HTTPException(422, f"Unknown criterion '{cid}'")
                     if v not in valid:
                         raise HTTPException(422, f"Invalid verdict '{v}' for '{cid}'")
-                diff = {cid: v for cid, v in body.criteria.items() if ai_verdicts.get(cid) != v}
-                if not diff:
-                    raise HTTPException(422, "No criterion changes to save")
+                diff = {cid: v for cid, v in (body.criteria or {}).items()
+                        if ai_verdicts.get(cid) != v}
+                # Validate manual deductions (analyst-chosen points the AI can't judge).
+                deductions: list[dict] = []
+                for d in (body.manual_deductions or []):
+                    if d.category not in MANUAL_DEDUCTION_IDS:
+                        raise HTTPException(422, f"Unknown deduction category '{d.category}'")
+                    if not (1 <= d.points <= 100):
+                        raise HTTPException(422, "Deduction points must be 1–100")
+                    deductions.append({"category": d.category, "points": d.points, "note": d.note.strip()})
+                if not diff and not deductions:
+                    raise HTTPException(422, "No criterion changes or deductions to save")
                 effective = {**ai_verdicts, **diff}
-                score, _band, _result = score_from_verdicts(effective)
+                extra = sum(d["points"] for d in deductions)
+                score, _band, _result = score_from_verdicts(effective, extra_deduction=extra)
                 ok = gstore.save_override(
-                    conversation_id, score, body.reason, user["username"], human_criteria=diff
+                    conversation_id, score, body.reason, user["username"],
+                    human_criteria=diff, human_deductions=deductions,
                 )
             else:
                 # Manual score override (the slider).
@@ -343,6 +354,12 @@ def create_app() -> FastAPI:
         finally:
             gstore.close()
         return {"ok": True, "human_score": score}
+
+    @app.get("/api/qa/manual-deductions")
+    def manual_deduction_catalog(user: dict = Depends(auth.current_user)):
+        """Catalog of manual-deduction presets (things the AI can't verify)."""
+        from intercom_summary.qa.casino_prompt import MANUAL_DEDUCTION_CATALOG
+        return {"items": MANUAL_DEDUCTION_CATALOG}
 
     @app.get("/api/accuracy")
     def accuracy(user: dict = Depends(auth.current_user)):

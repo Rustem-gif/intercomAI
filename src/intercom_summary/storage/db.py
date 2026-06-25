@@ -148,6 +148,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # JSON map of analyst per-criterion verdict changes ({id: "pass"|"fail"|"n/a"}),
         # used by ScoreBuddy-style re-scoring. NULL = score-only / no criterion override.
         ("human_criteria", "TEXT"),
+        # JSON list of analyst manual deductions for things the AI can't verify
+        # ([{category, points, note}], e.g. information correctness). NULL = none.
+        ("human_deductions", "TEXT"),
     ]:
         if col not in grade_cols:
             conn.execute(f"ALTER TABLE grades ADD COLUMN {col} {definition}")

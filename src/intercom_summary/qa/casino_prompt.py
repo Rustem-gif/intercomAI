@@ -54,6 +54,19 @@ CRITERION_TITLES: dict[str, str] = {
 # grader's "CRITICAL FAIL → score 0" rule.
 CRITICAL_CRITERIA: frozenset[str] = frozenset({"crit-data-care", "crit-rg-care"})
 
+# Manual-only deductions an analyst can apply on top of the AI's criteria scoring for things
+# the local model cannot verify (factual correctness of info given, wrong bonus applied, …).
+# The analyst chooses the points per case. Extensible: add an entry to expose a new preset.
+MANUAL_DEDUCTION_CATALOG: list[dict] = [
+    {
+        "id": "info-correctness",
+        "label": "Information correctness",
+        "description": "Agent gave factually wrong information or applied the wrong bonus / "
+                       "action — the AI cannot verify this against external facts.",
+    },
+]
+MANUAL_DEDUCTION_IDS: frozenset[str] = frozenset(d["id"] for d in MANUAL_DEDUCTION_CATALOG)
+
 # Canonical per-criterion deduction (the "Ded" column of the prompt below). This is the
 # single source of truth for recomputing a score when an analyst flips criteria by hand:
 # score = max(0, 100 − Σ deductions for failed criteria), 0 if any CRITICAL_CRITERIA failed.

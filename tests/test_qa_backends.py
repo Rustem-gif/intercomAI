@@ -75,6 +75,10 @@ def test_score_from_verdicts():
     # A failed critical criterion forces 0/FAIL regardless of the rest
     s, _band, result = score_from_verdicts({"crit-data-care": "fail", "open-greet": "pass"})
     assert (s, result) == (0, "FAIL")
+    # A manual extra deduction (e.g. information correctness) stacks on top, floored at 0.
+    assert score_from_verdicts({"open-greet": "pass"}, extra_deduction=10)[0] == 90
+    assert score_from_verdicts({"res-no-fake-close": "fail"}, extra_deduction=10)[0] == 75
+    assert score_from_verdicts({"open-greet": "pass"}, extra_deduction=150)[0] == 0
 
 
 def test_from_ollama_output_recomputes_score():

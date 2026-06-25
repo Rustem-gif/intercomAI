@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Grade, RuleResult } from "@/lib/api";
+import { useQuery } from "@tanstack/react-query";
+import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset } from "@/lib/api";
 import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
-import { Check, X, Minus, Pencil, RotateCcw, SlidersHorizontal } from "lucide-react";
+import { Check, X, Minus, Pencil, RotateCcw, SlidersHorizontal, Plus } from "lucide-react";
 import { scoreColor, fmtDate } from "@/lib/utils";
 
 type Verdict = "pass" | "fail" | "n/a";
@@ -37,10 +38,20 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"criteria" | "manual">("criteria");
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
+  const [deductions, setDeductions] = useState<ManualDeduction[]>([]);
   const [scoreInput, setScoreInput] = useState(0);
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+
+  // Catalog of manual-deduction presets (things the AI can't verify). Only needed while editing.
+  const { data: dedCatalog } = useQuery({
+    queryKey: ["manual-deductions"],
+    queryFn: () => api.get<{ items: ManualDeductionPreset[] }>("/api/qa/manual-deductions"),
+    enabled: !!canOverride,
+  });
+  const presets = dedCatalog?.items ?? [];
+  const presetLabel = (id: string) => presets.find((p) => p.id === id)?.label ?? id;
 
   if (!grade) {
     return (
@@ -68,6 +79,7 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
     const init: Record<string, Verdict> = {};
     for (const r of grade.rule_results) init[r.rule_id] = liveVerdict(r);
     setVerdicts(init);
+    setDeductions(grade.human_deductions ? grade.human_deductions.map((d) => ({ ...d })) : []);
     setScoreInput(effectiveScore);
     setMode(criteriaAvailable ? "criteria" : "manual");
     setReason("");
@@ -75,8 +87,22 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
     setEditing(true);
   };
 
-  const previewScore = mode === "criteria" ? computeScore(grade.rule_results, verdicts) : scoreInput;
+  const manualTotal = deductions.reduce((s, d) => s + (Number(d.points) || 0), 0);
+  const previewScore =
+    mode === "criteria"
+      ? Math.max(0, computeScore(grade.rule_results, verdicts) - manualTotal)
+      : scoreInput;
   const previewDelta = previewScore - grade.overall_score;
+
+  const addDeduction = () =>
+    setDeductions((prev) => [
+      ...prev,
+      { category: presets[0]?.id ?? "info-correctness", points: 5, note: "" },
+    ]);
+  const updateDeduction = (i: number, patch: Partial<ManualDeduction>) =>
+    setDeductions((prev) => prev.map((d, j) => (j === i ? { ...d, ...patch } : d)));
+  const removeDeduction = (i: number) =>
+    setDeductions((prev) => prev.filter((_, j) => j !== i));
 
   const submit = async () => {
     if (!reason.trim()) { setSaveError("Please explain why you are changing the score."); return; }
@@ -84,9 +110,12 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
     setSaveError("");
     try {
       if (mode === "criteria") {
-        // Send the full verdict map; the server computes the diff and the authoritative score.
+        const cleaned = deductions.filter((d) => Number(d.points) > 0);
+        // Send the full verdict map + manual deductions; the server computes the diff and
+        // the authoritative score (criteria deductions + manual deductions).
         await api.post(`/api/conversations/${conversationId}/override`, {
           criteria: verdicts,
+          manual_deductions: cleaned,
           reason: reason.trim(),
         });
       } else {
@@ -146,6 +175,17 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
               )}
             </div>
             <p className="mt-1 text-muted-foreground italic">"{grade.override_reason}"</p>
+            {grade.human_deductions && grade.human_deductions.length > 0 && (
+              <ul className="mt-1.5 space-y-0.5">
+                {grade.human_deductions.map((d, i) => (
+                  <li key={i} className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                    <span className="font-medium text-destructive">−{d.points}</span>
+                    <span>{presetLabel(d.category)}</span>
+                    {d.note && <span className="italic">· {d.note}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 
@@ -170,9 +210,63 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
             )}
 
             {mode === "criteria" ? (
-              <p className="text-xs text-muted-foreground">
-                Toggle a criterion's verdict — the score recalculates automatically from the ruleset weights.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  Toggle a criterion's verdict below — the score recalculates from the ruleset weights.
+                </p>
+                {/* Manual deductions: things the AI can't verify (e.g. information correctness). */}
+                <div className="rounded-md border border-dashed p-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium">Manual deductions <span className="text-muted-foreground">(AI can't verify)</span></span>
+                    <button
+                      onClick={addDeduction}
+                      className="flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted"
+                    >
+                      <Plus className="h-3 w-3" /> Add
+                    </button>
+                  </div>
+                  {deductions.length === 0 ? (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      e.g. wrong information given, incorrect bonus applied.
+                    </p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {deductions.map((d, i) => (
+                        <div key={i} className="flex flex-wrap items-center gap-1.5">
+                          <select
+                            value={d.category}
+                            onChange={(e) => updateDeduction(i, { category: e.target.value })}
+                            className="rounded border bg-background px-1.5 py-1 text-xs"
+                          >
+                            {presets.map((p) => (
+                              <option key={p.id} value={p.id}>{p.label}</option>
+                            ))}
+                          </select>
+                          <span className="text-xs text-muted-foreground">−</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            value={d.points}
+                            onChange={(e) => updateDeduction(i, { points: Number(e.target.value) })}
+                            className="w-14 rounded border bg-background px-1.5 py-1 text-xs"
+                          />
+                          <input
+                            type="text"
+                            value={d.note}
+                            placeholder="note (optional)"
+                            onChange={(e) => updateDeduction(i, { note: e.target.value })}
+                            className="min-w-0 flex-1 rounded border bg-background px-1.5 py-1 text-xs"
+                          />
+                          <button onClick={() => removeDeduction(i)} className="rounded p-1 text-muted-foreground hover:bg-muted">
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : (
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-xs font-medium">
