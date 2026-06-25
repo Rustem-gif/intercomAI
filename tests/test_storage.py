@@ -100,6 +100,40 @@ def test_evaluation_counts_excludes_ignored(tmp_path):
     gstore.close()
 
 
+def _convo_on(cid, agent, created_iso):
+    c = _convo(cid, agent)
+    c.created_at = datetime.fromisoformat(created_iso)
+    return c
+
+
+def test_agent_scores_period_and_override(tmp_path):
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo_on("a1", "Ada", "2026-06-20T00:00:00+00:00"))
+    cstore.save(_convo_on("a2", "Ada", "2026-01-01T00:00:00+00:00"))
+    cstore.save(_convo_on("b1", "Bob", "2026-06-21T00:00:00+00:00"))
+    gstore = GradesStore(db)
+    for cid, agent, score in [("a1", "Ada", 80), ("a2", "Ada", 60), ("b1", "Bob", 90)]:
+        gstore.save(ConversationGrade(
+            conversation_id=cid, agent_name=agent, overall_score=score, summary="ok",
+            graded_at="2026-06-25T00:00:00+00:00",
+        ))
+    # A human override must win over the AI score in the average.
+    gstore.save_override("a1", 100, "manager call", "boss")
+
+    # All-time: Ada = (100 + 60)/2 = 80 over 2 grades; Bob = 90.
+    all_time = {r["agent"]: r for r in gstore.agent_scores()}
+    assert all_time["Ada"]["avg_score"] == 80.0 and all_time["Ada"]["count"] == 2
+    assert all_time["Bob"]["avg_score"] == 90.0
+
+    # Period (conversations since 2026-06-01): only a1 (Ada, overridden 100) and b1.
+    recent = {r["agent"]: r for r in gstore.agent_scores("2026-06-01T00:00:00+00:00")}
+    assert recent["Ada"]["avg_score"] == 100.0 and recent["Ada"]["count"] == 1
+    assert recent["Bob"]["avg_score"] == 90.0
+    cstore.close()
+    gstore.close()
+
+
 def test_jobs_lifecycle(tmp_path):
     js = JobsStore(tmp_path / "t.db")
     jid = js.create("fetch", {"agents": ["Ada"]})

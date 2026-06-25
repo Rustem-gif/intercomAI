@@ -36,6 +36,24 @@ def _compute_score(criteria: list[dict], critical_fail: bool) -> tuple[int, str,
     return score, band, result
 
 
+def score_from_verdicts(verdicts: dict[str, str]) -> tuple[int, str, str]:
+    """Recompute (score, band, overall_result) from a {criterion_id: verdict} map using the
+    canonical per-criterion deductions. Used for manual ScoreBuddy-style re-scoring: an
+    analyst flips criteria pass↔fail and the score follows the same formula the AI uses.
+
+    A FAIL on any critical criterion forces 0 (matches the grader's CRITICAL FAIL rule).
+    """
+    from intercom_summary.qa.casino_prompt import CRITERION_DEDUCTIONS, CRITICAL_CRITERIA
+
+    critical_fail = any(
+        v == "fail" and cid in CRITICAL_CRITERIA for cid, v in verdicts.items()
+    )
+    criteria = [
+        {"v": v, "ded": CRITERION_DEDUCTIONS.get(cid, 0)} for cid, v in verdicts.items()
+    ]
+    return _compute_score(criteria, critical_fail)
+
+
 def _as_text(value: Any) -> str:
     """Coerce a model-produced field to a string.
 

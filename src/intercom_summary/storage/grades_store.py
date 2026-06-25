@@ -16,6 +16,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _annotate_criteria(rule_results: list | None) -> None:
+    """Tag each recognised rule_result with its canonical `deduction` and `critical` flag so
+    the UI can render ScoreBuddy-style toggles and preview the recomputed score. Unknown
+    criteria (e.g. legacy Claude-backend grades) are left without a deduction, which the UI
+    uses to fall back to the manual slider."""
+    from intercom_summary.qa.casino_prompt import CRITERION_DEDUCTIONS, CRITICAL_CRITERIA
+
+    for r in rule_results or []:
+        cid = r.get("rule_id", "")
+        if cid in CRITERION_DEDUCTIONS or cid in CRITICAL_CRITERIA:
+            r["deduction"] = CRITERION_DEDUCTIONS.get(cid, 0)
+            r["critical"] = cid in CRITICAL_CRITERIA
+
+
 class GradesStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._conn: sqlite3.Connection = connect(db_path or settings.db_path)
@@ -81,7 +95,8 @@ class GradesStore:
 
     def get(self, conversation_id: str) -> dict | None:
         row = self._conn.execute(
-            """SELECT payload_json, human_score, override_reason, overridden_by, overridden_at
+            """SELECT payload_json, human_score, override_reason, overridden_by,
+                      overridden_at, human_criteria
                FROM grades WHERE conversation_id=?""",
             (conversation_id,),
         ).fetchone()
@@ -92,7 +107,30 @@ class GradesStore:
         d["override_reason"] = row["override_reason"]
         d["overridden_by"] = row["overridden_by"]
         d["overridden_at"] = row["overridden_at"]
+        d["human_criteria"] = json.loads(row["human_criteria"]) if row["human_criteria"] else None
+        _annotate_criteria(d.get("rule_results"))
         return d
+
+    def agent_scores(self, since: str | None = None) -> list[dict]:
+        """Average effective QA score (human override if present, else AI) per agent.
+
+        Joins grades with conversations so the period filter reflects when the chat
+        *happened* (`conversations.created_at`), not when it was graded. `since` is an
+        ISO timestamp; None means all-time. Returns rows sorted by avg_score desc.
+        """
+        sql = (
+            "SELECT g.agent_name AS agent, "
+            "       ROUND(AVG(COALESCE(g.human_score, g.overall_score)), 1) AS avg_score, "
+            "       COUNT(*) AS count "
+            "FROM grades g JOIN conversations c ON c.id = g.conversation_id "
+        )
+        args: list[object] = []
+        if since:
+            sql += "WHERE c.created_at >= ? "
+            args.append(since)
+        sql += "GROUP BY g.agent_name ORDER BY avg_score DESC"
+        rows = self._conn.execute(sql, args).fetchall()
+        return [dict(r) for r in rows]
 
     def for_agent(self, agent_name: str) -> list[dict]:
         rows = self._conn.execute(
@@ -122,12 +160,21 @@ class GradesStore:
         human_score: int,
         reason: str,
         overridden_by: str,
+        human_criteria: dict[str, str] | None = None,
     ) -> bool:
+        """Persist a human override. `human_criteria` (a {criterion_id: verdict} diff vs the
+        AI's verdicts) records ScoreBuddy-style per-criterion changes; pass None for a plain
+        score override, which clears any prior criterion changes."""
         cur = self._conn.execute(
             """UPDATE grades
-               SET human_score=?, override_reason=?, overridden_by=?, overridden_at=?
+               SET human_score=?, override_reason=?, overridden_by=?, overridden_at=?,
+                   human_criteria=?
                WHERE conversation_id=?""",
-            (human_score, reason.strip(), overridden_by, _now(), conversation_id),
+            (
+                human_score, reason.strip(), overridden_by, _now(),
+                json.dumps(human_criteria) if human_criteria else None,
+                conversation_id,
+            ),
         )
         self._conn.commit()
         return cur.rowcount > 0

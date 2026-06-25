@@ -66,6 +66,14 @@ export interface Overview {
   worst_conversations: { id: string; agent: string; score: number; summary: string }[];
 }
 
+export type AgentScorePeriod = "week" | "month" | "quarter" | "all";
+
+export interface AgentScores {
+  period: AgentScorePeriod;
+  since: string | null;
+  agents: { agent: string; avg_score: number; count: number }[];
+}
+
 export interface ConversationRow {
   id: string;
   agent_name: string;
@@ -96,6 +104,10 @@ export interface RuleResult {
   verdict: string;
   evidence: string;
   comment: string;
+  /** Canonical points deducted when this criterion fails (present only for known QA criteria). */
+  deduction?: number;
+  /** True for critical criteria — a fail forces the overall score to 0. */
+  critical?: boolean;
 }
 
 export interface Grade {
@@ -111,6 +123,8 @@ export interface Grade {
   override_reason: string | null;
   overridden_by: string | null;
   overridden_at: string | null;
+  /** Analyst per-criterion changes vs the AI ({criterion_id: verdict}); null if none. */
+  human_criteria: Record<string, string> | null;
 }
 
 export interface Sla {

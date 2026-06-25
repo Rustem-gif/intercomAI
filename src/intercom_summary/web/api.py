@@ -303,17 +303,44 @@ def create_app() -> FastAPI:
     @app.post("/api/conversations/{conversation_id}/override")
     def override_grade(conversation_id: str, body: OverrideRequest,
                        user: dict = Depends(auth.require_write)):
-        if not (0 <= body.score <= 100):
-            raise HTTPException(422, "Score must be 0–100")
+        from intercom_summary.qa.schema import score_from_verdicts
+
         if not body.reason.strip():
             raise HTTPException(422, "Reason is required")
         gstore = GradesStore()
         try:
-            if not gstore.save_override(conversation_id, body.score, body.reason, user["username"]):
+            if body.criteria is not None:
+                # ScoreBuddy-style: recompute the score authoritatively from the analyst's
+                # criterion verdicts merged over the AI's, and store only the diff.
+                grade = gstore.get(conversation_id)
+                if not grade:
+                    raise HTTPException(404, "No grade found for this conversation — grade it first")
+                ai_verdicts = {r["rule_id"]: r["verdict"] for r in grade.get("rule_results", [])}
+                valid = {"pass", "fail", "n/a"}
+                for cid, v in body.criteria.items():
+                    if cid not in ai_verdicts:
+                        raise HTTPException(422, f"Unknown criterion '{cid}'")
+                    if v not in valid:
+                        raise HTTPException(422, f"Invalid verdict '{v}' for '{cid}'")
+                diff = {cid: v for cid, v in body.criteria.items() if ai_verdicts.get(cid) != v}
+                if not diff:
+                    raise HTTPException(422, "No criterion changes to save")
+                effective = {**ai_verdicts, **diff}
+                score, _band, _result = score_from_verdicts(effective)
+                ok = gstore.save_override(
+                    conversation_id, score, body.reason, user["username"], human_criteria=diff
+                )
+            else:
+                # Manual score override (the slider).
+                if body.score is None or not (0 <= body.score <= 100):
+                    raise HTTPException(422, "Score must be 0–100")
+                score = body.score
+                ok = gstore.save_override(conversation_id, score, body.reason, user["username"])
+            if not ok:
                 raise HTTPException(404, "No grade found for this conversation — grade it first")
         finally:
             gstore.close()
-        return {"ok": True, "human_score": body.score}
+        return {"ok": True, "human_score": score}
 
     @app.get("/api/accuracy")
     def accuracy(user: dict = Depends(auth.current_user)):
@@ -985,6 +1012,25 @@ def create_app() -> FastAPI:
                 (agent,),
             ).fetchall()
             return {"trend": [dict(r) for r in rows]}
+        finally:
+            gstore.close()
+
+    _PERIOD_DAYS = {"week": 7, "month": 30, "quarter": 90}
+
+    @app.get("/api/agents/scores")
+    def agent_scores(period: str = "all", user: dict = Depends(auth.current_user)):
+        """Average effective QA score per agent over a rolling period (by conversation date).
+        `period` ∈ week | month | quarter | all."""
+        from datetime import datetime, timedelta, timezone
+
+        if period not in _PERIOD_DAYS and period != "all":
+            raise HTTPException(422, "period must be one of: week, month, quarter, all")
+        since = None
+        if period in _PERIOD_DAYS:
+            since = (datetime.now(timezone.utc) - timedelta(days=_PERIOD_DAYS[period])).isoformat()
+        gstore = GradesStore()
+        try:
+            return {"period": period, "since": since, "agents": gstore.agent_scores(since)}
         finally:
             gstore.close()
 

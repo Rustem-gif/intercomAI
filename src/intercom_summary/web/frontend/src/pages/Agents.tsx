@@ -4,7 +4,7 @@ import {
   Bar, BarChart, Cell, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis, CartesianGrid,
 } from "recharts";
-import { api, Overview } from "@/lib/api";
+import { api, AgentScores, AgentScorePeriod } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/primitives";
 import { scoreColor } from "@/lib/utils";
@@ -23,29 +23,48 @@ function lineColor(score: number) {
   return "#ef4444";
 }
 
+const PERIODS: { value: AgentScorePeriod; label: string }[] = [
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" },
+  { value: "quarter", label: "Quarter" },
+  { value: "all", label: "All time" },
+];
+
 export default function Agents() {
+  const [period, setPeriod] = useState<AgentScorePeriod>("month");
   const { data, isLoading } = useQuery({
-    queryKey: ["overview"],
-    queryFn: () => api.get<Overview>("/api/overview"),
+    queryKey: ["agent-scores", period],
+    queryFn: () => api.get<AgentScores>(`/api/agents/scores?period=${period}`),
   });
   const [linkAgent, setLinkAgent] = useState<string | null>(null);
   const [trendAgent, setTrendAgent] = useState<string | null>(null);
 
-  if (isLoading || !data) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <Spinner className="h-6 w-6 text-primary" />
-      </div>
-    );
-  }
-
-  const board = data.agent_leaderboard;
+  const board = data?.agents ?? [];
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Agents</h1>
-        <p className="text-sm text-muted-foreground">Average QA score per support agent.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold">Agents</h1>
+          <p className="text-sm text-muted-foreground">
+            Average QA score per support agent (by conversation date, override-aware).
+          </p>
+        </div>
+        <div className="flex rounded-md border p-0.5">
+          {PERIODS.map((p) => (
+            <button
+              key={p.value}
+              onClick={() => setPeriod(p.value)}
+              className={`rounded px-2.5 py-1 text-xs font-medium ${
+                period === p.value
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <Card>
@@ -53,7 +72,11 @@ export default function Agents() {
           <CardTitle>Average score by agent</CardTitle>
         </CardHeader>
         <CardContent className="h-72">
-          {board.length ? (
+          {isLoading ? (
+            <div className="flex h-full items-center justify-center">
+              <Spinner className="h-6 w-6 text-primary" />
+            </div>
+          ) : board.length ? (
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={board} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <XAxis dataKey="agent" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
@@ -75,7 +98,7 @@ export default function Agents() {
             </ResponsiveContainer>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              No graded conversations yet.
+              No graded conversations in this period.
             </div>
           )}
         </CardContent>
