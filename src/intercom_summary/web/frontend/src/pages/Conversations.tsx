@@ -499,10 +499,13 @@ export default function Conversations() {
                     <Badge className="border-border">{c.state}</Badge>
                   </td>
                   <td className="px-4 py-2.5">{c.message_count}</td>
-                  <td className="px-4 py-2.5"><CsatBadge rating={c.csat_rating} disputeStatus={c.csat_dispute_status} /></td>
+                  <td className="px-4 py-2.5"><CsatBadge rating={c.csat_rating} /></td>
                   <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(c.created_at)}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(c.graded_at)}</td>
                   <td className={`px-4 py-2.5 text-right font-semibold ${scoreColor(c.score)}`}>
+                    {c.grade_dispute_status === "open" && (
+                      <span className="mr-1 text-amber-500" title="Grade disputed">⚖</span>
+                    )}
                     {c.score ?? "—"}
                   </td>
                   {writer && (

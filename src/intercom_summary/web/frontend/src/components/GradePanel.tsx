@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset } from "@/lib/api";
+import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute } from "@/lib/api";
 import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
-import { Check, X, Minus, Pencil, RotateCcw, SlidersHorizontal, Plus } from "lucide-react";
+import { Check, X, Minus, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale } from "lucide-react";
 import { scoreColor, fmtDate } from "@/lib/utils";
 
 type Verdict = "pass" | "fail" | "n/a";
@@ -32,9 +32,18 @@ interface Props {
   conversationId?: string;
   canOverride?: boolean;
   onOverridden?: () => void;
+  /** Current grade dispute on this conversation, if any. */
+  dispute?: GradeDispute | null;
+  /** When set (portal context), enables the agent "Dispute this grade" action posting here. */
+  disputeUrl?: string;
+  readOnly?: boolean;
+  onDisputeChange?: () => void;
 }
 
-export default function GradePanel({ grade, conversationId, canOverride, onOverridden }: Props) {
+export default function GradePanel({
+  grade, conversationId, canOverride, onOverridden,
+  dispute, disputeUrl, readOnly, onDisputeChange,
+}: Props) {
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"criteria" | "manual">("criteria");
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
@@ -43,6 +52,13 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+
+  // Grade-dispute UI state. Agents raise via the portal (disputeUrl); managers
+  // accept (which opens the re-score editor) or reject from the dashboard.
+  const [disputeFormOpen, setDisputeFormOpen] = useState(false);
+  const [disputeReason, setDisputeReason] = useState("");
+  const [disputeBusy, setDisputeBusy] = useState(false);
+  const [resolvingDispute, setResolvingDispute] = useState(false);
 
   // Catalog of manual-deduction presets (things the AI can't verify). Only needed while editing.
   const { data: dedCatalog } = useQuery({
@@ -125,6 +141,16 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
           reason: reason.trim(),
         });
       }
+      // If this re-score is resolving an agent's dispute, mark the dispute accepted now
+      // that the corrected score has been applied.
+      if (resolvingDispute) {
+        await api.post(`/api/conversations/${conversationId}/grade-dispute/resolve`, {
+          status: "accepted",
+          note: reason.trim(),
+        });
+        setResolvingDispute(false);
+        onDisputeChange?.();
+      }
       setEditing(false);
       onOverridden?.();
     } catch (e: any) {
@@ -133,6 +159,46 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
       setSaving(false);
     }
   };
+
+  const submitDispute = async () => {
+    if (!disputeReason.trim()) return;
+    setDisputeBusy(true);
+    try {
+      await api.post(disputeUrl ?? `/api/conversations/${conversationId}/grade-dispute`, {
+        reason: disputeReason.trim(),
+      });
+      setDisputeFormOpen(false);
+      setDisputeReason("");
+      onDisputeChange?.();
+    } finally {
+      setDisputeBusy(false);
+    }
+  };
+
+  const acceptDispute = () => {
+    // Accepting opens the re-score editor; the score change is saved through the
+    // existing override flow, and submit() then marks the dispute accepted.
+    setResolvingDispute(true);
+    openEdit();
+  };
+
+  const rejectDispute = async () => {
+    setDisputeBusy(true);
+    try {
+      await api.post(`/api/conversations/${conversationId}/grade-dispute/resolve`, {
+        status: "rejected",
+      });
+      onDisputeChange?.();
+    } finally {
+      setDisputeBusy(false);
+    }
+  };
+
+  // Agent (portal) may dispute; analyst (dashboard) raises via the editor area too.
+  const canRaiseDispute =
+    !!conversationId && (readOnly ? !!disputeUrl : !!canOverride) &&
+    (!dispute || dispute.status === "rejected");
+  const canResolveDispute = !!canOverride && dispute?.status === "open";
 
   return (
     <div className="space-y-5 p-5">
@@ -185,6 +251,68 @@ export default function GradePanel({ grade, conversationId, canOverride, onOverr
                   </li>
                 ))}
               </ul>
+            )}
+          </div>
+        )}
+
+        {/* Grade dispute */}
+        {!editing && (
+          <div className="space-y-2">
+            {dispute?.status === "open" && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+                <div className="flex items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400">
+                  <Scale className="h-3 w-3" /> Grade disputed by {dispute.created_by}
+                </div>
+                <p className="mt-1 italic text-muted-foreground">"{dispute.reason}"</p>
+                {canResolveDispute && (
+                  <div className="mt-2 flex gap-2">
+                    <Button size="sm" onClick={acceptDispute} disabled={disputeBusy}>
+                      Accept &amp; re-score
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={rejectDispute} disabled={disputeBusy}>
+                      Reject
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            {dispute?.status === "accepted" && (
+              <div className="text-xs text-muted-foreground">
+                Grade dispute accepted{dispute.resolved_by ? ` by ${dispute.resolved_by}` : ""} — score was revised.
+              </div>
+            )}
+            {dispute?.status === "rejected" && (
+              <div className="text-xs text-muted-foreground">
+                Grade dispute rejected{dispute.resolved_by ? ` by ${dispute.resolved_by}` : ""} — score stands.
+              </div>
+            )}
+
+            {canRaiseDispute && !disputeFormOpen && (
+              <button
+                onClick={() => setDisputeFormOpen(true)}
+                className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+              >
+                <Scale className="h-3 w-3" /> Dispute this grade
+              </button>
+            )}
+            {canRaiseDispute && disputeFormOpen && (
+              <div className="space-y-1.5">
+                <textarea
+                  rows={2}
+                  value={disputeReason}
+                  onChange={(e) => setDisputeReason(e.target.value)}
+                  placeholder="Why do you disagree with this grade?"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+                />
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={submitDispute} disabled={!disputeReason.trim() || disputeBusy}>
+                    {disputeBusy ? "Submitting…" : "Submit dispute"}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setDisputeFormOpen(false)} disabled={disputeBusy}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
             )}
           </div>
         )}

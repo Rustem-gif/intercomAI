@@ -34,10 +34,10 @@ from intercom_summary.web.schemas import (
     CoachingSessionCreate,
     CoachingSessionUpdate,
     CommentIn,
-    CsatDisputeCreate,
-    CsatDisputeResolve,
     DeleteConversationsRequest,
     FetchRequest,
+    GradeDisputeCreate,
+    GradeDisputeResolve,
     IconicCaseCommentUpdate,
     IconicCaseIn,
     JobOut,
@@ -225,10 +225,10 @@ def create_app() -> FastAPI:
             convo_dict = convo.to_dict()
             convo_dict["custom_tags"] = row["custom_tags"] if row else ""
             iconic = icstore.get(conversation_id)
-            from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
-            dstore = CsatDisputesStore()
+            from intercom_summary.storage.grade_disputes_store import GradeDisputesStore
+            dstore = GradeDisputesStore()
             try:
-                csat_dispute = dstore.get(conversation_id)
+                grade_dispute = dstore.get(conversation_id)
             finally:
                 dstore.close()
             return {
@@ -239,7 +239,7 @@ def create_app() -> FastAPI:
                     settings.sla_first_response_sec, settings.sla_followup_sec
                 ),
                 "iconic": iconic,
-                "csat_dispute": csat_dispute,
+                "grade_dispute": grade_dispute,
             }
         finally:
             cstore.close()
@@ -366,49 +366,60 @@ def create_app() -> FastAPI:
             gstore.close()
         return {"ok": True, "human_score": score}
 
-    @app.post("/api/conversations/{conversation_id}/csat-dispute")
-    def raise_csat_dispute(conversation_id: str, body: CsatDisputeCreate,
-                           user: dict = Depends(auth.require_write)):
-        """Analyst/admin raises a CSAT dispute on an agent's behalf from the dashboard."""
-        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+    def _open_grade_dispute(conversation_id: str, created_via: str, created_by: str,
+                            reason: str) -> None:
+        """Shared validation + creation for a grade dispute. Raises HTTPException on
+        problems; the conversation must exist and be graded."""
+        from intercom_summary.storage.grade_disputes_store import GradeDisputesStore
 
-        if not body.reason.strip():
+        if not reason.strip():
             raise HTTPException(422, "Reason is required")
         cstore = ConversationsStore()
         try:
             row = cstore._conn.execute(
-                "SELECT agent_name, csat_rating FROM conversations WHERE id=?", (conversation_id,)
+                "SELECT agent_name FROM conversations WHERE id=?", (conversation_id,)
             ).fetchone()
         finally:
             cstore.close()
         if not row:
             raise HTTPException(404, "Conversation not found")
-        if row["csat_rating"] is None:
-            raise HTTPException(422, "This conversation has no CSAT rating to dispute")
-        dstore = CsatDisputesStore()
+        gstore = GradesStore()
+        try:
+            graded = gstore.get(conversation_id) is not None
+        finally:
+            gstore.close()
+        if not graded:
+            raise HTTPException(422, "This conversation has no QA grade to dispute")
+        dstore = GradeDisputesStore()
         try:
             ok = dstore.create(
-                conversation_id, row["agent_name"], body.reason,
-                created_via="dashboard", created_by=user["username"],
+                conversation_id, row["agent_name"], reason,
+                created_via=created_via, created_by=created_by,
             )
         finally:
             dstore.close()
         if not ok:
             raise HTTPException(409, "A dispute is already open or accepted for this conversation")
+
+    @app.post("/api/conversations/{conversation_id}/grade-dispute")
+    def raise_grade_dispute(conversation_id: str, body: GradeDisputeCreate,
+                            user: dict = Depends(auth.require_write)):
+        """Analyst/admin raises a grade dispute on an agent's behalf from the dashboard."""
+        _open_grade_dispute(conversation_id, "dashboard", user["username"], body.reason)
         return {"ok": True}
 
-    @app.post("/api/conversations/{conversation_id}/csat-dispute/resolve")
-    def resolve_csat_dispute(conversation_id: str, body: CsatDisputeResolve,
-                             user: dict = Depends(auth.require_write)):
-        """Manager accepts (rating excluded from stats) or rejects (rating stands) a dispute."""
-        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+    @app.post("/api/conversations/{conversation_id}/grade-dispute/resolve")
+    def resolve_grade_dispute(conversation_id: str, body: GradeDisputeResolve,
+                              user: dict = Depends(auth.require_write)):
+        """Manager accepts or rejects a grade dispute. On accept, the corrected score is
+        applied separately via the grade-override endpoint."""
+        from intercom_summary.storage.grade_disputes_store import GradeDisputesStore
 
         if body.status not in ("accepted", "rejected"):
             raise HTTPException(422, "status must be 'accepted' or 'rejected'")
-        dstore = CsatDisputesStore()
+        dstore = GradeDisputesStore()
         try:
-            existing = dstore.get(conversation_id)
-            if not existing:
+            if not dstore.get(conversation_id):
                 raise HTTPException(404, "No dispute found for this conversation")
             ok = dstore.resolve(conversation_id, body.status, body.note, user["username"])
         finally:
@@ -417,13 +428,13 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "No dispute found for this conversation")
         return {"ok": True, "status": body.status}
 
-    @app.get("/api/csat-disputes")
-    def list_csat_disputes(status: str | None = "open",
-                           user: dict = Depends(auth.current_user)):
-        """Manager queue of CSAT disputes (defaults to the open ones)."""
-        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+    @app.get("/api/grade-disputes")
+    def list_grade_disputes(status: str | None = "open",
+                            user: dict = Depends(auth.current_user)):
+        """Manager queue of grade disputes (defaults to the open ones)."""
+        from intercom_summary.storage.grade_disputes_store import GradeDisputesStore
 
-        dstore = CsatDisputesStore()
+        dstore = GradeDisputesStore()
         try:
             return {"items": dstore.list(status=status)}
         finally:
@@ -1110,18 +1121,14 @@ def create_app() -> FastAPI:
             astore.close()
         return {"acknowledged": acknowledged}
 
-    @app.post("/api/review/{token}/conversations/{conversation_id}/csat-dispute")
-    def portal_csat_dispute(token: str, conversation_id: str, body: CsatDisputeCreate):
-        """Support agent disputes a CSAT rating they disagree with, via their review link."""
-        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
-
+    @app.post("/api/review/{token}/conversations/{conversation_id}/grade-dispute")
+    def portal_grade_dispute(token: str, conversation_id: str, body: GradeDisputeCreate):
+        """Support agent disputes the QA grade on one of their chats, via their review link."""
         agent_name = _token_agent(token)  # 404s on invalid/expired token
-        if not body.reason.strip():
-            raise HTTPException(422, "Reason is required")
         cstore = ConversationsStore()
         try:
             row = cstore._conn.execute(
-                "SELECT agent_name, csat_rating FROM conversations WHERE id=?", (conversation_id,)
+                "SELECT agent_name FROM conversations WHERE id=?", (conversation_id,)
             ).fetchone()
         finally:
             cstore.close()
@@ -1129,18 +1136,7 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "Conversation not found")
         if row["agent_name"] != agent_name:
             raise HTTPException(403, "This conversation is not part of your review.")
-        if row["csat_rating"] is None:
-            raise HTTPException(422, "This conversation has no CSAT rating to dispute")
-        dstore = CsatDisputesStore()
-        try:
-            ok = dstore.create(
-                conversation_id, agent_name, body.reason,
-                created_via="portal", created_by=agent_name,
-            )
-        finally:
-            dstore.close()
-        if not ok:
-            raise HTTPException(409, "A dispute is already open or accepted for this conversation")
+        _open_grade_dispute(conversation_id, "portal", agent_name, body.reason)
         return {"ok": True}
 
     @app.get("/api/review/{token}/acknowledgments")
@@ -1187,10 +1183,10 @@ def create_app() -> FastAPI:
                 raise HTTPException(403, "This conversation is not part of your review.")
             convo_dict = convo.to_dict()
             convo_dict["custom_tags"] = db_row["custom_tags"] if db_row else ""
-            from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
-            dstore = CsatDisputesStore()
+            from intercom_summary.storage.grade_disputes_store import GradeDisputesStore
+            dstore = GradeDisputesStore()
             try:
-                csat_dispute = dstore.get(conversation_id)
+                grade_dispute = dstore.get(conversation_id)
             finally:
                 dstore.close()
             return {
@@ -1201,7 +1197,7 @@ def create_app() -> FastAPI:
                     settings.sla_first_response_sec, settings.sla_followup_sec
                 ),
                 "iconic": None,
-                "csat_dispute": csat_dispute,
+                "grade_dispute": grade_dispute,
             }
         finally:
             cstore.close()

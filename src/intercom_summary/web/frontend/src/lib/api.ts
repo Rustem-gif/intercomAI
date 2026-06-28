@@ -91,7 +91,7 @@ export interface ConversationRow {
   created_at: string;
   message_count: number;
   csat_rating: number | null;
-  csat_dispute_status: string | null;
+  grade_dispute_status: string | null;
   tags: string;
   custom_tags: string;
   score: number | null;
@@ -176,7 +176,7 @@ export interface Comment {
   created_at: string;
 }
 
-export interface CsatDispute {
+export interface GradeDispute {
   conversation_id: string;
   agent_name: string;
   reason: string;
@@ -187,9 +187,9 @@ export interface CsatDispute {
   resolution_note?: string | null;
   resolved_by?: string | null;
   resolved_at?: string | null;
-  // Present only on the manager-queue listing (joined from the conversation).
+  // Present only on the manager-queue listing (joined from the conversation/grade).
   subject?: string | null;
-  csat_rating?: number | null;
+  score?: number | null;
 }
 
 export interface ConversationDetail {
@@ -198,7 +198,7 @@ export interface ConversationDetail {
   grade: Grade | null;
   sla?: Sla;
   iconic: { conversation_id: string; added_by: string; added_at: string; manager_comment: string } | null;
-  csat_dispute?: CsatDispute | null;
+  grade_dispute?: GradeDispute | null;
 }
 
 export interface Job {

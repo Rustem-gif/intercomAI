@@ -91,11 +91,11 @@ class OverrideRequest(BaseModel):
     manual_deductions: list[ManualDeduction] | None = None
 
 
-class CsatDisputeCreate(BaseModel):
+class GradeDisputeCreate(BaseModel):
     reason: str
 
 
-class CsatDisputeResolve(BaseModel):
+class GradeDisputeResolve(BaseModel):
     status: str          # "accepted" | "rejected"
     note: str = ""
 

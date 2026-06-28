@@ -182,11 +182,7 @@ class ConversationsStore:
             where.append("g.overall_score >= ?")
             args.append(min_score)
         if max_csat is not None:
-            # Accepted disputes void the rating, so they drop out of the low-CSAT view.
-            where.append(
-                "c.csat_rating IS NOT NULL AND c.csat_rating <= ? "
-                "AND (d.status IS NULL OR d.status != 'accepted')"
-            )
+            where.append("c.csat_rating IS NOT NULL AND c.csat_rating <= ?")
             args.append(max_csat)
         if ungraded:
             where.append("g.conversation_id IS NULL")
@@ -217,7 +213,7 @@ class ConversationsStore:
         base = (
             "FROM conversations c "
             "LEFT JOIN grades g ON g.conversation_id = c.id "
-            "LEFT JOIN csat_disputes d ON d.conversation_id = c.id "
+            "LEFT JOIN grade_disputes d ON d.conversation_id = c.id "
             f"{clause}"
         )
         total = self._conn.execute(f"SELECT COUNT(*) AS n {base}", args).fetchone()["n"]
@@ -225,7 +221,7 @@ class ConversationsStore:
             f"""SELECT c.id, c.agent_name, c.customer_name, c.customer_email, c.state,
                        c.subject, c.created_at, c.message_count, c.csat_rating, c.tags,
                        c.custom_tags,
-                       d.status AS csat_dispute_status,
+                       d.status AS grade_dispute_status,
                        COALESCE(g.human_score, g.overall_score) AS score,
                        g.overall_score AS ai_score,
                        g.human_score,
@@ -251,21 +247,19 @@ class ConversationsStore:
         rated), and `low_csat_count` (ratings <= settings.csat_low_max). `since` is an ISO
         timestamp filtering on `created_at`; None means all-time.
         """
-        # Accepted disputes void a rating, so anti-join them out of the aggregate.
         sql = (
-            "SELECT c.agent_name AS agent, "
-            "       ROUND(AVG(c.csat_rating), 2) AS avg_csat, "
+            "SELECT agent_name AS agent, "
+            "       ROUND(AVG(csat_rating), 2) AS avg_csat, "
             "       COUNT(*) AS csat_count, "
-            "       SUM(CASE WHEN c.csat_rating <= ? THEN 1 ELSE 0 END) AS low_csat_count "
-            "FROM conversations c "
-            "LEFT JOIN csat_disputes d ON d.conversation_id = c.id AND d.status = 'accepted' "
-            "WHERE c.csat_rating IS NOT NULL AND c.agent_name <> '' AND d.conversation_id IS NULL "
+            "       SUM(CASE WHEN csat_rating <= ? THEN 1 ELSE 0 END) AS low_csat_count "
+            "FROM conversations "
+            "WHERE csat_rating IS NOT NULL AND agent_name <> '' "
         )
         args: list[object] = [settings.csat_low_max]
         if since:
-            sql += "AND c.created_at >= ? "
+            sql += "AND created_at >= ? "
             args.append(since)
-        sql += "GROUP BY c.agent_name ORDER BY avg_csat ASC"
+        sql += "GROUP BY agent_name ORDER BY avg_csat ASC"
         rows = self._conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 

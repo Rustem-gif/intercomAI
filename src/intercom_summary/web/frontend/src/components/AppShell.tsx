@@ -26,7 +26,7 @@ const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/conversations", label: "Conversations", icon: MessagesSquare },
   { to: "/needs-attention", label: "Needs Attention", icon: AlertTriangle },
-  { to: "/disputes", label: "CSAT Disputes", icon: Scale },
+  { to: "/disputes", label: "Grade Disputes", icon: Scale },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/evaluation", label: "Evaluation", icon: ClipboardCheck },
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
