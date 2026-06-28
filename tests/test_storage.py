@@ -134,6 +134,97 @@ def test_agent_scores_period_and_override(tmp_path):
     gstore.close()
 
 
+def _convo_csat(cid, agent, rating):
+    c = _convo(cid, agent)
+    c.csat_rating = rating
+    return c
+
+
+def test_query_max_csat_filter(tmp_path):
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo_csat("low", "Ada", 1))
+    cstore.save(_convo_csat("mid", "Ada", 3))
+    cstore.save(_convo_csat("high", "Bob", 5))
+    cstore.save(_convo_csat("none", "Bob", None))
+
+    rows, total = cstore.query(max_csat=1)
+    assert total == 1
+    assert [r["id"] for r in rows] == ["low"]
+
+    # Unrated conversations never match a csat ceiling.
+    rows, total = cstore.query(max_csat=5)
+    assert total == 3
+    assert "none" not in {r["id"] for r in rows}
+    cstore.close()
+
+
+def test_agent_csat_summary(tmp_path):
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo_csat("a1", "Ada", 1))   # low
+    cstore.save(_convo_csat("a2", "Ada", 5))
+    cstore.save(_convo_csat("a3", "Ada", None))  # ignored (no rating)
+    cstore.save(_convo_csat("b1", "Bob", 4))
+
+    by_agent = {r["agent"]: r for r in cstore.agent_csat()}
+    assert by_agent["Ada"]["csat_count"] == 2          # a3 excluded
+    assert by_agent["Ada"]["avg_csat"] == 3.0          # (1 + 5) / 2
+    assert by_agent["Ada"]["low_csat_count"] == 1      # only a1 (<= csat_low_max=1)
+    assert by_agent["Bob"]["csat_count"] == 1
+    assert by_agent["Bob"]["low_csat_count"] == 0
+    cstore.close()
+
+
+def test_csat_dispute_excludes_accepted_from_stats(tmp_path):
+    from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo_csat("a1", "Ada", 1))   # will be accepted → excluded
+    cstore.save(_convo_csat("a2", "Ada", 1))   # open dispute → still counts
+    cstore.save(_convo_csat("a3", "Ada", 5))
+
+    dstore = CsatDisputesStore(db)
+    assert dstore.create("a1", "Ada", "wrong agent", "portal", "Ada") is True
+    assert dstore.create("a2", "Ada", "product issue", "dashboard", "boss") is True
+    # A second open dispute on the same conversation is rejected.
+    assert dstore.create("a1", "Ada", "again", "portal", "Ada") is False
+    assert dstore.resolve("a1", "accepted", "agreed", "boss") is True
+
+    by_agent = {r["agent"]: r for r in cstore.agent_csat()}
+    # a1 (accepted) excluded → counts a2 + a3 only.
+    assert by_agent["Ada"]["csat_count"] == 2
+    assert by_agent["Ada"]["avg_csat"] == 3.0          # (1 + 5) / 2
+    assert by_agent["Ada"]["low_csat_count"] == 1      # only a2 (open) is still a low rating
+
+    # Needs-Attention (max_csat) also drops the accepted one but keeps the open one.
+    rows, total = cstore.query(max_csat=1)
+    ids = {r["id"] for r in rows}
+    assert ids == {"a2"} and total == 1
+    # The surviving low row carries its dispute status for the badge.
+    assert rows[0]["csat_dispute_status"] == "open"
+    cstore.close()
+    dstore.close()
+
+
+def test_csat_dispute_rejected_still_counts(tmp_path):
+    from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo_csat("r1", "Bob", 1))
+    dstore = CsatDisputesStore(db)
+    dstore.create("r1", "Bob", "nope", "portal", "Bob")
+    dstore.resolve("r1", "rejected", "rating stands", "boss")
+
+    by_agent = {r["agent"]: r for r in cstore.agent_csat()}
+    assert by_agent["Bob"]["csat_count"] == 1
+    assert by_agent["Bob"]["low_csat_count"] == 1
+    rows, total = cstore.query(max_csat=1)
+    assert total == 1 and rows[0]["id"] == "r1"
+    cstore.close()
+    dstore.close()
+
+
 def test_trash_round_trip_preserves_override(tmp_path):
     from intercom_summary.storage.trash_store import TrashStore
     db = tmp_path / "t.db"

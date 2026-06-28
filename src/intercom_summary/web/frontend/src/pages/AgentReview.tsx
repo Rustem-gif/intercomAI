@@ -62,6 +62,7 @@ export default function AgentReview() {
           onClose={() => setOpenId(null)}
           readOnly
           detailUrl={`/api/review/${token}/conversations/${openId}`}
+          disputeUrl={`/api/review/${token}/conversations/${openId}/csat-dispute`}
         />
       )}
 

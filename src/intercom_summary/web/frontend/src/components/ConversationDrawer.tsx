@@ -7,7 +7,7 @@ import GradePanel from "./GradePanel";
 import AiChatPanel from "./AiChatPanel";
 import TagEditor from "./TagEditor";
 import { X, Bot, ClipboardList, BookOpen, BookMarked, GraduationCap, Check, MessageSquare, Trash2, Send } from "lucide-react";
-import { fmtDate, fmtTime, fmtGap, gapSeconds } from "@/lib/utils";
+import { fmtDate, fmtTime, fmtGap, gapSeconds, isLowCsat } from "@/lib/utils";
 
 type RightPanel = "grade" | "chat";
 
@@ -17,9 +17,11 @@ interface DrawerProps {
   readOnly?: boolean;
   /** Override the detail fetch URL. Defaults to /api/conversations/:id */
   detailUrl?: string;
+  /** When set (portal context), enables the agent "Dispute this rating" action posting here. */
+  disputeUrl?: string;
 }
 
-export default function ConversationDrawer({ id, onClose, readOnly = false, detailUrl }: DrawerProps) {
+export default function ConversationDrawer({ id, onClose, readOnly = false, detailUrl, disputeUrl }: DrawerProps) {
   const { user } = useAuth();
   const qc = useQueryClient();
   const writer = !readOnly && canWrite(user?.role);
@@ -65,6 +67,110 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
     queryKey: ["conversation", fetchUrl],
     queryFn: () => api.get<ConversationDetail>(fetchUrl),
   });
+
+  // CSAT dispute state. Agents raise via the portal (disputeUrl); analysts raise /
+  // resolve from the dashboard.
+  const [disputeOpen, setDisputeOpen] = useState(false);
+  const [disputeReason, setDisputeReason] = useState("");
+  const afterDisputeChange = () => {
+    qc.invalidateQueries({ queryKey: ["conversation", fetchUrl] });
+    qc.invalidateQueries({ queryKey: ["conversations"] });
+    qc.invalidateQueries({ queryKey: ["agent-scores"] });
+    qc.invalidateQueries({ queryKey: ["needs-attention"] });
+    qc.invalidateQueries({ queryKey: ["csat-disputes"] });
+  };
+  const raiseDisputeMutation = useMutation({
+    mutationFn: (reason: string) =>
+      api.post(disputeUrl ?? `/api/conversations/${id}/csat-dispute`, { reason }),
+    onSuccess: () => {
+      setDisputeOpen(false);
+      setDisputeReason("");
+      afterDisputeChange();
+    },
+  });
+  const resolveDisputeMutation = useMutation({
+    mutationFn: (status: "accepted" | "rejected") =>
+      api.post(`/api/conversations/${id}/csat-dispute/resolve`, { status }),
+    onSuccess: afterDisputeChange,
+  });
+
+  function renderCsatDispute() {
+    if (!data) return null;
+    const dispute = data.csat_dispute;
+    const canReDispute = !dispute || dispute.status === "rejected";
+    // Agent (portal) may dispute; analyst (dashboard) may raise and resolve.
+    const canRaise = (readOnly ? !!disputeUrl : writer) && canReDispute;
+    const canResolve = writer && dispute?.status === "open";
+
+    return (
+      <div className="mt-1 space-y-1">
+        {dispute?.status === "open" && (
+          <div className="text-amber-600 dark:text-amber-500">
+            ⚖ CSAT dispute pending — “{dispute.reason}”
+          </div>
+        )}
+        {dispute?.status === "accepted" && (
+          <div className="text-muted-foreground">CSAT dispute accepted — rating excluded from stats.</div>
+        )}
+        {dispute?.status === "rejected" && (
+          <div className="text-muted-foreground">CSAT dispute rejected — rating stands.</div>
+        )}
+
+        {canResolve && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={resolveDisputeMutation.isPending}
+              onClick={() => resolveDisputeMutation.mutate("accepted")}
+            >
+              Accept (exclude)
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={resolveDisputeMutation.isPending}
+              onClick={() => resolveDisputeMutation.mutate("rejected")}
+            >
+              Reject
+            </Button>
+          </div>
+        )}
+
+        {canRaise && !disputeOpen && (
+          <button
+            className="text-xs font-medium text-primary hover:underline"
+            onClick={() => setDisputeOpen(true)}
+          >
+            Dispute this rating
+          </button>
+        )}
+        {canRaise && disputeOpen && (
+          <div className="space-y-1">
+            <textarea
+              className="w-full rounded-md border bg-transparent p-2 text-xs"
+              rows={2}
+              placeholder="Why is this rating unfair?"
+              value={disputeReason}
+              onChange={(e) => setDisputeReason(e.target.value)}
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                disabled={!disputeReason.trim() || raiseDisputeMutation.isPending}
+                onClick={() => raiseDisputeMutation.mutate(disputeReason)}
+              >
+                Submit dispute
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setDisputeOpen(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40">
@@ -185,6 +291,15 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                     <span>
                       Time to close: <span className="font-semibold text-foreground">{data.sla.time_to_close_human}</span>
                     </span>
+                  </div>
+                )}
+                {data.conversation.csat_rating != null && (
+                  <div className="mt-1 text-xs">
+                    <span className={isLowCsat(data.conversation.csat_rating) ? "font-semibold text-destructive" : ""}>
+                      CSAT: {data.conversation.csat_rating}/5
+                      {data.conversation.csat_remark ? ` — "${data.conversation.csat_remark}"` : ""}
+                    </span>
+                    {renderCsatDispute()}
                   </div>
                 )}
                 {/* Intercom tags (read-only) */}

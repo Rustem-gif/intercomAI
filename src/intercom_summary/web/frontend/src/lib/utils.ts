@@ -12,6 +12,14 @@ export function scoreColor(score: number | null | undefined): string {
   return "text-destructive";
 }
 
+// An Intercom CSAT rating (1-5) <= this value counts as "low" and is surfaced in
+// Needs Attention. Keep in sync with settings.csat_low_max on the backend.
+export const CSAT_LOW_MAX = 1;
+
+export function isLowCsat(rating: number | null | undefined): boolean {
+  return rating != null && rating <= CSAT_LOW_MAX;
+}
+
 export function fmtDate(iso?: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString(undefined, {
