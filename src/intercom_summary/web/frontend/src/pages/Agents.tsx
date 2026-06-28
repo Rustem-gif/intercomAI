@@ -115,6 +115,8 @@ export default function Agents() {
                 <th className="py-2 font-medium">Agent</th>
                 <th className="py-2 font-medium">Graded</th>
                 <th className="py-2 text-right font-medium">Avg score</th>
+                <th className="py-2 text-right font-medium">Avg CSAT</th>
+                <th className="py-2 text-right font-medium">Low CSAT</th>
                 <th className="py-2 text-right font-medium">Trend</th>
                 <th className="py-2 text-right font-medium">Review link</th>
               </tr>
@@ -126,6 +128,12 @@ export default function Agents() {
                     <td className="py-2 font-medium">{a.agent}</td>
                     <td className="py-2 text-muted-foreground">{a.count}</td>
                     <td className={`py-2 text-right font-semibold ${scoreColor(a.avg_score)}`}>{a.avg_score}</td>
+                    <td className="py-2 text-right tabular-nums text-muted-foreground">
+                      {a.avg_csat != null ? `${a.avg_csat}/5` : "—"}
+                    </td>
+                    <td className={`py-2 text-right tabular-nums font-semibold ${a.low_csat_count > 0 ? "text-destructive" : "text-muted-foreground"}`}>
+                      {a.low_csat_count}
+                    </td>
                     <td className="py-2 text-right">
                       <Button
                         variant="ghost"
@@ -153,7 +161,7 @@ export default function Agents() {
                   </tr>
                   {trendAgent === a.agent && (
                     <tr key={`${a.agent}-trend`} className="border-t bg-muted/30">
-                      <td colSpan={5} className="px-2 py-3">
+                      <td colSpan={7} className="px-2 py-3">
                         <AgentTrendChart agent={a.agent} avgScore={a.avg_score} />
                       </td>
                     </tr>

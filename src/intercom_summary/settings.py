@@ -62,6 +62,11 @@ class Settings:
     sla_first_response_sec: int = field(default_factory=lambda: int(_env("SLA_FIRST_RESPONSE_SEC", "120") or "120"))
     sla_followup_sec: int = field(default_factory=lambda: int(_env("SLA_FOLLOWUP_SEC", "300") or "300"))
 
+    # A conversation whose Intercom CSAT rating (1-5) is <= this value is treated as
+    # "low CSAT" and surfaced in the Needs Attention view. Keep in sync with the
+    # frontend CSAT_LOW_MAX constant in web/frontend/src/lib/utils.ts.
+    csat_low_max: int = field(default_factory=lambda: int(_env("CSAT_LOW_MAX", "1") or "1"))
+
     # Slack
     slack_bot_token: str = field(default_factory=lambda: _env("SLACK_BOT_TOKEN"))
     slack_app_token: str = field(default_factory=lambda: _env("SLACK_APP_TOKEN"))

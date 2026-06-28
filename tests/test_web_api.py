@@ -411,6 +411,74 @@ def test_review_portal_exposes_agent_kb(client):
     assert client.get("/api/review/tok-bob/iconic-cases/42").status_code == 403
 
 
+def _seed_rated_convo(cid="77", agent="Ada", rating=1):
+    cstore = ConversationsStore(settings.db_path)
+    cstore.save(Conversation(
+        id=cid, created_at=datetime(2026, 5, 1, tzinfo=timezone.utc), updated_at=None,
+        state="closed", subject="Rated chat",
+        assignee=Admin(id="1", name=agent, email="a@co.com"),
+        contact=Contact(name="Cara"),
+        messages=[Message(0, "admin", agent, None, "Hi")],
+        csat_rating=rating,
+    ))
+    cstore.close()
+
+
+def test_portal_csat_dispute_and_resolution(client):
+    _seed_rated_convo("77", "Ada", 1)
+    from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+    ts = AgentTokensStore(settings.db_path)
+    ts.create("tok-ada", agent_name="Ada", label="Ada", created_by="boss")
+    ts.create("tok-bob", agent_name="Bob", label="Bob", created_by="boss")
+    ts.close()
+
+    # Another agent's token cannot dispute Ada's conversation.
+    assert client.post(
+        "/api/review/tok-bob/conversations/77/csat-dispute", json={"reason": "x"}
+    ).status_code == 403
+
+    # Ada disputes via her portal link (no login).
+    r = client.post(
+        "/api/review/tok-ada/conversations/77/csat-dispute", json={"reason": "wrong agent"}
+    )
+    assert r.status_code == 200
+    # A second open dispute is rejected.
+    assert client.post(
+        "/api/review/tok-ada/conversations/77/csat-dispute", json={"reason": "again"}
+    ).status_code == 409
+
+    # The dispute shows up in the manager queue and on the detail payload.
+    _login(client)
+    queue = client.get("/api/csat-disputes?status=open").json()["items"]
+    assert any(d["conversation_id"] == "77" for d in queue)
+    detail = client.get("/api/conversations/77").json()
+    assert detail["csat_dispute"]["status"] == "open"
+
+    # Accepting it excludes the rating from the agent's CSAT stats.
+    assert client.post(
+        "/api/conversations/77/csat-dispute/resolve", json={"status": "accepted"}
+    ).status_code == 200
+    scores = client.get("/api/agents/scores?period=all").json()["agents"]
+    ada = next((a for a in scores if a["agent"] == "Ada"), None)
+    assert ada is None or ada["csat_count"] == 0  # no remaining rated convos for Ada
+
+
+def test_csat_dispute_resolve_is_write_gated(client):
+    _seed_rated_convo("78", "Ada", 1)
+    from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+    ds = CsatDisputesStore(settings.db_path)
+    ds.create("78", "Ada", "reason", "dashboard", "boss")
+    ds.close()
+
+    _login(client, "looker", "pw")  # viewer
+    assert client.post(
+        "/api/conversations/78/csat-dispute/resolve", json={"status": "accepted"}
+    ).status_code == 403
+    assert client.post(
+        "/api/conversations/78/csat-dispute", json={"reason": "y"}
+    ).status_code == 403
+
+
 def test_admin_fetch_enqueues_job(client, monkeypatch):
     _login(client)
 

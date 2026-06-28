@@ -71,7 +71,14 @@ export type AgentScorePeriod = "week" | "month" | "quarter" | "all";
 export interface AgentScores {
   period: AgentScorePeriod;
   since: string | null;
-  agents: { agent: string; avg_score: number; count: number }[];
+  agents: {
+    agent: string;
+    avg_score: number;
+    count: number;
+    avg_csat: number | null;
+    csat_count: number;
+    low_csat_count: number;
+  }[];
 }
 
 export interface ConversationRow {
@@ -84,6 +91,7 @@ export interface ConversationRow {
   created_at: string;
   message_count: number;
   csat_rating: number | null;
+  csat_dispute_status: string | null;
   tags: string;
   custom_tags: string;
   score: number | null;
@@ -168,12 +176,29 @@ export interface Comment {
   created_at: string;
 }
 
+export interface CsatDispute {
+  conversation_id: string;
+  agent_name: string;
+  reason: string;
+  created_via: string;          // "portal" | "dashboard"
+  created_by: string;
+  created_at: string;
+  status: string;               // "open" | "accepted" | "rejected"
+  resolution_note?: string | null;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
+  // Present only on the manager-queue listing (joined from the conversation).
+  subject?: string | null;
+  csat_rating?: number | null;
+}
+
 export interface ConversationDetail {
   conversation: any;
   transcript: string;
   grade: Grade | null;
   sla?: Sla;
   iconic: { conversation_id: string; added_by: string; added_at: string; manager_comment: string } | null;
+  csat_dispute?: CsatDispute | null;
 }
 
 export interface Job {

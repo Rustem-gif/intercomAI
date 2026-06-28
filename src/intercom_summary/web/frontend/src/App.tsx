@@ -10,6 +10,7 @@ import Accuracy from "./pages/Accuracy";
 import Ruleset from "./pages/Ruleset";
 import Evaluation from "./pages/Evaluation";
 import NeedsAttention from "./pages/NeedsAttention";
+import Disputes from "./pages/Disputes";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import Coaching from "./pages/Coaching";
 import AgentReview from "./pages/AgentReview";
@@ -37,6 +38,7 @@ function AuthenticatedApp() {
         <Route path="/ruleset" element={<Ruleset />} />
         <Route path="/evaluation" element={<Evaluation />} />
         <Route path="/needs-attention" element={<NeedsAttention />} />
+        <Route path="/disputes" element={<Disputes />} />
         <Route path="/knowledge-base" element={<KnowledgeBase />} />
         <Route path="/coaching" element={<Coaching />} />
         <Route path="*" element={<Navigate to="/" replace />} />

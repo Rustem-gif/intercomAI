@@ -34,6 +34,8 @@ from intercom_summary.web.schemas import (
     CoachingSessionCreate,
     CoachingSessionUpdate,
     CommentIn,
+    CsatDisputeCreate,
+    CsatDisputeResolve,
     DeleteConversationsRequest,
     FetchRequest,
     IconicCaseCommentUpdate,
@@ -186,6 +188,7 @@ def create_app() -> FastAPI:
         until: str | None = None,
         state: str | None = None,
         min_score: int | None = None,
+        max_csat: int | None = None,
         search: str | None = None,
         tag: str | None = None,
         ungraded: bool = False,
@@ -198,8 +201,9 @@ def create_app() -> FastAPI:
         try:
             rows, total = store.query(
                 agents=agent, since=since, until=until, state=state,
-                min_score=min_score, search=search, tag=tag, ungraded=ungraded,
-                sort=sort, descending=descending, limit=limit, offset=offset,
+                min_score=min_score, max_csat=max_csat, search=search, tag=tag,
+                ungraded=ungraded, sort=sort, descending=descending,
+                limit=limit, offset=offset,
             )
             return {"items": rows, "total": total, "limit": limit, "offset": offset}
         finally:
@@ -221,6 +225,12 @@ def create_app() -> FastAPI:
             convo_dict = convo.to_dict()
             convo_dict["custom_tags"] = row["custom_tags"] if row else ""
             iconic = icstore.get(conversation_id)
+            from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+            dstore = CsatDisputesStore()
+            try:
+                csat_dispute = dstore.get(conversation_id)
+            finally:
+                dstore.close()
             return {
                 "conversation": convo_dict,
                 "transcript": convo.transcript_text(),
@@ -229,6 +239,7 @@ def create_app() -> FastAPI:
                     settings.sla_first_response_sec, settings.sla_followup_sec
                 ),
                 "iconic": iconic,
+                "csat_dispute": csat_dispute,
             }
         finally:
             cstore.close()
@@ -354,6 +365,69 @@ def create_app() -> FastAPI:
         finally:
             gstore.close()
         return {"ok": True, "human_score": score}
+
+    @app.post("/api/conversations/{conversation_id}/csat-dispute")
+    def raise_csat_dispute(conversation_id: str, body: CsatDisputeCreate,
+                           user: dict = Depends(auth.require_write)):
+        """Analyst/admin raises a CSAT dispute on an agent's behalf from the dashboard."""
+        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+
+        if not body.reason.strip():
+            raise HTTPException(422, "Reason is required")
+        cstore = ConversationsStore()
+        try:
+            row = cstore._conn.execute(
+                "SELECT agent_name, csat_rating FROM conversations WHERE id=?", (conversation_id,)
+            ).fetchone()
+        finally:
+            cstore.close()
+        if not row:
+            raise HTTPException(404, "Conversation not found")
+        if row["csat_rating"] is None:
+            raise HTTPException(422, "This conversation has no CSAT rating to dispute")
+        dstore = CsatDisputesStore()
+        try:
+            ok = dstore.create(
+                conversation_id, row["agent_name"], body.reason,
+                created_via="dashboard", created_by=user["username"],
+            )
+        finally:
+            dstore.close()
+        if not ok:
+            raise HTTPException(409, "A dispute is already open or accepted for this conversation")
+        return {"ok": True}
+
+    @app.post("/api/conversations/{conversation_id}/csat-dispute/resolve")
+    def resolve_csat_dispute(conversation_id: str, body: CsatDisputeResolve,
+                             user: dict = Depends(auth.require_write)):
+        """Manager accepts (rating excluded from stats) or rejects (rating stands) a dispute."""
+        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+
+        if body.status not in ("accepted", "rejected"):
+            raise HTTPException(422, "status must be 'accepted' or 'rejected'")
+        dstore = CsatDisputesStore()
+        try:
+            existing = dstore.get(conversation_id)
+            if not existing:
+                raise HTTPException(404, "No dispute found for this conversation")
+            ok = dstore.resolve(conversation_id, body.status, body.note, user["username"])
+        finally:
+            dstore.close()
+        if not ok:
+            raise HTTPException(404, "No dispute found for this conversation")
+        return {"ok": True, "status": body.status}
+
+    @app.get("/api/csat-disputes")
+    def list_csat_disputes(status: str | None = "open",
+                           user: dict = Depends(auth.current_user)):
+        """Manager queue of CSAT disputes (defaults to the open ones)."""
+        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+
+        dstore = CsatDisputesStore()
+        try:
+            return {"items": dstore.list(status=status)}
+        finally:
+            dstore.close()
 
     @app.get("/api/qa/manual-deductions")
     def manual_deduction_catalog(user: dict = Depends(auth.current_user)):
@@ -1036,6 +1110,39 @@ def create_app() -> FastAPI:
             astore.close()
         return {"acknowledged": acknowledged}
 
+    @app.post("/api/review/{token}/conversations/{conversation_id}/csat-dispute")
+    def portal_csat_dispute(token: str, conversation_id: str, body: CsatDisputeCreate):
+        """Support agent disputes a CSAT rating they disagree with, via their review link."""
+        from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+
+        agent_name = _token_agent(token)  # 404s on invalid/expired token
+        if not body.reason.strip():
+            raise HTTPException(422, "Reason is required")
+        cstore = ConversationsStore()
+        try:
+            row = cstore._conn.execute(
+                "SELECT agent_name, csat_rating FROM conversations WHERE id=?", (conversation_id,)
+            ).fetchone()
+        finally:
+            cstore.close()
+        if not row:
+            raise HTTPException(404, "Conversation not found")
+        if row["agent_name"] != agent_name:
+            raise HTTPException(403, "This conversation is not part of your review.")
+        if row["csat_rating"] is None:
+            raise HTTPException(422, "This conversation has no CSAT rating to dispute")
+        dstore = CsatDisputesStore()
+        try:
+            ok = dstore.create(
+                conversation_id, agent_name, body.reason,
+                created_via="portal", created_by=agent_name,
+            )
+        finally:
+            dstore.close()
+        if not ok:
+            raise HTTPException(409, "A dispute is already open or accepted for this conversation")
+        return {"ok": True}
+
     @app.get("/api/review/{token}/acknowledgments")
     def get_acknowledgments(token: str):
         from intercom_summary.storage.acknowledgments_store import AcknowledgmentsStore
@@ -1080,6 +1187,12 @@ def create_app() -> FastAPI:
                 raise HTTPException(403, "This conversation is not part of your review.")
             convo_dict = convo.to_dict()
             convo_dict["custom_tags"] = db_row["custom_tags"] if db_row else ""
+            from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+            dstore = CsatDisputesStore()
+            try:
+                csat_dispute = dstore.get(conversation_id)
+            finally:
+                dstore.close()
             return {
                 "conversation": convo_dict,
                 "transcript": convo.transcript_text(),
@@ -1088,6 +1201,7 @@ def create_app() -> FastAPI:
                     settings.sla_first_response_sec, settings.sla_followup_sec
                 ),
                 "iconic": None,
+                "csat_dispute": csat_dispute,
             }
         finally:
             cstore.close()
@@ -1176,10 +1290,19 @@ def create_app() -> FastAPI:
         if period in _PERIOD_DAYS:
             since = (datetime.now(timezone.utc) - timedelta(days=_PERIOD_DAYS[period])).isoformat()
         gstore = GradesStore()
+        cstore = ConversationsStore()
         try:
-            return {"period": period, "since": since, "agents": gstore.agent_scores(since)}
+            agents = gstore.agent_scores(since)
+            csat_by_agent = {r["agent"]: r for r in cstore.agent_csat(since)}
+            for a in agents:
+                c = csat_by_agent.get(a["agent"])
+                a["avg_csat"] = c["avg_csat"] if c else None
+                a["csat_count"] = c["csat_count"] if c else 0
+                a["low_csat_count"] = c["low_csat_count"] if c else 0
+            return {"period": period, "since": since, "agents": agents}
         finally:
             gstore.close()
+            cstore.close()
 
     # ── Coaching sessions ──────────────────────────────────────────────────────
     @app.get("/api/coaching")

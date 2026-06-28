@@ -6,6 +6,7 @@ import { useAuth, canWrite } from "@/lib/auth";
 import { Badge, Button, Card, Input, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import RunDialog from "@/components/RunDialog";
+import CsatBadge from "@/components/CsatBadge";
 import { fmtDate, scoreColor } from "@/lib/utils";
 
 const PAGE = 50;
@@ -455,6 +456,7 @@ export default function Conversations() {
                 <th className="px-4 py-2.5 font-medium">Customer</th>
                 <th className="px-4 py-2.5 font-medium">State</th>
                 <th className="px-4 py-2.5 font-medium">Msgs</th>
+                <th className="px-4 py-2.5 font-medium">CSAT</th>
                 <th className="px-4 py-2.5 font-medium">Created</th>
                 <th className="px-4 py-2.5 font-medium">Graded</th>
                 <th className="px-4 py-2.5 text-right font-medium">Score</th>
@@ -497,6 +499,7 @@ export default function Conversations() {
                     <Badge className="border-border">{c.state}</Badge>
                   </td>
                   <td className="px-4 py-2.5">{c.message_count}</td>
+                  <td className="px-4 py-2.5"><CsatBadge rating={c.csat_rating} disputeStatus={c.csat_dispute_status} /></td>
                   <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(c.created_at)}</td>
                   <td className="px-4 py-2.5 text-muted-foreground">{fmtDate(c.graded_at)}</td>
                   <td className={`px-4 py-2.5 text-right font-semibold ${scoreColor(c.score)}`}>

@@ -91,6 +91,15 @@ class OverrideRequest(BaseModel):
     manual_deductions: list[ManualDeduction] | None = None
 
 
+class CsatDisputeCreate(BaseModel):
+    reason: str
+
+
+class CsatDisputeResolve(BaseModel):
+    status: str          # "accepted" | "rejected"
+    note: str = ""
+
+
 class AiChatRequest(BaseModel):
     conversation_id: str
     message: str
