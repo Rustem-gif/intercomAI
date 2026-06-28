@@ -130,10 +130,10 @@ CREATE TABLE IF NOT EXISTS deleted_conversations (
 );
 CREATE INDEX IF NOT EXISTS idx_trash_deleted ON deleted_conversations(deleted_at);
 
--- Support-agent disputes of a conversation's Intercom CSAT rating they disagree with.
--- One active record per conversation; an 'accepted' dispute excludes that rating from
--- the agent's CSAT stats. Raised via the review portal or the dashboard.
-CREATE TABLE IF NOT EXISTS csat_disputes (
+-- Support-agent disputes of the QA grade a conversation received. One active record
+-- per conversation; the manager resolves by accepting (and re-scoring via the override
+-- flow) or rejecting. Raised via the review portal or the dashboard.
+CREATE TABLE IF NOT EXISTS grade_disputes (
     conversation_id  TEXT PRIMARY KEY,
     agent_name       TEXT NOT NULL,
     reason           TEXT NOT NULL,
@@ -145,8 +145,8 @@ CREATE TABLE IF NOT EXISTS csat_disputes (
     resolved_by      TEXT,
     resolved_at      TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_disputes_status ON csat_disputes(status);
-CREATE INDEX IF NOT EXISTS idx_disputes_agent  ON csat_disputes(agent_name);
+CREATE INDEX IF NOT EXISTS idx_disputes_status ON grade_disputes(status);
+CREATE INDEX IF NOT EXISTS idx_disputes_agent  ON grade_disputes(agent_name);
 """
 
 

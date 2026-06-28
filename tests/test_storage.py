@@ -176,52 +176,39 @@ def test_agent_csat_summary(tmp_path):
     cstore.close()
 
 
-def test_csat_dispute_excludes_accepted_from_stats(tmp_path):
-    from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
+def test_grade_dispute_lifecycle(tmp_path):
+    from intercom_summary.storage.grade_disputes_store import GradeDisputesStore
     db = tmp_path / "t.db"
     cstore = ConversationsStore(db)
-    cstore.save(_convo_csat("a1", "Ada", 1))   # will be accepted → excluded
-    cstore.save(_convo_csat("a2", "Ada", 1))   # open dispute → still counts
-    cstore.save(_convo_csat("a3", "Ada", 5))
+    cstore.save(_convo("g1", "Ada"))
+    gstore = GradesStore(db)
+    gstore.save(ConversationGrade(
+        conversation_id="g1", agent_name="Ada", overall_score=40, summary="harsh",
+        graded_at="2026-05-03T00:00:00+00:00",
+    ))
 
-    dstore = CsatDisputesStore(db)
-    assert dstore.create("a1", "Ada", "wrong agent", "portal", "Ada") is True
-    assert dstore.create("a2", "Ada", "product issue", "dashboard", "boss") is True
+    dstore = GradeDisputesStore(db)
+    assert dstore.create("g1", "Ada", "score too low", "portal", "Ada") is True
     # A second open dispute on the same conversation is rejected.
-    assert dstore.create("a1", "Ada", "again", "portal", "Ada") is False
-    assert dstore.resolve("a1", "accepted", "agreed", "boss") is True
+    assert dstore.create("g1", "Ada", "again", "portal", "Ada") is False
+    assert dstore.get("g1")["status"] == "open"
 
-    by_agent = {r["agent"]: r for r in cstore.agent_csat()}
-    # a1 (accepted) excluded → counts a2 + a3 only.
-    assert by_agent["Ada"]["csat_count"] == 2
-    assert by_agent["Ada"]["avg_csat"] == 3.0          # (1 + 5) / 2
-    assert by_agent["Ada"]["low_csat_count"] == 1      # only a2 (open) is still a low rating
+    # The open dispute surfaces on the conversation list row for the badge.
+    rows, _ = cstore.query(agents=["Ada"])
+    assert rows[0]["grade_dispute_status"] == "open"
 
-    # Needs-Attention (max_csat) also drops the accepted one but keeps the open one.
-    rows, total = cstore.query(max_csat=1)
-    ids = {r["id"] for r in rows}
-    assert ids == {"a2"} and total == 1
-    # The surviving low row carries its dispute status for the badge.
-    assert rows[0]["csat_dispute_status"] == "open"
+    # Manager rejects → a rejected dispute can be re-raised.
+    assert dstore.resolve("g1", "rejected", "stands", "boss") is True
+    assert dstore.get("g1")["status"] == "rejected"
+    assert dstore.create("g1", "Ada", "still unfair", "portal", "Ada") is True
+
+    # Manager accepts; the queue listing carries conversation + score context.
+    assert dstore.resolve("g1", "accepted", "agreed", "boss") is True
+    queue = dstore.list(status="accepted")
+    assert queue[0]["conversation_id"] == "g1"
+    assert queue[0]["subject"] == "Login issue" and queue[0]["score"] == 40
     cstore.close()
-    dstore.close()
-
-
-def test_csat_dispute_rejected_still_counts(tmp_path):
-    from intercom_summary.storage.csat_disputes_store import CsatDisputesStore
-    db = tmp_path / "t.db"
-    cstore = ConversationsStore(db)
-    cstore.save(_convo_csat("r1", "Bob", 1))
-    dstore = CsatDisputesStore(db)
-    dstore.create("r1", "Bob", "nope", "portal", "Bob")
-    dstore.resolve("r1", "rejected", "rating stands", "boss")
-
-    by_agent = {r["agent"]: r for r in cstore.agent_csat()}
-    assert by_agent["Bob"]["csat_count"] == 1
-    assert by_agent["Bob"]["low_csat_count"] == 1
-    rows, total = cstore.query(max_csat=1)
-    assert total == 1 and rows[0]["id"] == "r1"
-    cstore.close()
+    gstore.close()
     dstore.close()
 
 
