@@ -291,14 +291,35 @@ def test_agent_scores_endpoint(client):
     _seed_grade(rules_version="v1")  # grade for conversation 42 (Ada), overall_score 80
     _login(client)
     r = client.get("/api/agents/scores?period=all").json()
-    assert r["period"] == "all" and r["since"] is None
+    assert r["start"] is None and r["end"] is None
+    assert r["since"] is None and r["until"] is None
     agents = {a["agent"]: a for a in r["agents"]}
     assert agents["Ada"]["avg_score"] == 80.0 and agents["Ada"]["count"] == 1
+
+
+def test_agent_scores_custom_range(client):
+    # Conversation 42 (Ada) is dated 2026-05-01.
+    _seed_grade(rules_version="v1")
+    _login(client)
+
+    def agents_for(qs):
+        return {a["agent"] for a in client.get(f"/api/agents/scores?{qs}").json()["agents"]}
+
+    # End date is inclusive: a range that starts and ends on the conversation date includes it.
+    assert "Ada" in agents_for("start=2026-05-01&end=2026-05-01")
+    # Ranges that exclude 2026-05-01 drop the agent.
+    assert "Ada" not in agents_for("start=2026-05-02")
+    assert "Ada" not in agents_for("end=2026-04-30")
 
 
 def test_agent_scores_rejects_bad_period(client):
     _login(client)
     assert client.get("/api/agents/scores?period=decade").status_code == 422
+
+
+def test_agent_scores_rejects_bad_date(client):
+    _login(client)
+    assert client.get("/api/agents/scores?start=not-a-date").status_code == 422
 
 
 def _save_convo(cid, agent="Ada", created="2026-05-01", subject="S"):

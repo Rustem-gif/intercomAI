@@ -66,11 +66,11 @@ export interface Overview {
   worst_conversations: { id: string; agent: string; score: number; summary: string }[];
 }
 
-export type AgentScorePeriod = "week" | "month" | "quarter" | "all";
-
 export interface AgentScores {
-  period: AgentScorePeriod;
+  start: string | null;
+  end: string | null;
   since: string | null;
+  until: string | null;
   agents: {
     agent: string;
     avg_score: number;

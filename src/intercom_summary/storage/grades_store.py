@@ -112,12 +112,13 @@ class GradesStore:
         _annotate_criteria(d.get("rule_results"))
         return d
 
-    def agent_scores(self, since: str | None = None) -> list[dict]:
+    def agent_scores(self, since: str | None = None, until: str | None = None) -> list[dict]:
         """Average effective QA score (human override if present, else AI) per agent.
 
         Joins grades with conversations so the period filter reflects when the chat
-        *happened* (`conversations.created_at`), not when it was graded. `since` is an
-        ISO timestamp; None means all-time. Returns rows sorted by avg_score desc.
+        *happened* (`conversations.created_at`), not when it was graded. `since` and
+        `until` are ISO timestamps bounding the conversation date (`until` exclusive);
+        either None means unbounded on that side. Returns rows sorted by avg_score desc.
         """
         sql = (
             "SELECT g.agent_name AS agent, "
@@ -126,9 +127,15 @@ class GradesStore:
             "FROM grades g JOIN conversations c ON c.id = g.conversation_id "
         )
         args: list[object] = []
+        clauses: list[str] = []
         if since:
-            sql += "WHERE c.created_at >= ? "
+            clauses.append("c.created_at >= ?")
             args.append(since)
+        if until:
+            clauses.append("c.created_at < ?")
+            args.append(until)
+        if clauses:
+            sql += "WHERE " + " AND ".join(clauses) + " "
         sql += "GROUP BY g.agent_name ORDER BY avg_score DESC"
         rows = self._conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]

@@ -1275,27 +1275,48 @@ def create_app() -> FastAPI:
     _PERIOD_DAYS = {"week": 7, "month": 30, "quarter": 90}
 
     @app.get("/api/agents/scores")
-    def agent_scores(period: str = "all", user: dict = Depends(auth.current_user)):
-        """Average effective QA score per agent over a rolling period (by conversation date).
-        `period` ∈ week | month | quarter | all."""
-        from datetime import datetime, timedelta, timezone
+    def agent_scores(
+        period: str = "all",
+        start: str | None = None,
+        end: str | None = None,
+        user: dict = Depends(auth.current_user),
+    ):
+        """Average effective QA score per agent (by conversation date).
 
-        if period not in _PERIOD_DAYS and period != "all":
-            raise HTTPException(422, "period must be one of: week, month, quarter, all")
-        since = None
-        if period in _PERIOD_DAYS:
-            since = (datetime.now(timezone.utc) - timedelta(days=_PERIOD_DAYS[period])).isoformat()
+        Prefer an explicit `start`/`end` calendar range (YYYY-MM-DD; `end` inclusive).
+        When neither is given, fall back to the rolling `period` ∈ week | month | quarter | all.
+        """
+        from datetime import date, datetime, timedelta, timezone
+
+        since: str | None = None
+        until: str | None = None
+        if start or end:
+            try:
+                if start:
+                    since = date.fromisoformat(start).isoformat()
+                if end:
+                    # +1 day so the end date is inclusive against the exclusive upper bound.
+                    until = (date.fromisoformat(end) + timedelta(days=1)).isoformat()
+            except ValueError:
+                raise HTTPException(422, "start and end must be dates in YYYY-MM-DD format")
+        else:
+            if period not in _PERIOD_DAYS and period != "all":
+                raise HTTPException(422, "period must be one of: week, month, quarter, all")
+            if period in _PERIOD_DAYS:
+                since = (
+                    datetime.now(timezone.utc) - timedelta(days=_PERIOD_DAYS[period])
+                ).isoformat()
         gstore = GradesStore()
         cstore = ConversationsStore()
         try:
-            agents = gstore.agent_scores(since)
-            csat_by_agent = {r["agent"]: r for r in cstore.agent_csat(since)}
+            agents = gstore.agent_scores(since, until)
+            csat_by_agent = {r["agent"]: r for r in cstore.agent_csat(since, until)}
             for a in agents:
                 c = csat_by_agent.get(a["agent"])
                 a["avg_csat"] = c["avg_csat"] if c else None
                 a["csat_count"] = c["csat_count"] if c else 0
                 a["low_csat_count"] = c["low_csat_count"] if c else 0
-            return {"period": period, "since": since, "agents": agents}
+            return {"start": start, "end": end, "since": since, "until": until, "agents": agents}
         finally:
             gstore.close()
             cstore.close()
