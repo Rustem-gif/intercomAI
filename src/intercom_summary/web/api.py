@@ -902,13 +902,14 @@ def create_app() -> FastAPI:
     def export_conversations(user: dict = Depends(auth.current_user),
                              agent: list[str] | None = Query(None),
                              since: str | None = None, until: str | None = None,
-                             state: str | None = None):
+                             state: str | None = None, search: str | None = None,
+                             tag: str | None = None):
         from intercom_summary.export.xlsx import export_xlsx
 
         store = ConversationsStore()
         try:
             rows, _ = store.query(agents=agent, since=since, until=until,
-                                  state=state, limit=10_000)
+                                  state=state, search=search, tag=tag, limit=10_000)
             convos = [c for r in rows if (c := store.get(r["id"]))]
         finally:
             store.close()

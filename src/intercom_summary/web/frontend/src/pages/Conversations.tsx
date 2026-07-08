@@ -50,6 +50,16 @@ export default function Conversations() {
   params.set("limit", String(PAGE));
   params.set("offset", String(offset));
 
+  // Export mirrors the on-screen filters (agent/date/state/search/tag) but not pagination,
+  // so the XLSX matches the visible list rather than dumping everything for the agent.
+  const exportParams = new URLSearchParams();
+  if (search) exportParams.set("search", search);
+  if (effectiveAgent) exportParams.set("agent", effectiveAgent);
+  if (state) exportParams.set("state", state);
+  if (tag) exportParams.set("tag", tag);
+  if (since) exportParams.set("since", since);
+  if (until) exportParams.set("until", until + "T23:59:59");
+
   const { data, isLoading } = useQuery({
     queryKey: ["conversations", params.toString()],
     queryFn: () => api.get<ConversationList>(`/api/conversations?${params.toString()}`),
@@ -293,7 +303,7 @@ export default function Conversations() {
               <Archive className="h-4 w-4" /> Trash{trashCount > 0 ? ` (${trashCount})` : ""}
             </Button>
           )}
-          <a href={`/api/export/conversations.xlsx${effectiveAgent ? `?agent=${encodeURIComponent(effectiveAgent)}` : ""}`}>
+          <a href={`/api/export/conversations.xlsx?${exportParams.toString()}`}>
             <Button variant="outline" size="sm">
               <Download className="h-4 w-4" /> Export XLSX
             </Button>

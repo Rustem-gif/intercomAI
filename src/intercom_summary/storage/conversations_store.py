@@ -40,6 +40,14 @@ class ConversationsStore:
         self._conn.close()
 
     def save(self, convo: Conversation) -> None:
+        # Never re-import a conversation an analyst has deleted: it lives in the trash
+        # (deleted_conversations) and Intercom re-fetches would otherwise resurrect it.
+        if self._conn.execute(
+            "SELECT 1 FROM deleted_conversations WHERE conversation_id=? LIMIT 1",
+            (convo.id,),
+        ).fetchone():
+            return
+
         # Preserve any custom_tags an analyst has already set on this conversation.
         existing = self._conn.execute(
             "SELECT custom_tags FROM conversations WHERE id=?", (convo.id,)
