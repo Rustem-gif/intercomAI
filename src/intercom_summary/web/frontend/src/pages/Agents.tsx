@@ -4,7 +4,7 @@ import {
   Bar, BarChart, Cell, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis, CartesianGrid,
 } from "recharts";
-import { api, AgentScores, AgentScorePeriod } from "@/lib/api";
+import { api, AgentScores } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/primitives";
 import { scoreColor } from "@/lib/utils";
@@ -23,18 +23,28 @@ function lineColor(score: number) {
   return "#ef4444";
 }
 
-const PERIODS: { value: AgentScorePeriod; label: string }[] = [
-  { value: "week", label: "Week" },
-  { value: "month", label: "Month" },
-  { value: "quarter", label: "Quarter" },
-  { value: "all", label: "All time" },
-];
+function isoDaysAgo(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
 
 export default function Agents() {
-  const [period, setPeriod] = useState<AgentScorePeriod>("month");
+  // Default to the last 30 days, matching the previous "Month" default.
+  const [start, setStart] = useState<string>(isoDaysAgo(30));
+  const [end, setEnd] = useState<string>(new Date().toISOString().slice(0, 10));
+  const invalidRange = !!start && !!end && start > end;
+
   const { data, isLoading } = useQuery({
-    queryKey: ["agent-scores", period],
-    queryFn: () => api.get<AgentScores>(`/api/agents/scores?period=${period}`),
+    queryKey: ["agent-scores", start, end],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (start) params.set("start", start);
+      if (end) params.set("end", end);
+      const qs = params.toString();
+      return api.get<AgentScores>(`/api/agents/scores${qs ? `?${qs}` : ""}`);
+    },
+    enabled: !invalidRange,
   });
   const [linkAgent, setLinkAgent] = useState<string | null>(null);
   const [trendAgent, setTrendAgent] = useState<string | null>(null);
@@ -50,22 +60,46 @@ export default function Agents() {
             Average QA score per support agent (by conversation date, override-aware).
           </p>
         </div>
-        <div className="flex rounded-md border p-0.5">
-          {PERIODS.map((p) => (
-            <button
-              key={p.value}
-              onClick={() => setPeriod(p.value)}
-              className={`rounded px-2.5 py-1 text-xs font-medium ${
-                period === p.value
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs">
+            <label className="text-muted-foreground" htmlFor="agents-start">From</label>
+            <input
+              id="agents-start"
+              type="date"
+              value={start}
+              max={end || undefined}
+              onChange={(e) => setStart(e.target.value)}
+              className="bg-transparent text-xs font-medium outline-none"
+            />
+            <span className="text-muted-foreground">–</span>
+            <label className="text-muted-foreground" htmlFor="agents-end">To</label>
+            <input
+              id="agents-end"
+              type="date"
+              value={end}
+              min={start || undefined}
+              onChange={(e) => setEnd(e.target.value)}
+              className="bg-transparent text-xs font-medium outline-none"
+            />
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs"
+            onClick={() => {
+              setStart("");
+              setEnd("");
+            }}
+          >
+            All time
+          </Button>
         </div>
       </div>
+      {invalidRange && (
+        <p className="text-xs text-destructive">
+          The “From” date must be on or before the “To” date.
+        </p>
+      )}
 
       <Card>
         <CardHeader>

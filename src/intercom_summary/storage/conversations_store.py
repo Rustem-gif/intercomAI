@@ -240,12 +240,13 @@ class ConversationsStore:
         ).fetchall()
         return [r["agent_name"] for r in rows]
 
-    def agent_csat(self, since: str | None = None) -> list[dict]:
+    def agent_csat(self, since: str | None = None, until: str | None = None) -> list[dict]:
         """Per-agent Intercom CSAT summary over conversations that received a rating.
 
         Returns one row per agent: `avg_csat` (mean 1-5 rating), `csat_count` (how many
-        rated), and `low_csat_count` (ratings <= settings.csat_low_max). `since` is an ISO
-        timestamp filtering on `created_at`; None means all-time.
+        rated), and `low_csat_count` (ratings <= settings.csat_low_max). `since` and
+        `until` are ISO timestamps bounding `created_at` (`until` exclusive); either None
+        means unbounded on that side.
         """
         sql = (
             "SELECT agent_name AS agent, "
@@ -259,6 +260,9 @@ class ConversationsStore:
         if since:
             sql += "AND created_at >= ? "
             args.append(since)
+        if until:
+            sql += "AND created_at < ? "
+            args.append(until)
         sql += "GROUP BY agent_name ORDER BY avg_csat ASC"
         rows = self._conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
