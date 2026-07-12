@@ -49,3 +49,19 @@ body {
   color: hsl(var(--foreground));
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
+
+/*
+ * Native <select> dropdowns on Windows Chrome render the option popup with the
+ * OS-provided (white) background but inherit our light foreground color for the
+ * text, leaving unselected options nearly invisible in dark mode. Force an
+ * opaque dark background and readable text on the options so the popup matches
+ * the theme. (Windows Chrome ignores most option styling but honors these two.)
+ */
+.dark select {
+  color: hsl(var(--foreground));
+}
+
+.dark select option {
+  background-color: hsl(var(--card));
+  color: hsl(var(--foreground));
+}
