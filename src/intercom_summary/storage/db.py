@@ -12,12 +12,27 @@ CREATE TABLE IF NOT EXISTS grades (
     overall_score   INTEGER,
     summary         TEXT,
     rules_version   TEXT,
+    -- Which ruleset produced this grade ('default' | 'vip'). rules_version alone is a hash
+    -- and doesn't say which ruleset's file it came from; staleness is judged per ruleset.
+    ruleset_id      TEXT NOT NULL DEFAULT 'default',
     model           TEXT,
     graded_at       TEXT,        -- ISO timestamp
     payload_json    TEXT         -- full ConversationGrade as JSON
 );
 CREATE INDEX IF NOT EXISTS idx_grades_agent ON grades(agent_name);
 CREATE INDEX IF NOT EXISTS idx_grades_time  ON grades(graded_at);
+
+-- Which group an agent belongs to. Absence of a row means the standard group; the group
+-- selects the QA ruleset their conversations are graded against (qa/rulesets.py).
+CREATE TABLE IF NOT EXISTS agent_groups (
+    agent_name        TEXT PRIMARY KEY,   -- the join key used across conversations/grades
+    agent_email       TEXT,
+    intercom_admin_id TEXT,               -- stable id, survives a rename in Intercom
+    group_id          TEXT NOT NULL,      -- 'vip'
+    updated_at        TEXT,
+    updated_by        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_groups_group ON agent_groups(group_id);
 
 -- Cache of fetched conversations so the web UI can browse / slice without re-hitting
 -- the Intercom API. payload_json holds the full normalised Conversation.
@@ -169,6 +184,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # JSON list of analyst manual deductions for things the AI can't verify
         # ([{category, points, note}], e.g. information correctness). NULL = none.
         ("human_deductions", "TEXT"),
+        # Which ruleset scored this grade. Existing rows backfill to 'default', which is
+        # accurate — they predate the VIP ruleset, so 'default' is what graded them.
+        ("ruleset_id", "TEXT NOT NULL DEFAULT 'default'"),
     ]:
         if col not in grade_cols:
             conn.execute(f"ALTER TABLE grades ADD COLUMN {col} {definition}")
@@ -214,6 +232,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 created_at      TEXT NOT NULL
             )""")
         conn.execute("CREATE INDEX idx_cc_conversation ON conversation_comments(conversation_id)")
+        conn.commit()
+
+    # Agent → group membership, which selects the QA ruleset (added with the VIP ruleset).
+    if "agent_groups" not in tables:
+        conn.execute("""
+            CREATE TABLE agent_groups (
+                agent_name        TEXT PRIMARY KEY,
+                agent_email       TEXT,
+                intercom_admin_id TEXT,
+                group_id          TEXT NOT NULL,
+                updated_at        TEXT,
+                updated_by        TEXT
+            )""")
+        conn.execute("CREATE INDEX idx_agent_groups_group ON agent_groups(group_id)")
         conn.commit()
 
 

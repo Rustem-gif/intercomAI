@@ -65,14 +65,31 @@ async def _review(args: argparse.Namespace):
         log.warning("No conversations to grade.")
         return
 
-    grader = get_grader()
+    from intercom_summary.qa.rulesets import ruleset_id_for_agent
+
+    # One grader per ruleset — a conversation is graded against its assigned agent's ruleset
+    # (VIP agents get the VIP ruleset). Built lazily so a run that never sees a VIP agent
+    # never loads the VIP prompt.
+    graders: dict[str, object] = {}
+
+    def _grader_for(convo):
+        rid = ruleset_id_for_agent(convo.assignee_name)
+        if rid not in graders:
+            graders[rid] = get_grader(ruleset_id=rid)
+        return graders[rid]
+
     store = GradesStore()
     grades: list[ConversationGrade] = []
     try:
         for convo in convos:
-            if not args.regrade and store.is_graded(convo.id, grader.rules_version):
+            rid = ruleset_id_for_agent(convo.assignee_name)
+            grader = _grader_for(convo)
+            if not args.regrade and store.is_current(convo.id, rid, grader.rules_version):
                 cached = store.get(convo.id)
-                grades.append(ConversationGrade(**_coerce(cached)))
+                # from_dict ignores the extra keys the store adds to a stored grade (human_score,
+                # the per-criterion `deduction`/`critical` annotations, …). Building the dataclass
+                # by splatting the dict instead crashes on them.
+                grades.append(ConversationGrade.from_dict(cached))
                 log.info("Skipping %s (already graded)", convo.id)
                 continue
             grade = grader.grade(convo)
@@ -86,14 +103,6 @@ async def _review(args: argparse.Namespace):
     md = out.with_suffix(".md")
     md.write_text(report_markdown(grades), encoding="utf-8")
     log.info("Wrote QA report to %s and %s", out, md)
-
-
-def _coerce(d: dict):
-    """Rebuild nested RuleResult dataclasses from a stored dict."""
-    from intercom_summary.qa.schema import RuleResult
-    d = dict(d)
-    d["rule_results"] = [RuleResult(**r) for r in d.get("rule_results", [])]
-    return d
 
 
 def build_parser() -> argparse.ArgumentParser:

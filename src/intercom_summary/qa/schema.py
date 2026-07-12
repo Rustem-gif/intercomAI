@@ -37,26 +37,29 @@ def _compute_score(criteria: list[dict], critical_fail: bool) -> tuple[int, str,
 
 
 def score_from_verdicts(
-    verdicts: dict[str, str], extra_deduction: int = 0
+    verdicts: dict[str, str], extra_deduction: int = 0, ruleset_id: str | None = None
 ) -> tuple[int, str, str]:
     """Recompute (score, band, overall_result) from a {criterion_id: verdict} map using the
     canonical per-criterion deductions. Used for manual ScoreBuddy-style re-scoring: an
     analyst flips criteria pass↔fail and the score follows the same formula the AI uses.
 
     `extra_deduction` is an additional point total the analyst applies for things the AI
-    cannot verify (e.g. information correctness — see MANUAL_DEDUCTION_CATALOG); it is
+    cannot verify (e.g. information correctness — see the ruleset's manual_deductions); it is
     subtracted on top of the criteria deductions.
+
+    `ruleset_id` must be the ruleset the grade was originally scored with (grades.ruleset_id),
+    NOT the agent's current group: re-scoring an old standard grade for an agent who has since
+    moved to VIP has to use the standard points, or the score would change under them.
 
     A FAIL on any critical criterion forces 0 (matches the grader's CRITICAL FAIL rule).
     """
-    from intercom_summary.qa.casino_prompt import CRITERION_DEDUCTIONS, CRITICAL_CRITERIA
+    from intercom_summary.qa.rulesets import get_ruleset
 
-    critical_fail = any(
-        v == "fail" and cid in CRITICAL_CRITERIA for cid, v in verdicts.items()
-    )
-    criteria = [
-        {"v": v, "ded": CRITERION_DEDUCTIONS.get(cid, 0)} for cid, v in verdicts.items()
-    ]
+    rs = get_ruleset(ruleset_id)
+    deductions, critical = rs.deductions, rs.critical
+
+    critical_fail = any(v == "fail" and cid in critical for cid, v in verdicts.items())
+    criteria = [{"v": v, "ded": deductions.get(cid, 0)} for cid, v in verdicts.items()]
     if extra_deduction:
         criteria.append({"v": "fail", "ded": extra_deduction})
     return _compute_score(criteria, critical_fail)
@@ -104,8 +107,14 @@ class ConversationGrade:
     # filled in by the grader, not the model:
     agent_email: str = ""
     rules_version: str = ""
+    ruleset_id: str = "default"              # which ruleset scored this ('default' | 'vip')
     model: str = ""
     graded_at: str = ""
+    # Analyst override of the AI's score, if any. Set when a grade is read back from the store;
+    # a freshly produced grade has none. Reports score on `effective_score`, matching the
+    # dashboard's COALESCE(human_score, overall_score).
+    human_score: int | None = None
+    overridden_by: str = ""
     # iGaming QA enrichment (ollama backend only; empty for legacy grades):
     classification: dict = field(default_factory=dict)   # kept for backwards compat
     scorecard_raw: dict = field(default_factory=dict)    # stores criteria dict keyed by id
@@ -113,6 +122,15 @@ class ConversationGrade:
     band: str = ""                           # Excellent/Good/Acceptable/Poor/Critical
     signal_flags: list = field(default_factory=list)     # active signal flags from the grade
     business_risk: str = ""                  # low/medium/high/critical
+
+    @property
+    def effective_score(self) -> int:
+        """The score that counts: the analyst's override if there is one, else the AI's."""
+        return self.human_score if self.human_score is not None else self.overall_score
+
+    @property
+    def is_overridden(self) -> bool:
+        return self.human_score is not None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -140,9 +158,17 @@ class ConversationGrade:
         )
 
     @classmethod
-    def from_ollama_output(cls, conversation_id: str, agent_name: str, data: dict[str, Any]) -> "ConversationGrade":
+    def from_ollama_output(
+        cls,
+        conversation_id: str,
+        agent_name: str,
+        data: dict[str, Any],
+        ruleset_id: str | None = None,
+    ) -> "ConversationGrade":
         """Build a ConversationGrade from the deduction-based QA JSON produced by the Ollama grader."""
-        from intercom_summary.qa.casino_prompt import CRITERION_TITLES
+        from intercom_summary.qa.rulesets import get_ruleset
+
+        titles = get_ruleset(ruleset_id).titles
 
         criteria = data.get("criteria") or []
         critical_fail = bool(data.get("critical_fail"))
@@ -150,7 +176,7 @@ class ConversationGrade:
         rule_results = [
             RuleResult(
                 rule_id=c.get("id", ""),
-                title=CRITERION_TITLES.get(c.get("id", ""), c.get("id", "").replace("-", " ").title()),
+                title=titles.get(c.get("id", ""), c.get("id", "").replace("-", " ").title()),
                 verdict=c.get("v", "n/a"),
                 evidence=_as_text(c.get("ev", "")),
                 comment="",
@@ -170,6 +196,7 @@ class ConversationGrade:
             violations=[_as_text(v) for v in data.get("violations", [])],
             suggestions=[_as_text(s) for s in data.get("coaching", [])],
         )
+        grade.ruleset_id = ruleset_id or "default"
         grade.scorecard_raw = {c["id"]: c for c in criteria if "id" in c}
         grade.overall_result = result
         grade.band = band
@@ -183,6 +210,11 @@ class ConversationGrade:
         g = cls.from_tool_input(d["conversation_id"], d.get("agent_name", ""), d)
         g.agent_email = d.get("agent_email", "")
         g.rules_version = d.get("rules_version", "")
+        g.ruleset_id = d.get("ruleset_id", "default")
+        # Carry the analyst override through, so reports built from stored grades score on it
+        # rather than silently reporting the AI's superseded number.
+        g.human_score = d.get("human_score")
+        g.overridden_by = d.get("overridden_by") or ""
         g.model = d.get("model", "")
         g.graded_at = d.get("graded_at", "")
         g.classification = d.get("classification", {})

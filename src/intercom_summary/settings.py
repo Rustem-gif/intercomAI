@@ -88,6 +88,8 @@ class Settings:
     export_dir: Path = field(default_factory=lambda: Path(_env("EXPORT_DIR", "./data/exports")))
     web_users_path: Path = field(default_factory=lambda: Path(_env("WEB_USERS_PATH", "./config/web_users.yaml")))
     qa_prompt_path: Path = field(default_factory=lambda: Path(_env("QA_PROMPT_PATH", "./rules/qa_system_prompt.txt")))
+    vip_prompt_path: Path = field(default_factory=lambda: Path(_env("VIP_PROMPT_PATH", "./rules/qa_system_prompt_vip.txt")))
+    rulesets_path: Path = field(default_factory=lambda: Path(_env("RULESETS_PATH", "./config/rulesets.yaml")))
     eval_dir: Path = field(default_factory=lambda: Path(_env("EVAL_DIR", "./data/eval")))
 
     @property

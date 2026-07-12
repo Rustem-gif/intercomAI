@@ -18,9 +18,9 @@ import httpx
 
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
-from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA, load_qa_prompt
+from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
-from intercom_summary.qa.rules import Ruleset, load_ruleset
+from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
 from intercom_summary.qa.schema import ConversationGrade
 from intercom_summary.settings import settings
 
@@ -91,24 +91,32 @@ def _trim_transcript(text: str) -> str:
 class OllamaGrader:
     def __init__(
         self,
-        ruleset: Ruleset | None = None,
+        ruleset_id: str | None = None,
         model: str | None = None,
         base_url: str | None = None,
     ) -> None:
-        self._ruleset = ruleset or load_ruleset()
         self._model = model or settings.ollama_model
         self._base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        # Load the QA prompt from disk so admin edits via the web UI take effect
-        # at grader construction time (once per batch, not once per conversation).
-        qa_prompt = load_qa_prompt()
-        self._system_prompt = qa_prompt.text
-        self._prompt_version = qa_prompt.version
+        # Resolve the ruleset (prompt text + criteria) from disk so admin edits via the web UI
+        # take effect at grader construction time — once per batch, not once per conversation.
+        # One grader is built per ruleset; service.py picks which one a conversation goes to.
+        self._ruleset = get_ruleset(ruleset_id)
+        self._system_prompt = self._ruleset.prompt_text
+        self._prompt_version = self._ruleset.version
+
+        for warning in validate_ruleset(self._ruleset):
+            log.warning("Ruleset '%s' drift: %s", self._ruleset.id, warning)
+
+    @property
+    def ruleset_id(self) -> str:
+        return self._ruleset.id
 
     @property
     def rules_version(self) -> str:
         # Use the QA prompt version — this is what Ollama actually grades against.
         # Changing the prompt via the web UI bumps the hash, causing ungraded status
-        # on all existing conversations so they get re-evaluated on the next run.
+        # on conversations graded against THIS ruleset so they get re-evaluated on the
+        # next run (grades scored by a different ruleset are judged against their own).
         return self._prompt_version
 
     def _call(self, transcript: str, temperature: float) -> str:
@@ -171,8 +179,10 @@ class OllamaGrader:
         for attempt in range(_MAX_ATTEMPTS):
             temp = _ATTEMPT_TEMPERATURES[min(attempt, len(_ATTEMPT_TEMPERATURES) - 1)]
             log.info(
-                "Grading %s via Ollama/%s (attempt %d/%d, temp=%s; cold-start may take ~30s)",
-                conversation.id, self._model, attempt + 1, _MAX_ATTEMPTS, temp,
+                "Grading %s via Ollama/%s [%s ruleset %s] (attempt %d/%d, temp=%s; "
+                "cold-start may take ~30s)",
+                conversation.id, self._model, self._ruleset.id, self._prompt_version,
+                attempt + 1, _MAX_ATTEMPTS, temp,
             )
             content = self._call(transcript, temp)
             try:
@@ -195,10 +205,11 @@ class OllamaGrader:
             )
 
         grade = ConversationGrade.from_ollama_output(
-            conversation.id, conversation.assignee_name, data
+            conversation.id, conversation.assignee_name, data, ruleset_id=self._ruleset.id
         )
         grade.agent_email = conversation.assignee.email if conversation.assignee else ""
-        grade.rules_version = self._prompt_version  # match the .rules_version property (qa_system_prompt.txt)
+        grade.rules_version = self._prompt_version  # match the .rules_version property
+        grade.ruleset_id = self._ruleset.id
         grade.model = f"ollama/{self._model}"
         grade.graded_at = datetime.now(timezone.utc).isoformat()
         log.info(

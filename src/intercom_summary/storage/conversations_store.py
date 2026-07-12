@@ -171,7 +171,13 @@ class ConversationsStore:
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[dict], int]:
-        """Return (rows, total). Rows are summary dicts joined with the latest grade."""
+        """Return (rows, total). Rows are summary dicts joined with the latest grade.
+
+        An empty `agents` list means "no agent filter" here — callers like the Slack `review`
+        command and the run dialog pass [] for "everyone". Callers that need "an empty set of
+        agents matches nothing" (the group switcher, before anyone is in the VIP group) must
+        short-circuit before calling this.
+        """
         where: list[str] = []
         args: list[object] = []
         if agents:
@@ -290,39 +296,94 @@ class ConversationsStore:
         self._conn.commit()
         return cur.rowcount
 
-    def count(self) -> int:
+    def count(self, agents: list[str] | None = None) -> int:
+        if agents is not None:
+            if not agents:
+                return 0
+            return self._conn.execute(
+                f"SELECT COUNT(*) AS n FROM conversations "
+                f"WHERE agent_name IN ({','.join('?' * len(agents))})",
+                agents,
+            ).fetchone()["n"]
         return self._conn.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]
 
-    def evaluation_counts(self, rules_version: str | None = None) -> dict:
+    def evaluation_counts(
+        self,
+        versions: dict[str, str] | None = None,
+        vip_agents: list[str] | None = None,
+        agents: list[str] | None = None,
+    ) -> dict:
         """Counts for the Evaluation page over the *gradeable* population (conversations
-        without any IGNORE_TAGS). Returns total, graded (any ruleset), graded_current
-        (under `rules_version`), and ignored (excluded by tag).
+        without any IGNORE_TAGS).
 
         Counting graded over the same gradeable population keeps the numbers consistent:
         a chat tagged e.g. 'spam' that was graded in the past is excluded from both total
         and graded, so coverage can still reach 100%.
+
+        `versions` is {ruleset_id: live version} for every ruleset. A grade is *current* when
+        it carries the live version of the ruleset that produced it — so editing the VIP prompt
+        doesn't mark standard grades stale, and vice versa.
+
+        `vip_agents` are the agent names currently in the VIP group. `wrong_ruleset` counts
+        grades produced by a ruleset other than the one their agent's group would use today —
+        typically an agent's back catalogue after they move into VIP. Those are deliberately
+        NOT counted as stale (they were graded correctly at the time); they're reported
+        separately so an analyst can choose to re-grade them.
+
+        `agents` scopes every count to a subset of agents (the UI's group switcher).
         """
         ign_sql, ign_args = _ignore_sql("c")
-        gradeable = f"FROM conversations c WHERE NOT {ign_sql}"
+        where = [f"NOT {ign_sql}"]
+        args: list[object] = [*ign_args]
+        if agents is not None:
+            if not agents:  # an empty group matches nothing (rather than everything)
+                return {"total": 0, "graded": 0, "graded_current": 0,
+                        "wrong_ruleset": 0, "ignored": 0}
+            where.append(f"c.agent_name IN ({','.join('?' * len(agents))})")
+            args.extend(agents)
+        base_where = " AND ".join(where)
+
+        gradeable = f"FROM conversations c WHERE {base_where}"
         graded_base = (
             f"FROM conversations c JOIN grades g ON g.conversation_id = c.id "
-            f"WHERE NOT {ign_sql}"
+            f"WHERE {base_where}"
         )
-        total = self._conn.execute(f"SELECT COUNT(*) AS n {gradeable}", ign_args).fetchone()["n"]
+        total = self._conn.execute(f"SELECT COUNT(*) AS n {gradeable}", args).fetchone()["n"]
         ignored = self._conn.execute(
             f"SELECT COUNT(*) AS n FROM conversations c WHERE {ign_sql}", ign_args
         ).fetchone()["n"]
-        graded = self._conn.execute(f"SELECT COUNT(*) AS n {graded_base}", ign_args).fetchone()["n"]
-        if rules_version:
+        graded = self._conn.execute(f"SELECT COUNT(*) AS n {graded_base}", args).fetchone()["n"]
+
+        if versions:
+            # A grade is current if it matches the live version of its OWN ruleset.
+            clauses = " OR ".join(["(g.ruleset_id = ? AND g.rules_version = ?)"] * len(versions))
+            vargs = [v for rid, ver in versions.items() for v in (rid, ver)]
             graded_current = self._conn.execute(
-                f"SELECT COUNT(*) AS n {graded_base} AND g.rules_version = ?",
-                [*ign_args, rules_version],
+                f"SELECT COUNT(*) AS n {graded_base} AND ({clauses})", [*args, *vargs]
             ).fetchone()["n"]
         else:
             graded_current = graded
+
+        # Grades whose ruleset doesn't match what their agent's group would use today.
+        if vip_agents:
+            names = ",".join("?" * len(vip_agents))
+            mismatch = (
+                f"((lower(c.agent_name) IN ({names}) AND g.ruleset_id <> 'vip') OR "
+                f" (lower(c.agent_name) NOT IN ({names}) AND g.ruleset_id <> 'default'))"
+            )
+            lowered = [a.lower() for a in vip_agents]
+            margs = [*lowered, *lowered]
+        else:
+            mismatch = "g.ruleset_id <> 'default'"
+            margs = []
+        wrong_ruleset = self._conn.execute(
+            f"SELECT COUNT(*) AS n {graded_base} AND {mismatch}", [*args, *margs]
+        ).fetchone()["n"]
+
         return {
             "total": total,
             "graded": graded,
             "graded_current": graded_current,
+            "wrong_ruleset": wrong_ruleset,
             "ignored": ignored,
         }

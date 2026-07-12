@@ -465,6 +465,7 @@ export default function Evaluation() {
   const graded = stats?.graded ?? 0;
   const pending = stats?.pending ?? 0;
   const stale = stats?.stale ?? 0;
+  const wrongRuleset = stats?.wrong_ruleset ?? 0;
   const ignored = stats?.ignored ?? 0;
   const coverage = pct(graded, total);
   const activeJob = stats?.active_job ?? null;
@@ -477,9 +478,26 @@ export default function Evaluation() {
       <div>
         <h1 className="text-2xl font-bold">Evaluation</h1>
         <p className="text-sm text-muted-foreground">
-          Grade cached conversations against the support ruleset.
+          Grade cached conversations. Each conversation is graded against its assigned agent's
+          ruleset — VIP agents use the VIP ruleset.
         </p>
       </div>
+
+      {/* Conversations graded before their agent joined a different group. They were graded
+          correctly at the time, so they are deliberately NOT re-graded automatically; converting
+          them is an explicit decision. */}
+      {wrongRuleset > 0 && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/5 p-3 text-sm">
+          <span className="font-medium text-amber-600 dark:text-amber-400">
+            {wrongRuleset.toLocaleString()} graded with a different ruleset
+          </span>
+          <span className="ml-1 text-muted-foreground">
+            than their agent's group uses today (typically a VIP agent's history from before they
+            joined VIP). They are left as they were graded. To re-score them with the current
+            ruleset, run a review over those agents with “re-grade” enabled.
+          </span>
+        </div>
+      )}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">

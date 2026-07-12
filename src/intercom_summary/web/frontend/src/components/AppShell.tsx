@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/lib/theme";
 import { useAuth } from "@/lib/auth";
+import { useGroup } from "@/lib/group";
+import type { Group } from "@/lib/api";
 import { Button } from "./ui/primitives";
 import { cn } from "@/lib/utils";
 import QwenIcon from "./QwenIcon";
@@ -60,6 +62,7 @@ function loadPos(): { x: number; y: number } {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { theme, toggle } = useTheme();
   const { user, logout } = useAuth();
+  const { group, setGroup } = useGroup();
   const [chatOpen, setChatOpen] = useState(false);
 
   // Draggable button position
@@ -159,6 +162,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <header className="flex h-14 items-center justify-between border-b bg-card px-6">
           <div className="text-sm text-muted-foreground md:hidden">Intercom QA</div>
           <div className="ml-auto flex items-center gap-2">
+            {/* Group switcher. VIP is graded against its own ruleset, so its scores are not
+                comparable with standard ones — every page shows one group at a time. */}
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Users className="h-3.5 w-3.5" />
+              <select
+                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                value={group}
+                onChange={(e) => setGroup(e.target.value as Group)}
+                title="Scope the dashboard to an agent group"
+              >
+                <option value="all">All agents</option>
+                <option value="standard">Standard</option>
+                <option value="vip">VIP</option>
+              </select>
+            </label>
+            {group !== "all" && (
+              <span className="rounded bg-primary/10 px-2 py-1 text-xs font-medium text-primary">
+                {group === "vip" ? "VIP ruleset" : "Standard ruleset"}
+              </span>
+            )}
             <Button variant="ghost" size="icon" onClick={toggle} title="Toggle theme">
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>

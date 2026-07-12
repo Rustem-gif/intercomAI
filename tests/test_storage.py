@@ -89,13 +89,13 @@ def test_evaluation_counts_excludes_ignored(tmp_path):
             rules_version="v1", graded_at="2026-05-03T00:00:00+00:00",
         ))
 
-    counts = cstore.evaluation_counts("v1")
+    counts = cstore.evaluation_counts({"default": "v1"})
     assert counts["total"] == 1       # only "plain" is gradeable
     assert counts["ignored"] == 2     # spammy + jira
     assert counts["graded"] == 1      # the ignored "spammy" grade is excluded
     assert counts["graded_current"] == 1
-    # A grade under a different ruleset is "stale" (graded but not graded_current).
-    assert cstore.evaluation_counts("v2")["graded_current"] == 0
+    # Editing the ruleset the grade was scored with makes it stale.
+    assert cstore.evaluation_counts({"default": "v2"})["graded_current"] == 0
     cstore.close()
     gstore.close()
 

@@ -45,6 +45,11 @@ class Grader:
     def rules_version(self) -> str:
         return self._ruleset.version
 
+    @property
+    def ruleset_id(self) -> str:
+        # This backend grades against support_rules.md only; it has no per-group variants.
+        return "default"
+
     def _system_blocks(self) -> list[dict]:
         # The ruleset block is marked cacheable: constant across every conversation.
         return [
