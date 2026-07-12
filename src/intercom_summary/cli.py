@@ -65,25 +65,25 @@ async def _review(args: argparse.Namespace):
         log.warning("No conversations to grade.")
         return
 
-    from intercom_summary.qa.rulesets import ruleset_id_for_agent
+    from intercom_summary.qa.rulesets import agent_ruleset_resolver
 
     # One grader per ruleset — a conversation is graded against its assigned agent's ruleset
     # (VIP agents get the VIP ruleset). Built lazily so a run that never sees a VIP agent
-    # never loads the VIP prompt.
+    # never loads the VIP prompt. Group membership is read once, not per conversation.
+    ruleset_for = agent_ruleset_resolver()
     graders: dict[str, object] = {}
 
-    def _grader_for(convo):
-        rid = ruleset_id_for_agent(convo.assignee_name)
-        if rid not in graders:
-            graders[rid] = get_grader(ruleset_id=rid)
-        return graders[rid]
+    def _grader_for(ruleset_id: str):
+        if ruleset_id not in graders:
+            graders[ruleset_id] = get_grader(ruleset_id=ruleset_id)
+        return graders[ruleset_id]
 
     store = GradesStore()
     grades: list[ConversationGrade] = []
     try:
         for convo in convos:
-            rid = ruleset_id_for_agent(convo.assignee_name)
-            grader = _grader_for(convo)
+            rid = ruleset_for(convo.assignee_name)
+            grader = _grader_for(rid)
             if not args.regrade and store.is_current(convo.id, rid, grader.rules_version):
                 cached = store.get(convo.id)
                 # from_dict ignores the extra keys the store adds to a stored grade (human_score,

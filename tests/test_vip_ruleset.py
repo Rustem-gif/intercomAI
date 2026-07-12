@@ -124,6 +124,36 @@ def test_review_grades_each_agent_with_their_own_ruleset(tmp_path, monkeypatch):
     gs.close()
 
 
+def test_resolving_many_agents_opens_one_connection(tmp_path, monkeypatch):
+    """Regression: ruleset resolution used to open a DB connection per conversation and never
+    close it. A full review run then exhausted the process's file descriptors and SQLite
+    started failing every open with "unable to open database file" — including unrelated
+    queries like /api/jobs. Membership must be read once per run."""
+    import intercom_summary.storage.db as db_mod
+    from intercom_summary.qa.rulesets import agent_ruleset_resolver
+    from intercom_summary.settings import settings
+
+    object.__setattr__(settings, "db_path", tmp_path / "t.db")
+
+    opened = 0
+    real_connect = db_mod.connect
+
+    def counting_connect(path):
+        nonlocal opened
+        opened += 1
+        return real_connect(path)
+
+    monkeypatch.setattr(db_mod, "connect", counting_connect)
+    monkeypatch.setattr("intercom_summary.storage.agent_groups_store.connect", counting_connect)
+
+    resolve = agent_ruleset_resolver()
+    for _ in range(2000):
+        resolve("Ada")
+        resolve("Vic")
+
+    assert opened == 1, f"resolution opened {opened} connections — it must load membership once"
+
+
 # ── scoring ───────────────────────────────────────────────────────────────────────────
 def test_manual_rescore_uses_the_rulesets_own_deductions():
     """Flipping the same criterion costs a different number of points in each ruleset, so a
