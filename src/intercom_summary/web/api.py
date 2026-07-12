@@ -1021,17 +1021,6 @@ def create_app() -> FastAPI:
 
         return put_ruleset_prompt(DEFAULT_RULESET_ID, body, user)
 
-    # ── AI agent (Qwen + MCP-style Intercom tools) ───────────────────────────
-    @app.post("/api/ai/agent")
-    async def ai_agent(body: AiChatRequest, user: dict = Depends(auth.current_user)):
-        from intercom_summary.qa.agent import run_agent
-
-        return StreamingResponse(
-            run_agent(body.message, body.history),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
     # ── AI chat (local Qwen via Ollama) ───────────────────────────────────────
     @app.post("/api/ai/chat")
     async def ai_chat(body: AiChatRequest, user: dict = Depends(auth.current_user)):

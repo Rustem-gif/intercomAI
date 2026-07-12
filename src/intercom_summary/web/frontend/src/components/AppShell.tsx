@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -21,8 +20,6 @@ import { useGroup } from "@/lib/group";
 import type { Group } from "@/lib/api";
 import { Button } from "./ui/primitives";
 import { cn } from "@/lib/utils";
-import QwenIcon from "./QwenIcon";
-import GlobalChat from "./GlobalChat";
 
 const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
@@ -37,86 +34,10 @@ const nav = [
   { to: "/ruleset", label: "Ruleset", icon: ScrollText },
 ];
 
-const BTN = 56; // button size in px
-const STORAGE_KEY = "qwen-btn-pos";
-
-function clamp(v: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-function defaultPos(): { x: number; y: number } {
-  return { x: window.innerWidth - BTN - 20, y: window.innerHeight - BTN - 20 };
-}
-
-function loadPos(): { x: number; y: number } {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const p = JSON.parse(raw);
-      if (typeof p.x === "number" && typeof p.y === "number") return p;
-    }
-  } catch { /* ignore */ }
-  return defaultPos();
-}
-
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { theme, toggle } = useTheme();
   const { user, logout } = useAuth();
   const { group, setGroup } = useGroup();
-  const [chatOpen, setChatOpen] = useState(false);
-
-  // Draggable button position
-  const [pos, setPos] = useState<{ x: number; y: number }>(loadPos);
-  const posRef = useRef(pos);
-  const dragging = useRef(false);
-  const dragMoved = useRef(false);           // true if moved more than threshold
-  const startMouse = useRef({ x: 0, y: 0 });
-  const startPos = useRef({ x: 0, y: 0 });
-
-  // Keep posRef in sync so the onPointerUp closure can read the latest value.
-  useEffect(() => { posRef.current = pos; }, [pos]);
-
-  // Re-clamp when window is resized.
-  useEffect(() => {
-    const onResize = () =>
-      setPos((p) => ({
-        x: clamp(p.x, 0, window.innerWidth - BTN),
-        y: clamp(p.y, 0, window.innerHeight - BTN),
-      }));
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  const onPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragging.current = true;
-    dragMoved.current = false;
-    startMouse.current = { x: e.clientX, y: e.clientY };
-    startPos.current = { ...posRef.current };
-  }, []);
-
-  const onPointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!dragging.current) return;
-    const dx = e.clientX - startMouse.current.x;
-    const dy = e.clientY - startMouse.current.y;
-    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) dragMoved.current = true;
-    setPos({
-      x: clamp(startPos.current.x + dx, 0, window.innerWidth  - BTN),
-      y: clamp(startPos.current.y + dy, 0, window.innerHeight - BTN),
-    });
-  }, []);
-
-  const onPointerUp = useCallback(() => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(posRef.current));
-  }, []);
-
-  const onClick = useCallback(() => {
-    // Suppress click when the user dragged the button.
-    if (dragMoved.current) return;
-    setChatOpen((v) => !v);
-  }, []);
 
   return (
     <div className="flex h-screen">
@@ -195,26 +116,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           Created and administered by Rustem Samoilenko
         </footer>
       </div>
-
-      {/* Draggable Qwen chat button */}
-      <button
-        style={{ left: pos.x, top: pos.y }}
-        className={cn(
-          "fixed z-50 touch-none select-none rounded-full shadow-lg",
-          "transition-shadow hover:shadow-xl",
-          chatOpen && "ring-2 ring-primary ring-offset-2",
-        )}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onClick={onClick}
-        title="Ask Qwen — drag to move"
-        aria-label="Open Qwen chat"
-      >
-        <QwenIcon className="h-14 w-14" />
-      </button>
-
-      {chatOpen && <GlobalChat onClose={() => setChatOpen(false)} buttonPos={pos} />}
     </div>
   );
 }
