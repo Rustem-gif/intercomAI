@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -205,11 +206,40 @@ def ruleset_id_for_group(group_id: str | None) -> str:
     return GROUP_RULESETS.get(group_id or GROUP_STANDARD, DEFAULT_RULESET_ID)
 
 
-def ruleset_id_for_agent(agent_name: str | None) -> str:
-    """The ruleset an agent's conversations are graded against — the single resolution point."""
+def agent_ruleset_resolver() -> "Callable[[str | None], str]":
+    """Load group membership once, return a resolver for many agents.
+
+    Use this for anything that resolves a ruleset in a loop (a review run walks thousands of
+    conversations). ruleset_id_for_agent() opens a database connection per call; doing that
+    per conversation exhausts the process's file descriptors and SQLite then fails every
+    subsequent open with "unable to open database file" — including unrelated queries.
+    """
     from intercom_summary.storage.agent_groups_store import AgentGroupsStore
 
-    return ruleset_id_for_group(AgentGroupsStore().get_group(agent_name))
+    store = AgentGroupsStore()
+    try:
+        groups = {name.lower(): gid for name, gid in store.all_groups().items()}
+    finally:
+        store.close()
+
+    def resolve(agent_name: str | None) -> str:
+        return ruleset_id_for_group(groups.get((agent_name or "").lower(), GROUP_STANDARD))
+
+    return resolve
+
+
+def ruleset_id_for_agent(agent_name: str | None) -> str:
+    """The ruleset a single agent's conversations are graded against.
+
+    Opens (and closes) a connection per call — for a loop, use agent_ruleset_resolver().
+    """
+    from intercom_summary.storage.agent_groups_store import AgentGroupsStore
+
+    store = AgentGroupsStore()
+    try:
+        return ruleset_id_for_group(store.get_group(agent_name))
+    finally:
+        store.close()
 
 
 # ── drift check ────────────────────────────────────────────────────────────────────────

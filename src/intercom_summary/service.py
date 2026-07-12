@@ -190,7 +190,7 @@ def review_and_store(
     import httpx
 
     from intercom_summary.qa.backends import get_grader
-    from intercom_summary.qa.rulesets import ruleset_id_for_agent
+    from intercom_summary.qa.rulesets import agent_ruleset_resolver
 
     convos_store = ConversationsStore()
     grades_store = GradesStore()
@@ -225,9 +225,13 @@ def review_and_store(
         # is judged against the grader that would run now: a grade produced by a *different*
         # ruleset is left alone rather than re-graded, so moving an agent into the VIP group
         # does not silently invalidate their standard-ruleset history (see is_current).
+        # Group membership is read once for the whole run, not once per conversation — the
+        # latter opens a DB connection each time and exhausts the process's file descriptors.
+        ruleset_for = agent_ruleset_resolver()
+
         buckets: dict[str, list] = defaultdict(list)
         for c in convos:
-            rid = ruleset_id_for_agent(c.assignee_name)
+            rid = ruleset_for(c.assignee_name)
             grader = grader_for(rid)
             if regrade or not grades_store.is_current(c.id, rid, grader.rules_version):
                 buckets[rid].append(c)
