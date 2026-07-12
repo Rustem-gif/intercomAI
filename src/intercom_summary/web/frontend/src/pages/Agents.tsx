@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar, BarChart, Cell, Line, LineChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis, CartesianGrid,
@@ -8,8 +8,10 @@ import { api, AgentScores } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/primitives";
 import { scoreColor } from "@/lib/utils";
-import { Link2, ChevronDown, ChevronUp } from "lucide-react";
+import { Link2, ChevronDown, ChevronUp, Crown } from "lucide-react";
 import GenerateLinkModal from "@/components/GenerateLinkModal";
+import { useAuth } from "@/lib/auth";
+import { useGroup, GROUP_LABELS } from "@/lib/group";
 
 function barColor(score: number) {
   if (score >= 85) return "#10b981";
@@ -51,13 +53,48 @@ export default function Agents() {
 
   const board = data?.agents ?? [];
 
+  // VIP membership. Moving an agent into the VIP group changes the ruleset their future
+  // conversations are graded against, so only admins may do it.
+  const qc = useQueryClient();
+  const { user } = useAuth();
+  const { group } = useGroup();
+  const isAdmin = user?.role === "admin";
+  const { data: groupsData } = useQuery({
+    queryKey: ["agent-groups"],
+    queryFn: () => api.get<{ groups: Record<string, string> }>("/api/agent-groups"),
+  });
+  const groups = groupsData?.groups ?? {};
+  const [savingAgent, setSavingAgent] = useState<string | null>(null);
+
+  const toggleVip = async (agent: string, isVip: boolean) => {
+    setSavingAgent(agent);
+    try {
+      await api.put("/api/agent-groups", {
+        agent_name: agent,
+        group_id: isVip ? "standard" : "vip",
+      });
+      // Membership changes what the group switcher resolves to, so refetch everything scoped.
+      qc.invalidateQueries();
+    } finally {
+      setSavingAgent(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Agents</h1>
+          <h1 className="text-2xl font-bold">
+            Agents
+            {group !== "all" && (
+              <span className="ml-2 align-middle text-sm font-normal text-muted-foreground">
+                · {GROUP_LABELS[group]}
+              </span>
+            )}
+          </h1>
           <p className="text-sm text-muted-foreground">
             Average QA score per support agent (by conversation date, override-aware).
+            {group === "all" && " VIP and standard agents are graded against different rulesets, so their scores are not directly comparable."}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -147,6 +184,7 @@ export default function Agents() {
             <thead className="text-left text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="py-2 font-medium">Agent</th>
+                <th className="py-2 font-medium">Group</th>
                 <th className="py-2 font-medium">Graded</th>
                 <th className="py-2 text-right font-medium">Avg score</th>
                 <th className="py-2 text-right font-medium">Avg CSAT</th>
@@ -160,6 +198,38 @@ export default function Agents() {
                 <>
                   <tr key={a.agent} className="border-t">
                     <td className="py-2 font-medium">{a.agent}</td>
+                    <td className="py-2">
+                      {(() => {
+                        const isVip = groups[a.agent] === "vip";
+                        if (!isAdmin) {
+                          return isVip ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                              <Crown className="h-3 w-3" /> VIP
+                            </span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Standard</span>
+                          );
+                        }
+                        return (
+                          <Button
+                            variant={isVip ? "secondary" : "ghost"}
+                            size="sm"
+                            disabled={savingAgent === a.agent}
+                            title={
+                              isVip
+                                ? "Move back to the standard group (future conversations use the standard ruleset)"
+                                : "Move to the VIP group (future conversations use the VIP ruleset)"
+                            }
+                            onClick={() => toggleVip(a.agent, isVip)}
+                          >
+                            <Crown
+                              className={`h-3.5 w-3.5 ${isVip ? "text-amber-500" : "text-muted-foreground"}`}
+                            />
+                            <span className="text-xs">{isVip ? "VIP" : "Standard"}</span>
+                          </Button>
+                        );
+                      })()}
+                    </td>
                     <td className="py-2 text-muted-foreground">{a.count}</td>
                     <td className={`py-2 text-right font-semibold ${scoreColor(a.avg_score)}`}>{a.avg_score}</td>
                     <td className="py-2 text-right tabular-nums text-muted-foreground">
@@ -195,7 +265,7 @@ export default function Agents() {
                   </tr>
                   {trendAgent === a.agent && (
                     <tr key={`${a.agent}-trend`} className="border-t bg-muted/30">
-                      <td colSpan={7} className="px-2 py-3">
+                      <td colSpan={8} className="px-2 py-3">
                         <AgentTrendChart agent={a.agent} avgScore={a.avg_score} />
                       </td>
                     </tr>

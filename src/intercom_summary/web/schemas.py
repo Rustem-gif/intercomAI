@@ -44,6 +44,13 @@ class RulesIn(BaseModel):
     text: str
 
 
+class AgentGroupIn(BaseModel):
+    agent_name: str
+    group_id: str                          # "standard" | "vip"
+    agent_email: str | None = None
+    intercom_admin_id: str | None = None
+
+
 class DeleteConversationsRequest(BaseModel):
     """Move conversations to the trash. Provide exactly one of:
     - `ids`: explicit conversation ids;

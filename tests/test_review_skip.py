@@ -55,7 +55,7 @@ def test_ignored_tag_conversations_are_not_graded(temp_db, monkeypatch):
     cs.close()
 
     monkeypatch.setattr(
-        "intercom_summary.qa.backends.get_grader", lambda backend=None: _FakeGrader()
+        "intercom_summary.qa.backends.get_grader", lambda backend=None, ruleset_id=None: _FakeGrader()
     )
 
     result = service.review_and_store(regrade=True)  # bulk path
@@ -78,9 +78,9 @@ def test_failed_grade_is_skipped_not_saved(temp_db, monkeypatch):
     cs.save(_conv("bad"))
     cs.close()
 
-    monkeypatch.setattr(service, "get_grader", lambda backend=None: _FakeGrader(), raising=False)
+    monkeypatch.setattr(service, "get_grader", lambda backend=None, ruleset_id=None: _FakeGrader(), raising=False)
     monkeypatch.setattr(
-        "intercom_summary.qa.backends.get_grader", lambda backend=None: _FakeGrader()
+        "intercom_summary.qa.backends.get_grader", lambda backend=None, ruleset_id=None: _FakeGrader()
     )
 
     result = service.review_and_store(conversation_ids=["good", "bad"], regrade=True)

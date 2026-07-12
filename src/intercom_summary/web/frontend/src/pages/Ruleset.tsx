@@ -1,22 +1,22 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, type QaRuleset } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import { Button, Card, Spinner } from "@/components/ui/primitives";
-import { Save } from "lucide-react";
-
-type Tab = "qa-prompt" | "ruleset";
+import { Save, AlertTriangle } from "lucide-react";
 
 function Editor({
   endpoint,
-  label,
   description,
   canEdit,
+  roleHint,
+  ruleset,
 }: {
   endpoint: string;
-  label: string;
   description: string;
   canEdit: boolean;
+  roleHint: string;
+  ruleset?: QaRuleset;
 }) {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({
@@ -44,6 +44,7 @@ function Editor({
       const res = await api.put<{ version: string }>(`/api/${endpoint}`, { text });
       setVersion(res.version);
       qc.invalidateQueries({ queryKey: [endpoint] });
+      qc.invalidateQueries({ queryKey: ["rulesets"] });
       setMsg(`Saved (version ${res.version}). Takes effect on the next grading run.`);
     } catch (e: any) {
       setMsg(e.message || "Save failed");
@@ -81,6 +82,28 @@ function Editor({
         <p className={`text-sm ${isError ? "text-destructive" : "text-emerald-500"}`}>{msg}</p>
       )}
 
+      {/* The deduction points live in two places: the table inside the prompt text (what the
+          model applies while grading) and the criteria catalogue (what an analyst's manual
+          re-score applies). If they disagree, the same criterion costs different points
+          depending on who scored it — so say so loudly. */}
+      {ruleset && ruleset.warnings.length > 0 && (
+        <Card className="border-amber-500/50 bg-amber-500/5 p-3">
+          <div className="mb-1 flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400">
+            <AlertTriangle className="h-4 w-4" />
+            Prompt and criteria catalogue disagree
+          </div>
+          <ul className="list-inside list-disc space-y-0.5 text-xs text-muted-foreground">
+            {ruleset.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Fix by aligning the “Ded” column in the prompt below with{" "}
+            <code className="rounded bg-muted px-1">config/rulesets.yaml</code>.
+          </p>
+        </Card>
+      )}
+
       <Card className="p-0">
         <textarea
           className="h-[62vh] w-full resize-none bg-transparent p-4 font-mono text-sm focus:outline-none disabled:opacity-60"
@@ -92,8 +115,46 @@ function Editor({
       </Card>
       {!canEdit && (
         <p className="text-xs text-muted-foreground">
-          Read-only — {endpoint === "qa-prompt" ? "admin" : "analyst"} role required to edit.
+          Read-only — {roleHint} role required to edit.
         </p>
+      )}
+
+      {ruleset && (
+        <Card className="p-4">
+          <h3 className="mb-2 text-sm font-medium">
+            Criteria ({ruleset.criteria.length}) — used for manual re-scoring
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-left text-muted-foreground">
+                <tr>
+                  <th className="py-1 pr-4 font-medium">ID</th>
+                  <th className="py-1 pr-4 font-medium">Title</th>
+                  <th className="py-1 pr-4 font-medium">Deduction</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ruleset.criteria.map((c) => (
+                  <tr key={c.id} className="border-t">
+                    <td className="py-1 pr-4 font-mono">{c.id}</td>
+                    <td className="py-1 pr-4">{c.title}</td>
+                    <td className="py-1 pr-4">
+                      {c.critical ? (
+                        <span className="font-medium text-destructive">critical → 0</span>
+                      ) : (
+                        `−${c.deduction}`
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Criteria are defined in{" "}
+            <code className="rounded bg-muted px-1">config/rulesets.yaml</code>.
+          </p>
+        </Card>
       )}
     </div>
   );
@@ -103,55 +164,81 @@ export default function Ruleset() {
   const { user } = useAuth();
   const writer = canWrite(user?.role);
   const isAdmin = user?.role === "admin";
-  const [tab, setTab] = useState<Tab>("qa-prompt");
+  const [tab, setTab] = useState<string>("default");
+
+  const { data } = useQuery({
+    queryKey: ["rulesets"],
+    queryFn: () => api.get<{ items: QaRuleset[] }>("/api/rulesets"),
+  });
+  const rulesets = data?.items ?? [];
+  const active = rulesets.find((r) => r.id === tab);
 
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold">Scoring configuration</h1>
         <p className="text-sm text-muted-foreground">
-          Edit the prompts and rules the QA engine grades against.
+          Each agent group is graded against its own ruleset. A conversation is scored with the
+          ruleset of the agent it is assigned to — VIP agents’ chats and emails use the VIP
+          ruleset. Because the criteria differ, scores from different rulesets are not
+          comparable.
         </p>
       </div>
 
-      {/* Tabs */}
+      {/* One tab per QA ruleset, plus the legacy API-backend ruleset. */}
       <div className="flex gap-1 border-b">
-        {(
-          [
-            { id: "qa-prompt" as Tab, label: "QA System Prompt", hint: "Qwen / Ollama grader" },
-            { id: "ruleset" as Tab, label: "Ruleset", hint: "API / text backend" },
-          ] as const
-        ).map((t) => (
+        {rulesets.map((r) => (
           <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
+            key={r.id}
+            onClick={() => setTab(r.id)}
             className={`flex flex-col px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
-              tab === t.id
+              tab === r.id
                 ? "border-primary text-foreground"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            {t.label}
-            <span className="text-[10px] font-normal text-muted-foreground">{t.hint}</span>
+            <span className="flex items-center gap-1.5">
+              {r.name}
+              {r.warnings.length > 0 && <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />}
+            </span>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              {r.id === "vip" ? "VIP agents" : "everyone else"} · {r.criteria.length} criteria
+            </span>
           </button>
         ))}
+        <button
+          onClick={() => setTab("rules")}
+          className={`flex flex-col px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+            tab === "rules"
+              ? "border-primary text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Support Ruleset
+          <span className="text-[10px] font-normal text-muted-foreground">API / text backend</span>
+        </button>
       </div>
 
-      {tab === "qa-prompt" && (
-        <Editor
-          endpoint="qa-prompt"
-          label="QA System Prompt"
-          description="System prompt sent to Qwen (Ollama) for every grading run."
-          canEdit={isAdmin}
-        />
-      )}
-      {tab === "ruleset" && (
+      {tab === "rules" ? (
         <Editor
           endpoint="rules"
-          label="Support Ruleset"
-          description="Ruleset used by the API / text grading backend."
+          description="Ruleset used by the legacy API / text grading backend."
           canEdit={writer}
+          roleHint="analyst"
         />
+      ) : (
+        active && (
+          <Editor
+            key={active.id}
+            endpoint={`rulesets/${active.id}/prompt`}
+            description={`System prompt sent to Qwen (Ollama) when grading ${
+              active.id === "vip" ? "VIP agents’" : "standard agents’"
+            } conversations.`}
+            canEdit={isAdmin}
+            roleHint="admin"
+            ruleset={active}
+          />
+        )
       )}
     </div>
   );

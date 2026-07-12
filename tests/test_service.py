@@ -48,7 +48,7 @@ def test_review_and_store_then_overview(temp_db, monkeypatch):
     import intercom_summary.qa.backends as backends_mod
     import intercom_summary.qa.grader as grader_mod
     monkeypatch.setattr(grader_mod, "Anthropic", FakeAnthropic)
-    monkeypatch.setattr(backends_mod, "get_grader", lambda backend=None: grader_mod.Grader())
+    monkeypatch.setattr(backends_mod, "get_grader", lambda backend=None, ruleset_id=None: grader_mod.Grader())
 
     result = service.review_and_store(conversation_ids=["1", "2"])
     assert result == {

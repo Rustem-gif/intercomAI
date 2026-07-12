@@ -190,6 +190,7 @@ def review_and_store(
     import httpx
 
     from intercom_summary.qa.backends import get_grader
+    from intercom_summary.qa.rulesets import ruleset_id_for_agent
 
     convos_store = ConversationsStore()
     grades_store = GradesStore()
@@ -207,13 +208,37 @@ def review_and_store(
         ignored = sum(1 for c in convos if tags_are_ignored(c.tags))
         convos = [c for c in convos if not tags_are_ignored(c.tags)]
 
-        grader = get_grader(backend)
         total = len(convos)
         concurrency = _REVIEW_CONCURRENCY.get(settings.qa_backend, 2)
 
-        # Separate already-graded from pending to report an accurate total upfront.
-        pending = [c for c in convos if regrade or not grades_store.is_graded(c.id, grader.rules_version)]
+        # Each conversation is graded against its assigned agent's ruleset — a VIP agent's
+        # chats and emails get the VIP ruleset. Build one grader per ruleset we actually see
+        # (lazily, so a run with no VIP agents never loads the VIP prompt).
+        graders: dict[str, Any] = {}
+
+        def grader_for(ruleset_id: str):
+            if ruleset_id not in graders:
+                graders[ruleset_id] = get_grader(backend, ruleset_id=ruleset_id)
+            return graders[ruleset_id]
+
+        # Bucket by ruleset, skipping conversations whose grade is already current. Staleness
+        # is judged against the grader that would run now: a grade produced by a *different*
+        # ruleset is left alone rather than re-graded, so moving an agent into the VIP group
+        # does not silently invalidate their standard-ruleset history (see is_current).
+        buckets: dict[str, list] = defaultdict(list)
+        for c in convos:
+            rid = ruleset_id_for_agent(c.assignee_name)
+            grader = grader_for(rid)
+            if regrade or not grades_store.is_current(c.id, rid, grader.rules_version):
+                buckets[rid].append(c)
+
+        pending = [c for bucket in buckets.values() for c in bucket]
         skipped = total - len(pending)
+        if len(buckets) > 1:
+            log.info(
+                "Review split across rulesets: %s",
+                ", ".join(f"{rid}={len(b)}" for rid, b in buckets.items()),
+            )
 
         if on_progress:
             on_progress(0, skipped, total)
@@ -232,7 +257,7 @@ def review_and_store(
             loop = asyncio.get_running_loop()
             executor = ThreadPoolExecutor(max_workers=concurrency)
 
-            async def grade_one(convo) -> None:
+            async def grade_one(convo, grader) -> None:
                 nonlocal graded_count, failed_count, backend_unreachable
                 if cancel_event and cancel_event.is_set():
                     return
@@ -269,7 +294,14 @@ def review_and_store(
                 if on_progress:
                     on_progress(graded_count, skipped + failed_count, total)
 
-            await asyncio.gather(*[grade_one(c) for c in pending])
+            # One ruleset at a time: with ollama concurrency of 1 the throughput win comes from
+            # a warm system-prompt KV cache, and alternating two system prompts would thrash it.
+            for ruleset_id, bucket in buckets.items():
+                if backend_unreachable or (cancel_event and cancel_event.is_set()):
+                    break
+                grader = grader_for(ruleset_id)
+                await asyncio.gather(*[grade_one(c, grader) for c in bucket])
+
             executor.shutdown(wait=False)
             if cancel_event and cancel_event.is_set():
                 cancelled = True
@@ -346,13 +378,19 @@ def build_conversation_snapshot(conversation_id: str) -> dict[str, Any] | None:
 
 
 # ── Overview (bento dashboard payload) ───────────────────────────────────────────
-def build_overview() -> dict[str, Any]:
+def build_overview(agents_scope: list[str] | None = None) -> dict[str, Any]:
+    """Dashboard aggregates. `agents_scope` limits everything to a group's agents (the UI's
+    Standard/VIP switcher) — None means all agents. Scores from different rulesets are not
+    comparable, which is exactly why the dashboard can be scoped to one group at a time."""
     convos_store = ConversationsStore()
     grades_store = GradesStore()
     try:
-        grades = grades_store.all()
-        total_convos = convos_store.count()
+        grades = grades_store.all(agents=agents_scope)
+        total_convos = convos_store.count(agents=agents_scope)
         agents = convos_store.agents()
+        if agents_scope is not None:
+            in_scope = {a.lower() for a in agents_scope}
+            agents = [a for a in agents if a.lower() in in_scope]
     finally:
         convos_store.close()
         grades_store.close()

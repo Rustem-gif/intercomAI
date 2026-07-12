@@ -1,0 +1,174 @@
+rulesets:
+  default:
+    name: Standard Support
+    prompt_path: rules/qa_system_prompt.txt
+    criteria:
+    - id: crit-data-care
+      title: Data Security
+      deduction: 0
+      critical: true
+    - id: crit-rg-care
+      title: Responsible Gaming
+      deduction: 0
+      critical: true
+    - id: crit-no-unsupported-promises
+      title: No Unsupported Promises
+      deduction: 20
+    - id: open-greet
+      title: Greeting
+      deduction: 2
+    - id: open-name-use
+      title: Name Usage
+      deduction: 1
+    - id: req-understanding
+      title: Request Understanding
+      deduction: 8
+    - id: req-clarify
+      title: Clarifying Questions
+      deduction: 5
+    - id: req-case-type
+      title: Case Type Handling
+      deduction: 4
+    - id: info-relevance
+      title: Response Relevance
+      deduction: 7
+    - id: info-actionable
+      title: Actionable Response
+      deduction: 8
+    - id: info-no-contradiction
+      title: No Contradictions
+      deduction: 8
+    - id: cf-friendly
+      title: Friendly Tone
+      deduction: 5
+    - id: cf-ownership
+      title: Ownership
+      deduction: 8
+    - id: cf-clarity
+      title: Language Clarity
+      deduction: 3
+    - id: resp-no-ghost
+      title: No Ghosting
+      deduction: 10
+    - id: resp-no-template-abuse
+      title: No Template Abuse
+      deduction: 7
+    - id: resp-delay-handling
+      title: Delay Handling
+      deduction: 5
+    - id: res-effort
+      title: Resolution Effort
+      deduction: 10
+    - id: res-next-step
+      title: Clear Next Step
+      deduction: 8
+    - id: res-no-fake-close
+      title: No Fake Closure
+      deduction: 15
+    - id: esc-need-recognized
+      title: Escalation Recognized
+      deduction: 8
+    - id: esc-handoff-explained
+      title: Handoff Explained
+      deduction: 7
+    - id: churn-detect-ack
+      title: Churn Signal Acknowledged
+      deduction: 10
+    - id: churn-retention-handling
+      title: Retention Handling
+      deduction: 8
+    - id: pay-withdrawal-sensitivity
+      title: Payment Sensitivity
+      deduction: 10
+    - id: close-confirm
+      title: Closure Confirmation
+      deduction: 3
+    - id: close-courtesy
+      title: Closure Courtesy
+      deduction: 2
+    manual_deductions:
+    - id: info-correctness
+      label: Information correctness
+      description: Agent gave factually wrong information or applied the wrong bonus
+        / action — the AI cannot verify this against external facts.
+  vip:
+    name: VIP
+    prompt_path: rules/qa_system_prompt_vip.txt
+    criteria:
+    - id: crit-data-care
+      title: Data Security
+      deduction: 0
+      critical: true
+    - id: crit-rg-care
+      title: Responsible Gaming
+      deduction: 0
+      critical: true
+    - id: crit-no-unsupported-promises
+      title: No Unsupported Promises
+      deduction: 20
+    - id: vip-recognition
+      title: VIP Recognition
+      deduction: 6
+    - id: vip-greet-personal
+      title: Personalised Greeting
+      deduction: 4
+    - id: req-understanding
+      title: Request Understanding
+      deduction: 8
+    - id: vip-personalization
+      title: Personalised Handling
+      deduction: 12
+    - id: vip-proactive
+      title: Proactive Service
+      deduction: 7
+    - id: vip-tone-premium
+      title: Premium Tone
+      deduction: 8
+    - id: vip-ownership
+      title: End-to-End Ownership
+      deduction: 10
+    - id: info-no-contradiction
+      title: No Contradictions
+      deduction: 8
+    - id: cf-clarity
+      title: Language Clarity
+      deduction: 3
+    - id: vip-no-ghost
+      title: No Ghosting
+      deduction: 12
+    - id: vip-response-priority
+      title: Priority Handling
+      deduction: 10
+    - id: vip-payment-priority
+      title: Payment Priority
+      deduction: 12
+    - id: vip-host-escalation
+      title: VIP Host Escalation
+      deduction: 15
+    - id: vip-retention-offer
+      title: Retention Handling
+      deduction: 15
+    - id: vip-comp-protocol
+      title: Comp Protocol
+      deduction: 10
+    - id: vip-followup-commitment
+      title: Follow-up Commitment
+      deduction: 8
+    - id: vip-next-step
+      title: Clear Next Step
+      deduction: 8
+    - id: vip-close-confirm
+      title: Closure Confirmation
+      deduction: 3
+    - id: close-courtesy
+      title: Closure Courtesy
+      deduction: 2
+    manual_deductions:
+    - id: info-correctness
+      label: Information correctness
+      description: Agent gave factually wrong information or applied the wrong bonus
+        / action — the AI cannot verify this against external facts.
+    - id: vip-policy-breach
+      label: VIP policy breach
+      description: Agent breached an internal VIP policy (comp limits, host protocol,
+        tier benefits) that is not visible to the AI from the transcript alone.

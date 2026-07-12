@@ -1,0 +1,152 @@
+"""VIP QA system prompt — the ruleset used for conversations handled by the VIP department.
+
+Mirrors the structure of casino_prompt.py (the standard support ruleset): the same
+deduction-based scoring model, the same output JSON shape, and the same file-backed
+bootstrap — but its own criteria set.
+
+VIP grading differs in kind, not just in strictness. A VIP host is judged on things the
+standard ruleset does not measure at all (recognising the player, looping in the account
+manager, retention action on a high-value churn signal, following the comp protocol) and is
+not judged on some things the standard ruleset cares about. Because the criteria differ,
+VIP scores are NOT comparable with standard scores — the UI keeps the two groups separate.
+
+The seed below is a starting point authored from the standard ruleset's proven layout
+(critical rules at the TOP, output format at the END). The VIP department owns the final
+criteria and point values — they should review this before it grades anything real.
+"""
+from __future__ import annotations
+
+VIP_CRITERION_TITLES: dict[str, str] = {
+    "crit-data-care": "Data Security",
+    "crit-rg-care": "Responsible Gaming",
+    "crit-no-unsupported-promises": "No Unsupported Promises",
+    "vip-recognition": "VIP Recognition",
+    "vip-greet-personal": "Personalised Greeting",
+    "req-understanding": "Request Understanding",
+    "vip-personalization": "Personalised Handling",
+    "vip-proactive": "Proactive Service",
+    "vip-tone-premium": "Premium Tone",
+    "vip-ownership": "End-to-End Ownership",
+    "info-no-contradiction": "No Contradictions",
+    "cf-clarity": "Language Clarity",
+    "vip-no-ghost": "No Ghosting",
+    "vip-response-priority": "Priority Handling",
+    "vip-payment-priority": "Payment Priority",
+    "vip-host-escalation": "VIP Host Escalation",
+    "vip-retention-offer": "Retention Handling",
+    "vip-comp-protocol": "Comp Protocol",
+    "vip-followup-commitment": "Follow-up Commitment",
+    "vip-next-step": "Clear Next Step",
+    "vip-close-confirm": "Closure Confirmation",
+    "close-courtesy": "Closure Courtesy",
+}
+
+# A FAIL on any of these forces the overall score to 0, exactly as in the standard ruleset.
+VIP_CRITICAL_CRITERIA: frozenset[str] = frozenset({"crit-data-care", "crit-rg-care"})
+
+VIP_MANUAL_DEDUCTION_CATALOG: list[dict] = [
+    {
+        "id": "info-correctness",
+        "label": "Information correctness",
+        "description": "Agent gave factually wrong information or applied the wrong bonus / "
+                       "action — the AI cannot verify this against external facts.",
+    },
+    {
+        "id": "vip-policy-breach",
+        "label": "VIP policy breach",
+        "description": "Agent breached an internal VIP policy (comp limits, host protocol, "
+                       "tier benefits) that is not visible to the AI from the transcript alone.",
+    },
+]
+VIP_MANUAL_DEDUCTION_IDS: frozenset[str] = frozenset(d["id"] for d in VIP_MANUAL_DEDUCTION_CATALOG)
+
+# Canonical per-criterion deduction — the "Ded" column of the prompt below.
+# Keep in sync with the table in VIP_QA_SYSTEM_PROMPT (validate_ruleset() checks this).
+VIP_CRITERION_DEDUCTIONS: dict[str, int] = {
+    "crit-data-care": 0,
+    "crit-rg-care": 0,
+    "crit-no-unsupported-promises": 20,
+    "vip-recognition": 6,
+    "vip-greet-personal": 4,
+    "req-understanding": 8,
+    "vip-personalization": 12,
+    "vip-proactive": 7,
+    "vip-tone-premium": 8,
+    "vip-ownership": 10,
+    "info-no-contradiction": 8,
+    "cf-clarity": 3,
+    "vip-no-ghost": 12,
+    "vip-response-priority": 10,
+    "vip-payment-priority": 12,
+    "vip-host-escalation": 15,
+    "vip-retention-offer": 15,
+    "vip-comp-protocol": 10,
+    "vip-followup-commitment": 8,
+    "vip-next-step": 8,
+    "vip-close-confirm": 3,
+    "close-courtesy": 2,
+}
+
+
+VIP_QA_SYSTEM_PROMPT = """\
+## ROLE
+Senior iGaming VIP QA analyst. Evaluate ONLY the agent; the player is never penalized.
+The player in this conversation is a VIP / high-value player and the agent is expected to deliver concierge-level service, not generic support.
+Evidence-based: every FAIL must cite a direct quote. Do not invent violations absent from the text.
+Non-negotiable: compliance, data security, and responsible gambling outweigh service quality — a warm, attentive chat that mishandles RG or leaks credentials FAILS regardless of how premium it sounds. A player's VIP status NEVER justifies bending RG or data rules.
+
+## SCORING FORMULA
+Base 100. Subtract stated deduction per FAIL. Floor 0. Pass ≥ 90.
+DOUBLE-PENALTY RULE: one error → one deduction. Further consequences go in flags only, not extra deductions.
+CRITICAL FAIL → overall_score = 0, critical_fail = true: any crit-* criterion triggered.
+
+## ⚠ CHECK THESE FIRST — CRITICAL (score = 0 if triggered)
+ID | FAIL condition | Deduction
+crit-data-care | Agent asked for password, CVV, full card number, or other clearly prohibited sensitive data | score = 0
+crit-rg-care | Player stated addiction / self-exclusion / loss of control / severe distress → agent encouraged play, offered a bonus, or ignored the signal | score = 0 (n/a if no RG signal in text)
+crit-no-unsupported-promises | Agent guaranteed refund, payment, bonus, comp, or fixed deadline not confirmed anywhere in the transcript | −20 or score = 0
+
+## ALL CRITERIA — evaluate every one; apply stated deduction when fail; use n/a only per the N/A column
+ID | FAIL when | Ded | N/A when
+vip-recognition | Player's VIP / loyalty status is visible in the chat and the agent handled them as an anonymous ticket, never acknowledging it | −6 | no VIP status visible in the text
+vip-greet-personal | No greeting, or a visible player name was not used in a chat where personal address is expected | −4 | name not visible
+req-understanding | Agent replies show the real problem was missed | −8 |
+vip-personalization | Handled as a generic case: visible player history, prior context, or stated preferences in the chat were ignored | −12 | no history or prior context visible in the text
+vip-proactive | Agent answered only the literal question while an obvious adjacent problem was visible in the chat (stuck withdrawal, expiring bonus, unresolved earlier issue) and was left untouched | −7 | no adjacent issue visible
+vip-tone-premium | Tone transactional, curt, or templated — below the concierge standard expected for a VIP | −8 |
+vip-ownership | Agent deflected or passed the player around instead of owning the case end-to-end | −10 |
+info-no-contradiction | Agent contradicts self or gives conflicting explanations within the same chat | −8 |
+cf-clarity | Messages contain errors that impede understanding | −3 |
+vip-no-ghost | A direct question from the player received no answer and was not acknowledged | −12 |
+vip-response-priority | Player was left waiting with no proactive update, or was told to wait with no context — VIP contacts are handled with priority | −10 | no wait or delay occurred in chat
+vip-payment-priority | Chat involves deposit / payment / withdrawal and the agent was vague, careless, or showed no urgency or ownership | −12 | chat not money-related
+vip-host-escalation | Case visibly needed the VIP host / account manager (limits, comps, account decisions, serious complaint) and the agent neither involved them nor said they would | −15 | no host-level matter in text
+vip-retention-offer | Player signalled churn or serious dissatisfaction (will leave / stop playing / lost trust) and the agent took no retention action and did not escalate to the host | −15 | no churn or serious dissatisfaction signal in text
+vip-comp-protocol | Agent offered or promised a comp, bonus, or goodwill gesture beyond their visible authority, or without routing it through the host | −10 | no comp / bonus / goodwill offered
+vip-followup-commitment | Agent promised a follow-up, callback, or check and gave neither a timeframe nor a named owner | −8 | no follow-up promised
+vip-next-step | Issue unresolved and the agent did not explain what happens next or who handles it | −8 | issue fully resolved in chat
+vip-close-confirm | Conversation ended logically; agent didn't confirm nothing further is needed | −3 | agent didn't close the chat
+close-courtesy | No polite thank-you or closing when closure occurred | −2 | agent didn't close the chat
+
+## SIGNAL FLAGS — set when observed; do NOT add extra deduction if already penalized above
+churn_signal · payment_sensitive_case · host_escalation_needed · comp_offered · vip_dissatisfaction · manual_review_required · metadata_needed
+
+## OUTPUT — return ONLY this JSON object; no markdown fences, no text outside the object
+{
+  "overall_score": <integer 0–100; max(0, 100 − total deductions); 0 if critical_fail>,
+  "critical_fail": <true | false>,
+  "criteria": [
+    {"id": "<criterion id>", "v": "<pass|fail|n/a>", "ded": <0 or negative integer>, "ev": "<short direct quote or n/a>"}
+  ],
+  "flags": ["<flag_name>"],
+  "risk": "<low|medium|high|critical>",
+  "violations": ["<most critical first>"],
+  "summary": "<2–3 sentences, plain language>",
+  "coaching": ["<concrete, actionable coaching step>"],
+  "confidence": "<High|Medium|Low>"
+}
+risk guide: critical = any crit-* triggered; high = churn ignored / host escalation missed / payment mishandled / unresolved; medium = personalisation or priority failures that risk the relationship; low = minor communication issues only.
+If confidence is Medium or Low, note the reason (truncation, missing context, ambiguous turns) in the last coaching item.
+
+Evaluate the transcript below and return ONLY the JSON.\
+"""

@@ -1,6 +1,36 @@
 // Thin fetch wrapper. Cookies carry the session, so always send credentials.
 
+// ── Group scoping (Standard / VIP) ───────────────────────────────────────────
+// VIP agents are graded against a different ruleset, so their scores are not comparable with
+// standard ones and the two are never averaged together. The AppShell switcher sets the active
+// group here rather than threading a prop through every page; these GET endpoints honour it.
+// Changing the group invalidates the react-query cache (see lib/group.tsx), so the pages refetch.
+const GROUP_SCOPED = [
+  "/api/overview",
+  "/api/conversations",
+  "/api/agents",
+  "/api/agents/scores",
+  "/api/accuracy",
+  "/api/evaluation/stats",
+];
+
+export type Group = "all" | "standard" | "vip";
+
+let activeGroup: Group = "all";
+
+export function setActiveGroup(g: Group) {
+  activeGroup = g;
+}
+
+function applyGroup(url: string): string {
+  if (activeGroup === "all") return url;
+  const path = url.split("?")[0];
+  if (!GROUP_SCOPED.includes(path)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}group=${activeGroup}`;
+}
+
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
+  if (method === "GET") url = applyGroup(url);
   const res = await fetch(url, {
     method,
     credentials: "include",
@@ -308,12 +338,32 @@ export interface OllamaRestart {
   message: string;
 }
 
+export interface RulesetCriterion {
+  id: string;
+  title: string;
+  deduction: number;
+  critical?: boolean;
+}
+
+export interface QaRuleset {
+  id: string;                       // "default" | "vip"
+  name: string;
+  version: string;
+  criteria: RulesetCriterion[];
+  manual_deductions: ManualDeductionPreset[];
+  /** Places where the prompt text and the criteria catalogue disagree on the points. */
+  warnings: string[];
+}
+
 export interface EvalStats {
   total: number;
   graded: number;
   pending: number;
-  /** Graded under an older ruleset version (re-grading will refresh them). */
+  /** Graded under an older version of their own ruleset (re-grading will refresh them). */
   stale?: number;
+  /** Graded by a different ruleset than their agent's group uses today — e.g. an agent's
+   *  history from before they joined VIP. Left alone on purpose; re-grade to convert. */
+  wrong_ruleset?: number;
   /** Conversations excluded from grading by tag (spam, empty, test, Jira, Follow-Up, no request). */
   ignored?: number;
   active_job: {

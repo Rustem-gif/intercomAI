@@ -160,8 +160,33 @@ ship for real.
   `qa/casino_prompt.py` and `qa/schema.py`. **These are delicate** — small changes can break
   grading (the model gets confused or scores everything wrong). Change carefully and re-test on a
   few conversations before a big run.
-- The grader's persona/instructions: `rules/qa_system_prompt.txt` (also editable in the UI by an
-  admin).
+- The grader's persona/instructions: `rules/qa_system_prompt.txt` — this is the **standard**
+  ruleset, used for everyone who isn't in the VIP group (also editable in the UI by an admin).
+  VIP agents follow `rules/qa_system_prompt_vip.txt` instead — see *"Change what the VIP ruleset
+  checks"* below.
+
+### Put an agent in the VIP group (grade them by different rules)
+- **Easiest:** website → **Agents** page → click the **Standard / VIP** button next to an agent.
+  Admin only. From then on, every conversation assigned to that agent — chat *and* email — is
+  graded against the **VIP ruleset** instead of the standard one.
+- **Their old grades are left alone.** They were graded correctly against the standard rules at the
+  time, so nothing is re-graded automatically. The Evaluation page shows them as *"graded with a
+  different ruleset"*. To convert them, run a review over that agent with **re-grade** enabled.
+- The **group switcher** in the top bar (All / Standard / VIP) scopes every page. VIP and standard
+  scores come from different criteria, so they are never averaged together — don't compare them.
+
+### Change what the VIP ruleset checks (or add another ruleset)
+A **ruleset** = a system prompt (what Qwen follows) + a criteria catalogue (ids, titles, points).
+- Prompt text: **Ruleset** page → *VIP* tab (admin), or `rules/qa_system_prompt_vip.txt`.
+- Criteria + points: `config/rulesets.yaml`.
+- ⚠️ The points live in **both** places: the `Ded` column inside the prompt (what the AI applies
+  while grading) and `config/rulesets.yaml` (what a manual re-score applies). They must agree — the
+  Ruleset page shows an amber warning if they drift.
+- To add a third ruleset: add an entry to `config/rulesets.yaml` (name, `prompt_path`, criteria),
+  add the group in `qa/rulesets.py` (`GROUP_RULESETS`), and write the prompt file. Everything else
+  — grading, staleness, the UI tabs — picks it up automatically.
+- ⚠️ Editing a ruleset's prompt marks **that ruleset's** grades outdated (a re-run re-grades them).
+  Editing the VIP prompt does *not* affect standard grades, and vice versa.
 
 ### Switch which AI model does the grading
 - In `.env`: `OLLAMA_MODEL=qwen2.5:14b` (current). This Mac only comfortably runs the 14b model;
@@ -234,8 +259,10 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
 ## 6. The database
 
 - One file: **`data/grades.db`** (SQLite). Despite the name it holds *everything*: conversations,
-  grades, background jobs, comments, coaching, etc.
+  grades, background jobs, comments, coaching, agent groups, etc.
 - You rarely touch it directly. Code reads/writes it through the files in `storage/` (one per table).
+- Every grade records **which ruleset scored it** (`grades.ruleset_id`) alongside the rules version.
+  That's how a VIP agent's older, standard-ruleset grades survive untouched when they join the group.
 - It's backed up automatically into `data/backups/`.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
 

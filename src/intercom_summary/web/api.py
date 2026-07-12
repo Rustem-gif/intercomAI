@@ -21,12 +21,14 @@ from starlette.middleware.sessions import SessionMiddleware
 from intercom_summary import service
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import settings
+from intercom_summary.storage.agent_groups_store import AgentGroupsStore
 from intercom_summary.storage.conversations_store import ConversationsStore
 from intercom_summary.storage.grades_store import GradesStore
 from intercom_summary.storage.iconic_cases_store import IconicCasesStore
 from intercom_summary.storage.jobs_store import JobsStore
 from intercom_summary.web import auth
 from intercom_summary.web.schemas import (
+    AgentGroupIn,
     AgentLinkCreate,
     AgentLinkOut,
     AiChatRequest,
@@ -161,18 +163,91 @@ def create_app() -> FastAPI:
         return user
 
     # ── Overview / data (read) ──────────────────────────────────────────────────
+    def _group_agents(group: str | None) -> list[str] | None:
+        """Resolve the ?group= switcher to a list of agent names, or None for 'all'.
+
+        'standard' is *every known agent minus the VIP members*, not "agents with no group
+        row" — an agent who has never been explicitly grouped is standard, and most never
+        will be. Returning [] (an empty group) is meaningful and must filter to nothing.
+        """
+        from intercom_summary.qa.rulesets import GROUP_STANDARD, GROUP_VIP
+
+        if not group or group == "all":
+            return None
+        if group not in (GROUP_STANDARD, GROUP_VIP):
+            raise HTTPException(422, f"Unknown group '{group}' (use all, standard or vip)")
+
+        ags = AgentGroupsStore()
+        cstore = ConversationsStore()
+        try:
+            vip = ags.members(GROUP_VIP)
+            if group == GROUP_VIP:
+                return vip
+            vip_lower = {v.lower() for v in vip}
+            return [a for a in cstore.agents() if a.lower() not in vip_lower]
+        finally:
+            ags.close()
+            cstore.close()
+
     @app.get("/api/overview")
-    def overview(user: dict = Depends(auth.current_user)):
-        return service.build_overview()
+    def overview(group: str | None = None, user: dict = Depends(auth.current_user)):
+        return service.build_overview(agents_scope=_group_agents(group))
 
     @app.get("/api/agents")
-    def agents(user: dict = Depends(auth.current_user)):
+    def agents(group: str | None = None, user: dict = Depends(auth.current_user)):
         # Agents present in the local cache (used for filtering existing conversations).
         store = ConversationsStore()
         try:
-            return {"agents": store.agents()}
+            names = store.agents()
         finally:
             store.close()
+        scope = _group_agents(group)
+        if scope is not None:
+            in_scope = {a.lower() for a in scope}
+            names = [a for a in names if a.lower() in in_scope]
+        return {"agents": names}
+
+    # ── Agent groups (VIP membership) ─────────────────────────────────────────
+    @app.get("/api/agent-groups")
+    def get_agent_groups(user: dict = Depends(auth.current_user)):
+        """{agent_name: group_id} for agents in a non-standard group."""
+        store = AgentGroupsStore()
+        try:
+            return {"groups": store.all_groups()}
+        finally:
+            store.close()
+
+    @app.put("/api/agent-groups")
+    def put_agent_group(body: AgentGroupIn, user: dict = Depends(auth.require_admin)):
+        """Move an agent into a group (admin only — it changes how they are graded)."""
+        from intercom_summary.qa.rulesets import GROUP_STANDARD, GROUP_VIP
+
+        if body.group_id not in (GROUP_STANDARD, GROUP_VIP):
+            raise HTTPException(422, f"Unknown group '{body.group_id}' (use standard or vip)")
+        if not body.agent_name.strip():
+            raise HTTPException(422, "agent_name is required")
+
+        store = AgentGroupsStore()
+        try:
+            if body.group_id == GROUP_STANDARD:
+                store.remove(body.agent_name)   # standard = no row
+            else:
+                store.set_group(
+                    body.agent_name, body.group_id,
+                    agent_email=body.agent_email or "",
+                    intercom_admin_id=body.intercom_admin_id or "",
+                    updated_by=user["username"],
+                )
+        finally:
+            store.close()
+        log.info(
+            "Agent '%s' moved to group '%s' by %s",
+            body.agent_name, body.group_id, user["username"],
+        )
+        # Their future conversations are graded with that group's ruleset. Existing grades are
+        # left alone (see GradesStore.is_current) — the Evaluation page surfaces them as
+        # "graded with a different ruleset" so an analyst can re-grade deliberately.
+        return {"ok": True, "agent_name": body.agent_name, "group_id": body.group_id}
 
     @app.get("/api/intercom/admins")
     async def intercom_admins(user: dict = Depends(auth.current_user)):
@@ -184,6 +259,7 @@ def create_app() -> FastAPI:
     def conversations(
         user: dict = Depends(auth.current_user),
         agent: list[str] | None = Query(None),
+        group: str | None = None,
         since: str | None = None,
         until: str | None = None,
         state: str | None = None,
@@ -197,10 +273,18 @@ def create_app() -> FastAPI:
         limit: int = 50,
         offset: int = 0,
     ):
+        # An explicit agent filter wins; otherwise the group switcher scopes the list.
+        agents = agent
+        if not agents:
+            scope = _group_agents(group)
+            if scope is not None and not scope:
+                # A group with no members matches nothing — don't fall through to "all".
+                return {"items": [], "total": 0, "limit": limit, "offset": offset}
+            agents = scope
         store = ConversationsStore()
         try:
             rows, total = store.query(
-                agents=agent, since=since, until=until, state=state,
+                agents=agents, since=since, until=until, state=state,
                 min_score=min_score, max_csat=max_csat, search=search, tag=tag,
                 ungraded=ungraded, sort=sort, descending=descending,
                 limit=limit, offset=offset,
@@ -316,7 +400,7 @@ def create_app() -> FastAPI:
     @app.post("/api/conversations/{conversation_id}/override")
     def override_grade(conversation_id: str, body: OverrideRequest,
                        user: dict = Depends(auth.require_write)):
-        from intercom_summary.qa.casino_prompt import MANUAL_DEDUCTION_IDS
+        from intercom_summary.qa.rulesets import get_ruleset
         from intercom_summary.qa.schema import score_from_verdicts
 
         if not body.reason.strip():
@@ -328,6 +412,11 @@ def create_app() -> FastAPI:
                 grade = gstore.get(conversation_id)
                 if not grade:
                     raise HTTPException(404, "No grade found for this conversation — grade it first")
+                # Re-score with the ruleset that produced this grade, not the one the agent
+                # would get today — otherwise moving an agent into the VIP group would change
+                # the points under their already-graded history.
+                ruleset_id = grade.get("ruleset_id") or "default"
+                manual_deduction_ids = get_ruleset(ruleset_id).manual_deduction_ids
                 ai_verdicts = {r["rule_id"]: r["verdict"] for r in grade.get("rule_results", [])}
                 valid = {"pass", "fail", "n/a"}
                 for cid, v in (body.criteria or {}).items():
@@ -340,7 +429,7 @@ def create_app() -> FastAPI:
                 # Validate manual deductions (analyst-chosen points the AI can't judge).
                 deductions: list[dict] = []
                 for d in (body.manual_deductions or []):
-                    if d.category not in MANUAL_DEDUCTION_IDS:
+                    if d.category not in manual_deduction_ids:
                         raise HTTPException(422, f"Unknown deduction category '{d.category}'")
                     if not (1 <= d.points <= 100):
                         raise HTTPException(422, "Deduction points must be 1–100")
@@ -349,7 +438,9 @@ def create_app() -> FastAPI:
                     raise HTTPException(422, "No criterion changes or deductions to save")
                 effective = {**ai_verdicts, **diff}
                 extra = sum(d["points"] for d in deductions)
-                score, _band, _result = score_from_verdicts(effective, extra_deduction=extra)
+                score, _band, _result = score_from_verdicts(
+                    effective, extra_deduction=extra, ruleset_id=ruleset_id
+                )
                 ok = gstore.save_override(
                     conversation_id, score, body.reason, user["username"],
                     human_criteria=diff, human_deductions=deductions,
@@ -441,16 +532,19 @@ def create_app() -> FastAPI:
             dstore.close()
 
     @app.get("/api/qa/manual-deductions")
-    def manual_deduction_catalog(user: dict = Depends(auth.current_user)):
-        """Catalog of manual-deduction presets (things the AI can't verify)."""
-        from intercom_summary.qa.casino_prompt import MANUAL_DEDUCTION_CATALOG
-        return {"items": MANUAL_DEDUCTION_CATALOG}
+    def manual_deduction_catalog(
+        ruleset_id: str | None = None, user: dict = Depends(auth.current_user)
+    ):
+        """Catalog of manual-deduction presets (things the AI can't verify) for a ruleset."""
+        from intercom_summary.qa.rulesets import get_ruleset
+
+        return {"items": get_ruleset(ruleset_id).manual_deductions}
 
     @app.get("/api/accuracy")
-    def accuracy(user: dict = Depends(auth.current_user)):
+    def accuracy(group: str | None = None, user: dict = Depends(auth.current_user)):
         gstore = GradesStore()
         try:
-            return gstore.accuracy_stats()
+            return gstore.accuracy_stats(agents=_group_agents(group))
         finally:
             gstore.close()
 
@@ -708,24 +802,40 @@ def create_app() -> FastAPI:
         ]}
 
     @app.get("/api/evaluation/stats")
-    def evaluation_stats(user: dict = Depends(auth.current_user)):
+    def evaluation_stats(group: str | None = None, user: dict = Depends(auth.current_user)):
         """Counts of conversations vs graded vs active job, used by the Evaluation page."""
         from intercom_summary.qa.backends import get_grader
+        from intercom_summary.qa.rulesets import GROUP_VIP, list_rulesets
+
+        # Take each ruleset's live version from the grader that would run, not from the prompt
+        # file: the Anthropic backend grades against support_rules.md and stamps that hash.
+        versions: dict[str, str] = {}
+        for rs in list_rulesets():
+            try:
+                versions[rs.id] = get_grader(ruleset_id=rs.id).rules_version
+            except Exception:
+                versions[rs.id] = rs.version
+
+        ags = AgentGroupsStore()
+        try:
+            vip_agents = ags.members(GROUP_VIP)
+        finally:
+            ags.close()
+
         cstore = ConversationsStore()
         try:
-            try:
-                rules_version = get_grader().rules_version
-            except Exception:
-                rules_version = None
             # Count over the *gradeable* population (conversations without IGNORE_TAGS);
             # triage/noise chats are never graded, so excluding them lets coverage reach
-            # 100%. "graded" counts any grade (filtering by the current rules_version
-            # would falsely report 0 the moment the prompt is edited); "graded_current"
-            # is the subset under the live ruleset, surfaced separately as "stale".
-            counts = cstore.evaluation_counts(rules_version)
+            # 100%. "graded" counts any grade; "graded_current" is the subset still matching
+            # the live version of the ruleset that produced it, so "stale" means "its own
+            # ruleset was edited" — not "its agent changed group", which is wrong_ruleset.
+            counts = cstore.evaluation_counts(
+                versions=versions, vip_agents=vip_agents, agents=_group_agents(group)
+            )
             total = counts["total"]
             graded = counts["graded"]
             graded_current = counts["graded_current"]
+            wrong_ruleset = counts["wrong_ruleset"]
             ignored = counts["ignored"]
         finally:
             cstore.close()
@@ -751,7 +861,11 @@ def create_app() -> FastAPI:
             "total": total,
             "graded": graded,
             "pending": max(0, total - graded),
+            # Its own ruleset was edited since it was graded → re-grading will refresh it.
             "stale": max(0, graded - graded_current),
+            # Graded by a different ruleset than its agent's group uses today (e.g. an agent's
+            # back catalogue after they joined VIP). Left alone on purpose; re-grade to convert.
+            "wrong_ruleset": wrong_ruleset,
             "ignored": ignored,
             "active_job": active_job,
         }
@@ -850,22 +964,62 @@ def create_app() -> FastAPI:
 
         return {"ok": True, "version": load_ruleset().version}
 
+    @app.get("/api/rulesets")
+    def get_rulesets(user: dict = Depends(auth.current_user)):
+        """Every QA ruleset with its live version, criteria and any prompt↔criteria drift."""
+        from intercom_summary.qa.rulesets import list_rulesets, validate_ruleset
+
+        return {"items": [
+            {
+                "id": rs.id,
+                "name": rs.name,
+                "version": rs.version,
+                "criteria": rs.criteria,
+                "manual_deductions": rs.manual_deductions,
+                "warnings": validate_ruleset(rs),
+            }
+            for rs in list_rulesets()
+        ]}
+
+    @app.get("/api/rulesets/{ruleset_id}/prompt")
+    def get_ruleset_prompt(ruleset_id: str, user: dict = Depends(auth.current_user)):
+        from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
+
+        rs = get_ruleset(ruleset_id)
+        return {"id": rs.id, "name": rs.name, "text": rs.prompt_text,
+                "version": rs.version, "warnings": validate_ruleset(rs)}
+
+    @app.put("/api/rulesets/{ruleset_id}/prompt")
+    def put_ruleset_prompt(ruleset_id: str, body: RulesIn,
+                           user: dict = Depends(auth.require_admin)):
+        """Edit a ruleset's system prompt. Admin-only: it changes how everyone in that group
+        is graded, and bumps the version so that ruleset's grades re-grade on the next run."""
+        from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
+
+        rs = get_ruleset(ruleset_id)
+        if rs.id != ruleset_id:
+            raise HTTPException(404, f"Unknown ruleset '{ruleset_id}'")
+        rs.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        rs.prompt_path.write_text(body.text, encoding="utf-8")
+        updated = get_ruleset(ruleset_id)
+        log.info(
+            "QA prompt for ruleset '%s' updated by admin (version %s → %s)",
+            ruleset_id, rs.version, updated.version,
+        )
+        return {"ok": True, "version": updated.version, "warnings": validate_ruleset(updated)}
+
+    # Kept as an alias for the default ruleset so existing clients keep working.
     @app.get("/api/qa-prompt")
     def get_qa_prompt(user: dict = Depends(auth.current_user)):
-        from intercom_summary.qa.casino_prompt import load_qa_prompt
+        from intercom_summary.qa.rulesets import DEFAULT_RULESET_ID
 
-        qp = load_qa_prompt()
-        return {"text": qp.text, "version": qp.version}
+        return get_ruleset_prompt(DEFAULT_RULESET_ID, user)
 
     @app.put("/api/qa-prompt")
     def put_qa_prompt(body: RulesIn, user: dict = Depends(auth.require_admin)):
-        from intercom_summary.qa.casino_prompt import load_qa_prompt
+        from intercom_summary.qa.rulesets import DEFAULT_RULESET_ID
 
-        settings.qa_prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        settings.qa_prompt_path.write_text(body.text, encoding="utf-8")
-        qp = load_qa_prompt()
-        log.info("QA system prompt updated by admin (version %s)", qp.version)
-        return {"ok": True, "version": qp.version}
+        return put_ruleset_prompt(DEFAULT_RULESET_ID, body, user)
 
     # ── AI agent (Qwen + MCP-style Intercom tools) ───────────────────────────
     @app.post("/api/ai/agent")
@@ -1280,6 +1434,7 @@ def create_app() -> FastAPI:
         period: str = "all",
         start: str | None = None,
         end: str | None = None,
+        group: str | None = None,
         user: dict = Depends(auth.current_user),
     ):
         """Average effective QA score per agent (by conversation date).
@@ -1307,10 +1462,14 @@ def create_app() -> FastAPI:
                 since = (
                     datetime.now(timezone.utc) - timedelta(days=_PERIOD_DAYS[period])
                 ).isoformat()
+        scope = _group_agents(group)
         gstore = GradesStore()
         cstore = ConversationsStore()
         try:
             agents = gstore.agent_scores(since, until)
+            if scope is not None:
+                in_scope = {a.lower() for a in scope}
+                agents = [a for a in agents if (a["agent"] or "").lower() in in_scope]
             csat_by_agent = {r["agent"]: r for r in cstore.agent_csat(since, until)}
             for a in agents:
                 c = csat_by_agent.get(a["agent"])

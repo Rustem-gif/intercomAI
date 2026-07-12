@@ -10,6 +10,7 @@ import {
   YAxis,
 } from "recharts";
 import { Download, RefreshCw, Sparkles, Wrench } from "lucide-react";
+import { useGroup, GROUP_LABELS } from "@/lib/group";
 import { api, Job, Overview as OverviewData } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import { Button, Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
@@ -30,6 +31,7 @@ function Kpi({ label, value, accent }: { label: string; value: React.ReactNode; 
 
 export default function Overview() {
   const { user } = useAuth();
+  const { group } = useGroup();
   const qc = useQueryClient();
   const [dialog, setDialog] = useState<null | "fetch" | "review">(null);
   const [qaAllJob, setQaAllJob] = useState<Job | null>(null);
@@ -101,8 +103,18 @@ export default function Overview() {
       {/* Header + actions */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Overview</h1>
-          <p className="text-sm text-muted-foreground">Support QA at a glance.</p>
+          <h1 className="text-2xl font-bold">
+            Overview
+            {group !== "all" && (
+              <span className="ml-2 align-middle text-sm font-normal text-muted-foreground">
+                · {GROUP_LABELS[group]}
+              </span>
+            )}
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Support QA at a glance.
+            {group === "vip" && " Scored against the VIP ruleset."}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {/* Inline repair status */}

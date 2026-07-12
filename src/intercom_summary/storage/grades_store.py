@@ -16,18 +16,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _annotate_criteria(rule_results: list | None) -> None:
+def _annotate_criteria(rule_results: list | None, ruleset_id: str | None = None) -> None:
     """Tag each recognised rule_result with its canonical `deduction` and `critical` flag so
     the UI can render ScoreBuddy-style toggles and preview the recomputed score. Unknown
     criteria (e.g. legacy Claude-backend grades) are left without a deduction, which the UI
-    uses to fall back to the manual slider."""
-    from intercom_summary.qa.casino_prompt import CRITERION_DEDUCTIONS, CRITICAL_CRITERIA
+    uses to fall back to the manual slider.
+
+    `ruleset_id` is the ruleset that produced the grade, so an old standard grade keeps its
+    standard points even if the agent has since moved to the VIP group."""
+    from intercom_summary.qa.rulesets import get_ruleset
+
+    rs = get_ruleset(ruleset_id)
+    deductions, critical = rs.deductions, rs.critical
 
     for r in rule_results or []:
         cid = r.get("rule_id", "")
-        if cid in CRITERION_DEDUCTIONS or cid in CRITICAL_CRITERIA:
-            r["deduction"] = CRITERION_DEDUCTIONS.get(cid, 0)
-            r["critical"] = cid in CRITICAL_CRITERIA
+        if cid in deductions or cid in critical:
+            r["deduction"] = deductions.get(cid, 0)
+            r["critical"] = cid in critical
 
 
 class GradesStore:
@@ -49,6 +55,33 @@ class GradesStore:
             ).fetchone()
         return row is not None
 
+    def is_current(self, conversation_id: str, ruleset_id: str, rules_version: str) -> bool:
+        """True if the stored grade needs no re-grading.
+
+        `ruleset_id` / `rules_version` are the ruleset the conversation *would* be graded with
+        now, taken from the live grader (not from the ruleset file directly — the Anthropic
+        backend grades against support_rules.md and stamps that hash instead).
+
+        Two cases count as current:
+        - the grade was produced by the same ruleset, at its current version → nothing changed;
+        - the grade was produced by a *different* ruleset → it was graded correctly at the
+          time, so leave it alone. This is what stops a VIP agent's entire back catalogue from
+          being invalidated and re-graded the moment they are added to the VIP group. Those
+          grades are surfaced separately as `wrong_ruleset` on the Evaluation page, where an
+          analyst can choose to re-grade them.
+
+        Editing a ruleset's prompt still marks that ruleset's own grades stale, as before.
+        """
+        row = self._conn.execute(
+            "SELECT rules_version, ruleset_id FROM grades WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if (row["ruleset_id"] or "default") != ruleset_id:
+            return True
+        return row["rules_version"] == rules_version
+
     def count_graded(self, rules_version: str | None = None) -> int:
         """Count distinct conversations that have a grade (optionally for a specific ruleset)."""
         if rules_version:
@@ -68,14 +101,15 @@ class GradesStore:
         self._conn.execute(
             """INSERT INTO grades
                (conversation_id, agent_name, agent_email, overall_score, summary,
-                rules_version, model, graded_at, payload_json)
-               VALUES (?,?,?,?,?,?,?,?,?)
+                rules_version, ruleset_id, model, graded_at, payload_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(conversation_id) DO UPDATE SET
                    agent_name    = excluded.agent_name,
                    agent_email   = excluded.agent_email,
                    overall_score = excluded.overall_score,
                    summary       = excluded.summary,
                    rules_version = excluded.rules_version,
+                   ruleset_id    = excluded.ruleset_id,
                    model         = excluded.model,
                    graded_at     = excluded.graded_at,
                    payload_json  = excluded.payload_json""",
@@ -86,6 +120,7 @@ class GradesStore:
                 grade.overall_score,
                 grade.summary,
                 grade.rules_version,
+                grade.ruleset_id or "default",
                 grade.model,
                 grade.graded_at,
                 json.dumps(grade.to_dict()),
@@ -96,20 +131,23 @@ class GradesStore:
     def get(self, conversation_id: str) -> dict | None:
         row = self._conn.execute(
             """SELECT payload_json, human_score, override_reason, overridden_by,
-                      overridden_at, human_criteria, human_deductions
+                      overridden_at, human_criteria, human_deductions, ruleset_id
                FROM grades WHERE conversation_id=?""",
             (conversation_id,),
         ).fetchone()
         if not row:
             return None
         d = json.loads(row["payload_json"])
+        # Grades written before the VIP ruleset existed have no ruleset_id in their payload;
+        # the column backfills them to 'default', which is what graded them.
+        d["ruleset_id"] = row["ruleset_id"] or d.get("ruleset_id") or "default"
         d["human_score"] = row["human_score"]
         d["override_reason"] = row["override_reason"]
         d["overridden_by"] = row["overridden_by"]
         d["overridden_at"] = row["overridden_at"]
         d["human_criteria"] = json.loads(row["human_criteria"]) if row["human_criteria"] else None
         d["human_deductions"] = json.loads(row["human_deductions"]) if row["human_deductions"] else None
-        _annotate_criteria(d.get("rule_results"))
+        _annotate_criteria(d.get("rule_results"), d["ruleset_id"])
         return d
 
     def agent_scores(self, since: str | None = None, until: str | None = None) -> list[dict]:
@@ -147,11 +185,17 @@ class GradesStore:
         ).fetchall()
         return [json.loads(r["payload_json"]) for r in rows]
 
-    def all(self) -> list[dict]:
-        rows = self._conn.execute(
-            """SELECT payload_json, human_score, override_reason, overridden_by, overridden_at
-               FROM grades ORDER BY graded_at DESC"""
-        ).fetchall()
+    def all(self, agents: list[str] | None = None) -> list[dict]:
+        sql = ("SELECT payload_json, human_score, override_reason, overridden_by, overridden_at "
+               "FROM grades")
+        args: list[object] = []
+        if agents is not None:
+            if not agents:  # an empty group matches nothing, not everything
+                return []
+            sql += f" WHERE agent_name IN ({','.join('?' * len(agents))})"
+            args.extend(agents)
+        sql += " ORDER BY graded_at DESC"
+        rows = self._conn.execute(sql, args).fetchall()
         result = []
         for r in rows:
             d = json.loads(r["payload_json"])
@@ -190,13 +234,18 @@ class GradesStore:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def accuracy_stats(self) -> dict:
+    def accuracy_stats(self, agents: list[str] | None = None) -> dict:
         """AI-vs-human accuracy metrics for the traceability dashboard."""
-        rows = self._conn.execute(
-            """SELECT conversation_id, overall_score, human_score,
-                      agent_name, override_reason, overridden_by, overridden_at, graded_at
-               FROM grades"""
-        ).fetchall()
+        sql = ("SELECT conversation_id, overall_score, human_score, agent_name, "
+               "override_reason, overridden_by, overridden_at, graded_at FROM grades")
+        args: list[object] = []
+        if agents is not None:
+            if not agents:
+                sql += " WHERE 0"
+            else:
+                sql += f" WHERE agent_name IN ({','.join('?' * len(agents))})"
+                args.extend(agents)
+        rows = self._conn.execute(sql, args).fetchall()
 
         total = len(rows)
         overridden = [r for r in rows if r["human_score"] is not None]
