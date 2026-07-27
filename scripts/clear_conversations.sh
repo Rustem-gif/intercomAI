@@ -41,6 +41,11 @@ sqlite3 "$DB" "
     conversation_id TEXT PRIMARY KEY, added_by TEXT NOT NULL,
     added_at TEXT NOT NULL, manager_comment TEXT NOT NULL DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS deleted_conversations (
+    conversation_id TEXT PRIMARY KEY, agent_name TEXT, subject TEXT, created_at TEXT,
+    deleted_at TEXT NOT NULL, deleted_by TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+    blacklist INTEGER NOT NULL DEFAULT 1
+  );
 "
 
 echo "Database: $DB"
@@ -55,7 +60,11 @@ sqlite3 "$DB" "
   SELECT '  coaching_sessions:      ' || COUNT(*) FROM coaching_sessions;
   SELECT '  agent_review_tokens:    ' || COUNT(*) FROM agent_review_tokens;
   SELECT '  iconic_cases:           ' || COUNT(*) FROM iconic_cases;
+  SELECT '  deleted_conversations:  ' || COUNT(*) FROM deleted_conversations;
 "
+echo ""
+echo "Note: clearing deleted_conversations (the Trash) also lifts the block that stops"
+echo "      previously deleted conversations from being re-imported by an Intercom fetch."
 
 echo ""
 read -r -p "Delete all of the above? [y/N] " confirm
@@ -73,6 +82,7 @@ sqlite3 "$DB" "
   DELETE FROM iconic_cases;
   DELETE FROM grades;
   DELETE FROM conversations;
+  DELETE FROM deleted_conversations;
   VACUUM;
 "
 

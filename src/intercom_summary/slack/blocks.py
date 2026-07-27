@@ -135,7 +135,15 @@ def parse_modal_submission(view: dict[str, Any]) -> dict[str, Any]:
 def result_message(action: str, summary: dict, params: dict) -> list[dict]:
     """Block Kit result message with action buttons."""
     if action == "fetch":
-        text = f":white_check_mark: Fetched *{summary.get('fetched', 0)}* conversation(s)."
+        fetched, skipped = summary.get("fetched", 0), summary.get("skipped_deleted", 0)
+        if skipped:
+            text = (
+                f":warning: Fetched *{fetched}* conversation(s) but stored only "
+                f"*{summary.get('saved', 0)}* — *{skipped}* are in the Trash and are blocked "
+                f"from re-import. Restore or purge them to import them again."
+            )
+        else:
+            text = f":white_check_mark: Fetched *{fetched}* conversation(s)."
     elif action == "review":
         text = (
             f":clipboard: Graded *{summary.get('graded', 0)}* "

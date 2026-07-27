@@ -67,6 +67,13 @@ class Settings:
     # frontend CSAT_LOW_MAX constant in web/frontend/src/lib/utils.ts.
     csat_low_max: int = field(default_factory=lambda: int(_env("CSAT_LOW_MAX", "1") or "1"))
 
+    # How long soft-deleted conversations stay in the Trash before being purged for good.
+    # Expiry runs at web startup. 0 disables it (the trash then grows without bound, and
+    # with it the blacklist of conversations that can never be re-imported).
+    trash_retention_days: int = field(
+        default_factory=lambda: int(_env("TRASH_RETENTION_DAYS", "90") or "90")
+    )
+
     # Slack
     slack_bot_token: str = field(default_factory=lambda: _env("SLACK_BOT_TOKEN"))
     slack_app_token: str = field(default_factory=lambda: _env("SLACK_APP_TOKEN"))

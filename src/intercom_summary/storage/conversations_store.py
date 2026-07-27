@@ -39,14 +39,18 @@ class ConversationsStore:
     def close(self) -> None:
         self._conn.close()
 
-    def save(self, convo: Conversation) -> None:
-        # Never re-import a conversation an analyst has deleted: it lives in the trash
-        # (deleted_conversations) and Intercom re-fetches would otherwise resurrect it.
+    def save(self, convo: Conversation) -> bool:
+        """Store (or refresh) a conversation. Returns False if it was skipped because an
+        analyst blacklisted it — callers must report that, or a fetch looks like it worked
+        while importing nothing."""
+        # Never re-import a conversation an analyst deliberately deleted: it lives in the
+        # trash and Intercom re-fetches would otherwise resurrect it. Bulk cache clears
+        # (blacklist=0) do not block re-import.
         if self._conn.execute(
-            "SELECT 1 FROM deleted_conversations WHERE conversation_id=? LIMIT 1",
+            "SELECT 1 FROM deleted_conversations WHERE conversation_id=? AND blacklist=1 LIMIT 1",
             (convo.id,),
         ).fetchone():
-            return
+            return False
 
         # Preserve any custom_tags an analyst has already set on this conversation.
         existing = self._conn.execute(
@@ -79,11 +83,11 @@ class ConversationsStore:
             ),
         )
         self._conn.commit()
+        return True
 
     def save_many(self, convos: list[Conversation]) -> int:
-        for c in convos:
-            self.save(c)
-        return len(convos)
+        """Returns how many were actually stored — not len(convos); blacklisted ones are skipped."""
+        return sum(1 for c in convos if self.save(c))
 
     def get(self, conversation_id: str) -> Conversation | None:
         row = self._conn.execute(

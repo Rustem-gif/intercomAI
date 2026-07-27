@@ -13,6 +13,7 @@ import NeedsAttention from "./pages/NeedsAttention";
 import Disputes from "./pages/Disputes";
 import KnowledgeBase from "./pages/KnowledgeBase";
 import Coaching from "./pages/Coaching";
+import Storage from "./pages/Storage";
 import AgentReview from "./pages/AgentReview";
 
 function AuthenticatedApp() {
@@ -41,6 +42,8 @@ function AuthenticatedApp() {
         <Route path="/disputes" element={<Disputes />} />
         <Route path="/knowledge-base" element={<KnowledgeBase />} />
         <Route path="/coaching" element={<Coaching />} />
+        {/* Storage exposes DB/housekeeping actions — the API gates it on admin too. */}
+        {user.role === "admin" && <Route path="/storage" element={<Storage />} />}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>

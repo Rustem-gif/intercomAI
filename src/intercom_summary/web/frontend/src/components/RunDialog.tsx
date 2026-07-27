@@ -247,14 +247,31 @@ function FetchDonePanel({
 }) {
   const ids: string[] = result?.conversation_ids ?? [];
   const count = result?.fetched ?? ids.length;
+  const skipped: number = result?.skipped_deleted ?? 0;
+  const saved: number = result?.saved ?? count;
 
   return (
     <div>
-      <p className="font-medium text-emerald-500">Done ✓</p>
+      <p className={`font-medium ${skipped ? "text-amber-500" : "text-emerald-500"}`}>
+        {skipped ? "Done, with skipped conversations" : "Done ✓"}
+      </p>
       <div className="mt-2 text-left text-sm space-y-2">
         <p>
-          Fetched {count} conversation{count === 1 ? "" : "s"}.
+          Fetched {count} conversation{count === 1 ? "" : "s"}
+          {skipped > 0 && <> · stored {saved}</>}.
         </p>
+        {skipped > 0 && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
+            <p className="font-medium text-sm text-amber-600 dark:text-amber-400">
+              {skipped} conversation{skipped === 1 ? " was" : "s were"} not imported
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {skipped === 1 ? "It is" : "They are"} in the Trash and blocked from re-import.
+              Restore or purge {skipped === 1 ? "it" : "them"} from the Trash to import{" "}
+              {skipped === 1 ? "it" : "them"} again.
+            </p>
+          </div>
+        )}
         {ids.length > 0 && (
           <div className="rounded-md border border-primary/30 bg-primary/5 p-3 space-y-2">
             <p className="font-medium text-sm">Run QA now</p>

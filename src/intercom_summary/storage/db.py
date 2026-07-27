@@ -141,7 +141,10 @@ CREATE TABLE IF NOT EXISTS deleted_conversations (
     created_at      TEXT,           -- original conversation date (for sorting/presets)
     deleted_at      TEXT NOT NULL,
     deleted_by      TEXT NOT NULL,
-    snapshot_json   TEXT NOT NULL   -- {conversation: <row>, grade: <row|null>}
+    snapshot_json   TEXT NOT NULL,  -- {conversation: <row>, grade: <row|null>}
+    -- 1 = deliberately blacklisted: a re-fetch must never resurrect it. 0 = merely cleared
+    -- from the local cache (bulk/filter delete), so a re-fetch may import it again.
+    blacklist       INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_trash_deleted ON deleted_conversations(deleted_at);
 
@@ -219,6 +222,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 snapshot_json   TEXT NOT NULL
             )""")
         conn.execute("CREATE INDEX idx_trash_deleted ON deleted_conversations(deleted_at)")
+        conn.commit()
+
+    # Distinguish a deliberate blacklist ("never re-import this junk conversation") from a
+    # bulk cache clear. Existing tombstones default to 1, preserving today's behaviour.
+    trash_cols = {row[1] for row in conn.execute("PRAGMA table_info(deleted_conversations)").fetchall()}
+    if "blacklist" not in trash_cols:
+        conn.execute(
+            "ALTER TABLE deleted_conversations ADD COLUMN blacklist INTEGER NOT NULL DEFAULT 1"
+        )
         conn.commit()
 
     # Manager comments on conversations (added after initial release).

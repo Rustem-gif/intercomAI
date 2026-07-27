@@ -54,12 +54,17 @@ async def fetch_and_store(
     store = ConversationsStore()
     batch: list = []
     BATCH_SIZE = 5
+    saved = 0
+
+    def _flush() -> None:
+        nonlocal saved
+        saved += store.save_many(list(batch))
+        batch.clear()
 
     def _on_conversation(conv, fetched: int, total: int) -> None:
         batch.append(conv)
         if len(batch) >= BATCH_SIZE or fetched == total:
-            store.save_many(list(batch))
-            batch.clear()
+            _flush()
         if on_progress:
             on_progress(fetched, total)
 
@@ -70,13 +75,23 @@ async def fetch_and_store(
         )
         # Flush any stragglers (e.g. when total < BATCH_SIZE).
         if batch:
-            store.save_many(list(batch))
-            batch.clear()
+            _flush()
     finally:
         store.close()
 
+    # Blacklisted conversations are dropped by the store. Without this count a fetch that
+    # imported nothing still reports a healthy "fetched" total and looks like it succeeded.
+    skipped = len(convos) - saved
+    if skipped:
+        log.warning(
+            "%d of %d fetched conversation(s) were skipped — they are blacklisted in the "
+            "Trash and cannot be re-imported until restored or purged.", skipped, len(convos),
+        )
+
     return {
         "fetched": len(convos),
+        "saved": saved,
+        "skipped_deleted": skipped,
         "agents": agents,
         "conversation_ids": [c.id for c in convos],
     }

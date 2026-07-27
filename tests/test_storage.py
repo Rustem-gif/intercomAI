@@ -256,3 +256,73 @@ def test_jobs_lifecycle(tmp_path):
     assert job["status"] == "done"
     assert job["result"]["fetched"] == 3
     assert job["params"]["agents"] == ["Ada"]
+
+
+# ── Blacklist: deleted conversations must not be silently resurrected, but a bulk
+# cache clear must not permanently block re-import either (that made every Intercom
+# fetch import nothing while still reporting success).
+def test_blacklisted_conversation_is_not_reimported(tmp_path):
+    from intercom_summary.storage.trash_store import TrashStore
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo("7"))
+    ts = TrashStore(db)
+    assert ts.move_to_trash(["7"], "boss") == 1          # explicit delete → blacklisted
+    ts.close()
+
+    assert cstore.save(_convo("7")) is False              # re-fetch is refused
+    assert cstore.get("7") is None
+    cstore.close()
+
+
+def test_bulk_cleared_conversation_can_be_reimported(tmp_path):
+    from intercom_summary.storage.trash_store import TrashStore
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo("8"))
+    ts = TrashStore(db)
+    assert ts.move_to_trash(["8"], "boss", blacklist=False) == 1
+    ts.close()
+
+    assert cstore.save(_convo("8")) is True               # re-fetch brings it back
+    assert cstore.get("8") is not None
+    cstore.close()
+
+
+def test_save_many_counts_only_stored(tmp_path):
+    from intercom_summary.storage.trash_store import TrashStore
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo("1"))
+    ts = TrashStore(db)
+    ts.move_to_trash(["1"], "boss")
+    ts.close()
+
+    # 3 fetched, 1 blacklisted → save_many must report 2, not 3.
+    assert cstore.save_many([_convo("1"), _convo("2"), _convo("3")]) == 2
+    cstore.close()
+
+
+def test_trash_expire_respects_cutoff(tmp_path):
+    from datetime import timedelta
+    from intercom_summary.storage.trash_store import TrashStore
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_convo("old"))
+    cstore.save(_convo("new"))
+    cstore.close()
+
+    ts = TrashStore(db)
+    ts.move_to_trash(["old", "new"], "boss")
+    stale = (datetime.now(timezone.utc) - timedelta(days=100)).isoformat()
+    ts._conn.execute(
+        "UPDATE deleted_conversations SET deleted_at=? WHERE conversation_id='old'", (stale,)
+    )
+    ts._conn.commit()
+
+    assert ts.count_expiring_before(90) == 1
+    assert ts.expire(0) == 0                    # 0 disables expiry
+    assert ts.expire(90) == 1
+    assert ts.count() == 1
+    assert ts.list_all()[0]["conversation_id"] == "new"
+    ts.close()
