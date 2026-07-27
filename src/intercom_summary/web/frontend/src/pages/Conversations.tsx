@@ -162,7 +162,8 @@ export default function Conversations() {
     if (res.total === 0) { alert(`No conversations match: ${label}.`); return; }
     if (!confirm(
       `Delete ${res.total.toLocaleString()} conversation(s) — ${label}?\n` +
-      `They move to Trash and can be restored.`
+      `They move to Trash and can be restored.\n` +
+      `This clears the local cache only — a future Intercom fetch may import them again.`
     )) return;
     runDelete(body, label);
   };
@@ -178,7 +179,10 @@ export default function Conversations() {
 
   const deleteOne = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm("Delete this conversation? It moves to Trash and can be restored.")) return;
+    if (!confirm(
+      "Delete this conversation?\nIt moves to Trash and can be restored.\n" +
+      "While it is in the Trash, Intercom fetches will not re-import it."
+    )) return;
     await api.delete(`/api/conversations/${id}`);
     setSelected((prev) => { const n = new Set(prev); n.delete(id); return n; });
     setLastDeleted({ ids: [id], label: "1 conversation" });
@@ -188,7 +192,9 @@ export default function Conversations() {
   const deleteSelected = () => {
     if (!selected.size) return;
     if (!confirm(
-      `Delete ${selected.size} selected conversation(s)?\nThey move to Trash and can be restored.`
+      `Delete ${selected.size} selected conversation(s)?\n` +
+      `They move to Trash and can be restored.\n` +
+      `While they are in the Trash, Intercom fetches will not re-import them.`
     )) return;
     runDelete({ ids: [...selected] }, `${selected.size} selected`);
   };
@@ -575,16 +581,18 @@ export default function Conversations() {
       )}
 
       {showTrash && (
-        <TrashModal items={trashData?.items ?? []} onClose={() => setShowTrash(false)} onChanged={invalidate} />
+        <TrashModal items={trashData?.items ?? []} total={trashCount}
+          onClose={() => setShowTrash(false)} onChanged={invalidate} />
       )}
     </div>
   );
 }
 
 function TrashModal({
-  items, onClose, onChanged,
+  items, total, onClose, onChanged,
 }: {
   items: TrashItem[];
+  total: number;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -606,7 +614,12 @@ function TrashModal({
       <div className="flex max-h-[80vh] w-full max-w-2xl flex-col rounded-lg border bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
-            <Archive className="h-4 w-4" /> Trash ({items.length})
+            <Archive className="h-4 w-4" /> Trash ({total.toLocaleString()})
+            {items.length < total && (
+              <span className="font-normal text-muted-foreground">
+                — showing the {items.length.toLocaleString()} most recent
+              </span>
+            )}
           </h2>
           <button onClick={onClose} className="rounded p-1 text-muted-foreground hover:bg-muted">
             <X className="h-4 w-4" />
@@ -636,9 +649,17 @@ function TrashModal({
                 <li key={it.conversation_id} className="flex items-center gap-3 px-4 py-2 text-sm">
                   <div className="min-w-0 flex-1">
                     <div className="truncate font-medium">{it.subject || `#${it.conversation_id}`}</div>
-                    <div className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                       {it.agent_name && <span>{it.agent_name}</span>}
                       <span>· deleted {fmtDate(it.deleted_at)} by {it.deleted_by}</span>
+                      {it.blacklist === 1 && (
+                        <span
+                          className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-600 dark:text-amber-400"
+                          title="Intercom fetches will not re-import this conversation while it is in the Trash."
+                        >
+                          blocked from re-import
+                        </span>
+                      )}
                     </div>
                   </div>
                   <button

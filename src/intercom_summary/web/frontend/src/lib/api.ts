@@ -136,6 +136,26 @@ export interface TrashItem {
   created_at: string;
   deleted_at: string;
   deleted_by: string;
+  blacklist: number;   // 1 = blocked from re-import by a future Intercom fetch
+}
+
+export interface StorageStats {
+  db: {
+    path: string;
+    bytes: number;
+    reclaimable_bytes: number;
+    tables: { table: string; rows: number; approx_bytes: number }[];
+  };
+  trash: {
+    total: number;
+    blacklisted: number;
+    bytes: number;
+    oldest: string | null;
+    newest: string | null;
+    retention_days: number;
+    expiring_now: number;
+  };
+  dirs: { exports_bytes: number; backups_bytes: number };
 }
 
 export interface ConversationList {

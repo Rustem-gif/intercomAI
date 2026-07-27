@@ -66,3 +66,36 @@ def test_review_and_store_then_overview(temp_db, monkeypatch):
     assert overview["kpis"]["avg_score"] == 80.0
     assert overview["agent_leaderboard"][0]["agent"] == "Ada"
     assert overview["top_violations"][0]["text"] == "minor"
+
+
+def test_fetch_and_store_reports_blacklisted_skips(temp_db, monkeypatch):
+    """A fetch whose conversations are all blacklisted used to report `fetched: N` and look
+    like it succeeded while storing nothing. It must now report the skipped count."""
+    import asyncio
+    from intercom_summary.storage.trash_store import TrashStore
+
+    convos = [_convo("1"), _convo("2"), _convo("3")]
+
+    cstore = ConversationsStore(temp_db)
+    cstore.save(_convo("2"))
+    cstore.close()
+    ts = TrashStore(temp_db)
+    ts.move_to_trash(["2"], "boss")          # blacklisted → must not come back
+    ts.close()
+
+    async def fake_fetch(*, agents, since, until, state, limit, on_conversation):
+        for i, c in enumerate(convos, start=1):
+            on_conversation(c, i, len(convos))
+        return convos
+
+    monkeypatch.setattr(service, "fetch_conversations_for_agents", fake_fetch)
+    result = asyncio.run(service.fetch_and_store(agents=["Ada"]))
+
+    assert result["fetched"] == 3
+    assert result["saved"] == 2
+    assert result["skipped_deleted"] == 1
+
+    cstore = ConversationsStore(temp_db)
+    assert cstore.get("1") is not None and cstore.get("3") is not None
+    assert cstore.get("2") is None
+    cstore.close()

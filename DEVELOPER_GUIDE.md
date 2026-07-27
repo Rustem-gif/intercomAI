@@ -103,6 +103,7 @@ intercomSummary/
 | Knowledge Base (`/knowledge-base`) | `pages/KnowledgeBase.tsx` | Reference content |
 | Coaching (`/coaching`) | `pages/Coaching.tsx` | Coaching sessions |
 | Ruleset (`/ruleset`) | `pages/Ruleset.tsx` | Edit the rulebook in-browser |
+| Storage (`/storage`) | `pages/Storage.tsx` | Admin only: disk usage, Trash size, compact DB |
 | Login | `pages/Login.tsx` | Sign-in |
 | Agent review link | `pages/AgentReview.tsx` | Public token page for agents |
 
@@ -265,6 +266,14 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
   That's how a VIP agent's older, standard-ruleset grades survive untouched when they join the group.
 - It's backed up automatically into `data/backups/`.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
+- **The Trash blocks re-import.** Deleting a conversation individually moves it to
+  `deleted_conversations` *and* marks it `blacklist=1`, so later Intercom fetches skip it —
+  otherwise a re-fetch would resurrect what an analyst deliberately removed. Bulk deletes
+  ("Delete ALL" / by filter) store `blacklist=0` and can be re-imported. If a fetch reports
+  more *fetched* than *stored*, this is why; restore or purge the items from the Trash.
+  Trash entries are purged automatically after `TRASH_RETENTION_DAYS` (default 90) at web
+  startup, or on demand from the Storage screen. To clear a specific batch:
+  `scripts/purge_trash_batch.py --deleted-on YYYY-MM-DD --dry-run`.
 
 ---
 

@@ -534,3 +534,46 @@ def test_admin_fetch_enqueues_job(client, monkeypatch):
     status = client.get(f"/api/jobs/{job['id']}").json()
     assert status["status"] == "done"
     assert status["result"]["fetched"] == 0
+
+
+def test_explicit_delete_blacklists_but_bulk_clear_does_not(client):
+    """A "Delete ALL" is a cache clear, not a blacklist. Blacklisting it silently blocked
+    every later Intercom fetch of those dates."""
+    _save_convo("100", agent="Bob")
+    _login(client)
+
+    # Naming a conversation → blacklisted, blocked from re-import.
+    r = client.post("/api/conversations/delete", json={"ids": ["100"]}).json()
+    assert r["blacklisted"] is True
+    assert client.get("/api/trash").json()["items"][0]["blacklist"] == 1
+
+    # Deleting by filter / all=true → cleared, still restorable, but re-importable.
+    r = client.post("/api/conversations/delete", json={"all": True}).json()
+    assert r["blacklisted"] is False
+    entry = next(i for i in client.get("/api/trash").json()["items"]
+                 if i["conversation_id"] == "42")
+    assert entry["blacklist"] == 0
+
+
+def test_trash_pagination_reports_true_total(client):
+    _save_convo("100")
+    _login(client)
+    client.post("/api/conversations/delete", json={"all": True})
+    body = client.get("/api/trash?limit=1").json()
+    assert body["total"] == 2 and len(body["items"]) == 1
+    assert body["limit"] == 1 and body["offset"] == 0
+    assert client.get("/api/trash?limit=1&offset=1").json()["items"][0][
+        "conversation_id"] != body["items"][0]["conversation_id"]
+
+
+def test_storage_stats_is_admin_only(client):
+    _login(client, "ana", "pw")            # analyst may write but not administer
+    assert client.get("/api/storage").status_code == 403
+    assert client.post("/api/storage/vacuum", json={}).status_code == 403
+
+    _login(client)                         # boss = admin
+    body = client.get("/api/storage").json()
+    assert body["db"]["bytes"] > 0
+    assert body["trash"]["retention_days"] == settings.trash_retention_days
+    assert any(t["table"] == "conversations" for t in body["db"]["tables"])
+    assert client.post("/api/storage/vacuum", json={}).json()["before_bytes"] > 0

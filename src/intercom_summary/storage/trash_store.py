@@ -7,7 +7,7 @@ conversations/grades queries untouched — deleted rows simply leave those table
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from intercom_summary.settings import settings
@@ -33,8 +33,16 @@ class TrashStore:
     def close(self) -> None:
         self._conn.close()
 
-    def move_to_trash(self, conversation_ids: list[str], deleted_by: str) -> int:
-        """Move conversations (and their grades) into the trash. Returns count moved."""
+    def move_to_trash(
+        self, conversation_ids: list[str], deleted_by: str, blacklist: bool = True
+    ) -> int:
+        """Move conversations (and their grades) into the trash. Returns count moved.
+
+        `blacklist=True` (an analyst deliberately deleting specific conversations) also bars
+        them from ever being re-imported by a later Intercom fetch. Pass False for bulk
+        "clear the workspace" deletes, where the intent is to empty the local cache rather
+        than to blacklist — those stay restorable but a re-fetch may bring them back.
+        """
         moved = 0
         now = _now()
         for cid in conversation_ids:
@@ -53,10 +61,10 @@ class TrashStore:
             self._conn.execute(
                 """INSERT OR REPLACE INTO deleted_conversations
                    (conversation_id, agent_name, subject, created_at,
-                    deleted_at, deleted_by, snapshot_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    deleted_at, deleted_by, snapshot_json, blacklist)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (cid, crow["agent_name"], crow["subject"], crow["created_at"],
-                 now, deleted_by, json.dumps(snapshot)),
+                 now, deleted_by, json.dumps(snapshot), 1 if blacklist else 0),
             )
             self._conn.execute("DELETE FROM grades WHERE conversation_id=?", (cid,))
             self._conn.execute("DELETE FROM conversations WHERE id=?", (cid,))
@@ -98,15 +106,52 @@ class TrashStore:
         self._conn.commit()
         return cur.rowcount
 
-    def list_all(self, limit: int = 500) -> list[dict]:
+    def list_all(self, limit: int = 500, offset: int = 0) -> list[dict]:
         rows = self._conn.execute(
-            """SELECT conversation_id, agent_name, subject, created_at, deleted_at, deleted_by
-               FROM deleted_conversations ORDER BY deleted_at DESC LIMIT ?""",
-            (limit,),
+            """SELECT conversation_id, agent_name, subject, created_at, deleted_at,
+                      deleted_by, blacklist
+               FROM deleted_conversations ORDER BY deleted_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
         ).fetchall()
         return [dict(r) for r in rows]
 
     def count(self) -> int:
         return self._conn.execute(
             "SELECT COUNT(*) AS n FROM deleted_conversations"
+        ).fetchone()["n"]
+
+    def expire(self, days: int) -> int:
+        """Purge tombstones deleted more than `days` ago. Returns the count removed.
+
+        Without this the trash — and the blacklist that comes with it — grows forever.
+        `days <= 0` disables expiry.
+        """
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cur = self._conn.execute(
+            "DELETE FROM deleted_conversations WHERE deleted_at < ?", (cutoff,)
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    def stats(self) -> dict:
+        """Counts and age bounds for the Storage panel."""
+        row = self._conn.execute(
+            """SELECT COUNT(*) AS total,
+                      COALESCE(SUM(blacklist), 0) AS blacklisted,
+                      MIN(deleted_at) AS oldest,
+                      MAX(deleted_at) AS newest,
+                      COALESCE(SUM(LENGTH(snapshot_json)), 0) AS bytes
+               FROM deleted_conversations"""
+        ).fetchone()
+        return dict(row)
+
+    def count_expiring_before(self, days: int) -> int:
+        """How many tombstones the next expiry run would remove."""
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return self._conn.execute(
+            "SELECT COUNT(*) AS n FROM deleted_conversations WHERE deleted_at < ?", (cutoff,)
         ).fetchone()["n"]

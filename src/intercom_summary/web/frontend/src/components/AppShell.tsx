@@ -10,6 +10,7 @@ import {
   Scale,
   BookOpen,
   GraduationCap,
+  HardDrive,
   Moon,
   Sun,
   LogOut,
@@ -32,6 +33,7 @@ const nav = [
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
   { to: "/coaching", label: "Coaching", icon: GraduationCap },
   { to: "/ruleset", label: "Ruleset", icon: ScrollText },
+  { to: "/storage", label: "Storage", icon: HardDrive, adminOnly: true },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -50,7 +52,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <span className="font-semibold">Intercom QA</span>
         </div>
         <nav className="flex-1 space-y-1 p-3">
-          {nav.map((n) => (
+          {nav.filter((n) => !n.adminOnly || user?.role === "admin").map((n) => (
             <NavLink
               key={n.to}
               to={n.to}

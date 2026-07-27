@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import secrets
+import shutil
 import tempfile
 import threading
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -143,6 +145,23 @@ def create_app() -> FastAPI:
                     js.update(j["id"], status="error", error="interrupted by server restart")
         finally:
             js.close()
+
+    @app.on_event("startup")
+    def _expire_trash() -> None:
+        """Drop tombstones past the retention window. They also carry the 'never re-import'
+        blacklist, so an unbounded trash quietly blocks more and more of every fetch."""
+        from intercom_summary.storage.trash_store import TrashStore
+
+        days = settings.trash_retention_days
+        if days <= 0:
+            return
+        tstore = TrashStore()
+        try:
+            removed = tstore.expire(days)
+        finally:
+            tstore.close()
+        if removed:
+            log.info("Trash: purged %d item(s) older than %d days.", removed, days)
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     @app.post("/api/auth/login", response_model=UserOut)
@@ -656,10 +675,15 @@ def create_app() -> FastAPI:
             tstore.close()
         return {"deleted": 1}
 
-    def _delete_match_ids(body: DeleteConversationsRequest) -> list[str]:
-        """Resolve a delete request to the set of conversation ids it targets."""
+    def _delete_match_ids(body: DeleteConversationsRequest) -> tuple[list[str], bool]:
+        """Resolve a delete request to (ids, blacklist).
+
+        Naming specific conversations means "this one is junk, never bring it back", so it
+        blacklists. Deleting by filter or all=true means "clear the workspace" — those must
+        NOT blacklist, or the next Intercom fetch silently imports nothing.
+        """
         if body.ids:
-            return body.ids
+            return body.ids, True
         has_filter = any([
             body.agent, body.since, body.until, body.state,
             body.min_score is not None, body.search, body.tag, body.ungraded,
@@ -675,7 +699,7 @@ def create_app() -> FastAPI:
             )
         finally:
             cstore.close()
-        return [r["id"] for r in rows]
+        return [r["id"] for r in rows], False
 
     @app.post("/api/conversations/delete")
     def bulk_delete_conversations(body: DeleteConversationsRequest, user: dict = Depends(auth.require_write)):
@@ -683,22 +707,29 @@ def create_app() -> FastAPI:
         Trashed items can be restored or purged via /api/trash."""
         from intercom_summary.storage.trash_store import TrashStore
 
-        ids = _delete_match_ids(body)
+        ids, blacklist = _delete_match_ids(body)
         tstore = TrashStore()
         try:
-            deleted = tstore.move_to_trash(ids, user["username"])
+            deleted = tstore.move_to_trash(ids, user["username"], blacklist=blacklist)
         finally:
             tstore.close()
-        return {"deleted": deleted, "ids": ids}
+        return {"deleted": deleted, "ids": ids, "blacklisted": blacklist}
 
     # ── Trash (soft-deleted conversations) ─────────────────────────────────────
     @app.get("/api/trash")
-    def list_trash(user: dict = Depends(auth.require_write)):
+    def list_trash(user: dict = Depends(auth.require_write),
+                   limit: int = Query(500, ge=1, le=5000), offset: int = Query(0, ge=0)):
         from intercom_summary.storage.trash_store import TrashStore
 
         tstore = TrashStore()
         try:
-            return {"items": tstore.list_all(), "total": tstore.count()}
+            return {
+                "items": tstore.list_all(limit=limit, offset=offset),
+                "total": tstore.count(),
+                "limit": limit,
+                "offset": offset,
+                "retention_days": settings.trash_retention_days,
+            }
         finally:
             tstore.close()
 
@@ -717,6 +748,106 @@ def create_app() -> FastAPI:
         finally:
             tstore.close()
         return {"restored": restored}
+
+    # ── Storage / housekeeping (admin) ─────────────────────────────────────────
+    @app.get("/api/storage")
+    def storage_stats(user: dict = Depends(auth.require_admin)):
+        """What the system is holding on disk, and what can be reclaimed."""
+        from intercom_summary.storage.db import connect
+        from intercom_summary.storage.trash_store import TrashStore
+
+        def dir_size(p: Path) -> int:
+            if not p.exists():
+                return 0
+            return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+
+        db_path = Path(settings.db_path)
+        conn = connect(db_path)
+        try:
+            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+            freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+            tables = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                " ORDER BY name"
+            ).fetchall()]
+            # The two JSON blob columns account for nearly all of the file.
+            blob_cols = {"conversations": "payload_json",
+                         "deleted_conversations": "snapshot_json",
+                         "grades": "payload_json"}
+            table_stats = []
+            for t in tables:
+                rows = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                col = blob_cols.get(t)
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()}
+                approx = 0
+                if col and col in cols:
+                    approx = conn.execute(
+                        f"SELECT COALESCE(SUM(LENGTH({col})), 0) FROM {t}"
+                    ).fetchone()[0]
+                table_stats.append({"table": t, "rows": rows, "approx_bytes": approx})
+            table_stats.sort(key=lambda s: (-s["approx_bytes"], -s["rows"]))
+        finally:
+            conn.close()
+
+        tstore = TrashStore()
+        try:
+            tstats = tstore.stats()
+            retention = settings.trash_retention_days
+            expiring = tstore.count_expiring_before(retention)
+        finally:
+            tstore.close()
+
+        return {
+            "db": {
+                "path": str(db_path),
+                "bytes": db_path.stat().st_size if db_path.exists() else 0,
+                "reclaimable_bytes": freelist * page_size,
+                "tables": table_stats,
+            },
+            "trash": {
+                "total": tstats["total"],
+                "blacklisted": tstats["blacklisted"],
+                "bytes": tstats["bytes"],
+                "oldest": tstats["oldest"],
+                "newest": tstats["newest"],
+                "retention_days": retention,
+                "expiring_now": expiring,
+            },
+            "dirs": {
+                "exports_bytes": dir_size(settings.export_dir),
+                "backups_bytes": dir_size(db_path.parent / "backups"),
+            },
+        }
+
+    @app.post("/api/storage/expire-trash")
+    def expire_trash_now(user: dict = Depends(auth.require_admin)):
+        """Apply the retention window immediately instead of waiting for the next restart."""
+        from intercom_summary.storage.trash_store import TrashStore
+
+        tstore = TrashStore()
+        try:
+            removed = tstore.expire(settings.trash_retention_days)
+        finally:
+            tstore.close()
+        log.info("Trash: %s expired %d item(s) manually.", user["username"], removed)
+        return {"purged": removed, "retention_days": settings.trash_retention_days}
+
+    @app.post("/api/storage/vacuum")
+    def vacuum_db(user: dict = Depends(auth.require_admin)):
+        """Compact the SQLite file. Deleting rows frees pages inside the file but does not
+        shrink it on disk — only VACUUM does."""
+        from intercom_summary.storage.db import connect
+
+        db_path = Path(settings.db_path)
+        before = db_path.stat().st_size
+        conn = connect(db_path)
+        try:
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+        after = db_path.stat().st_size
+        log.info("VACUUM by %s: %d → %d bytes", user["username"], before, after)
+        return {"before_bytes": before, "after_bytes": after, "freed_bytes": before - after}
 
     @app.post("/api/trash/purge")
     def purge_trash(body: TrashActionRequest, user: dict = Depends(auth.require_write)):
@@ -1056,9 +1187,13 @@ def create_app() -> FastAPI:
             convos = [c for r in rows if (c := store.get(r["id"]))]
         finally:
             store.close()
-        out = Path(tempfile.mkdtemp()) / "conversations.xlsx"
+        tmpdir = tempfile.mkdtemp()
+        out = Path(tmpdir) / "conversations.xlsx"
         export_xlsx(convos, out)
-        return FileResponse(out, filename="conversations.xlsx")
+        # FileResponse streams from disk, so the temp dir can only be removed once the
+        # response is finished — otherwise every export leaks a workbook into $TMPDIR.
+        return FileResponse(out, filename="conversations.xlsx",
+                            background=BackgroundTask(shutil.rmtree, tmpdir, True))
 
     @app.get("/api/export/qa.xlsx")
     def export_qa(user: dict = Depends(auth.current_user)):
@@ -1070,9 +1205,11 @@ def create_app() -> FastAPI:
             grades = [ConversationGrade.from_dict(d) for d in gstore.all()]
         finally:
             gstore.close()
-        out = Path(tempfile.mkdtemp()) / "qa_report.xlsx"
+        tmpdir = tempfile.mkdtemp()
+        out = Path(tmpdir) / "qa_report.xlsx"
         report_xlsx(grades, out)
-        return FileResponse(out, filename="qa_report.xlsx")
+        return FileResponse(out, filename="qa_report.xlsx",
+                            background=BackgroundTask(shutil.rmtree, tmpdir, True))
 
     # ── Agent review links (shareable, token-gated) ───────────────────────────
     @app.post("/api/agent-links", response_model=AgentLinkOut)
