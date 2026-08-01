@@ -190,12 +190,13 @@ def test_stored_grade_rebuilds_despite_the_extra_keys_the_store_adds(tmp_path):
 
     cached = gs.get("42")
     assert cached["human_score"] == 70                  # extra key from the store
-    assert cached["rule_results"][0]["deduction"] == 2  # extra key from _annotate_criteria
+    by_id = {r["rule_id"]: r for r in cached["rule_results"]}
+    assert by_id["open-greet"]["deduction"] == 2        # extra key from _normalize_criteria
 
     rebuilt = ConversationGrade.from_dict(cached)
     assert rebuilt.conversation_id == "42"
     assert rebuilt.ruleset_id == "default"
-    assert rebuilt.rule_results[0].rule_id == "open-greet"
+    assert {r.rule_id for r in rebuilt.rule_results} >= {"open-greet"}
     gs.close()
 
 

@@ -16,24 +16,65 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _annotate_criteria(rule_results: list | None, ruleset_id: str | None = None) -> None:
-    """Tag each recognised rule_result with its canonical `deduction` and `critical` flag so
-    the UI can render ScoreBuddy-style toggles and preview the recomputed score. Unknown
-    criteria (e.g. legacy Claude-backend grades) are left without a deduction, which the UI
-    uses to fall back to the manual slider.
+def _normalize_criteria(rule_results: list | None, ruleset_id: str | None = None) -> list:
+    """Return the grade's rule_results as the ruleset's full, ordered criteria list.
+
+    Two jobs:
+
+    1. Tag each recognised rule_result with its canonical `deduction` and `critical` flag so
+       the UI can render ScoreBuddy-style toggles and preview the recomputed score.
+    2. Fill in the criteria the model never reported, as `n/a`.
+
+    (2) matters because the model returns only the criteria it chose to emit — typically 24 of
+    the standard ruleset's 27 (it reads the prompt's "ALL CRITERIA" table as the enumeration
+    and skips the crit-* table above it), and on some conversations far fewer. Without the
+    backfill the Grade panel shows a partial checklist, and worse, the override endpoint 422s
+    on any criterion absent from this list — so an analyst could not fail a rule the model
+    skipped, including the crit-* compliance rules.
+
+    Backfilling as `n/a` is score-neutral: only `fail` deducts, so a grade's score is identical
+    before and after. It is also honest — the AI genuinely did not assess those criteria.
 
     `ruleset_id` is the ruleset that produced the grade, so an old standard grade keeps its
-    standard points even if the agent has since moved to the VIP group."""
+    standard points (and its 27 criteria) even if the agent has since moved to the VIP group."""
     from intercom_summary.qa.rulesets import get_ruleset
 
     rs = get_ruleset(ruleset_id)
-    deductions, critical = rs.deductions, rs.critical
+    deductions, critical, titles = rs.deductions, rs.critical, rs.titles
 
+    reported: dict[str, dict] = {}
     for r in rule_results or []:
         cid = r.get("rule_id", "")
         if cid in deductions or cid in critical:
             r["deduction"] = deductions.get(cid, 0)
             r["critical"] = cid in critical
+        reported.setdefault(cid, r)
+
+    # Legacy Claude-backend grades use an entirely different criteria vocabulary
+    # ("tone-greeting" etc.). Grafting this ruleset's catalogue onto them would be nonsense,
+    # so leave them exactly as they are — the UI falls back to the manual slider for those.
+    if not any(cid in deductions or cid in critical for cid in reported):
+        return list(rule_results or [])
+
+    out: list[dict] = []
+    for c in rs.criteria:
+        cid = c["id"]
+        entry = reported.pop(cid, None)
+        if entry is None:
+            entry = {
+                "rule_id": cid,
+                "title": titles.get(cid, cid),
+                "verdict": "n/a",
+                "evidence": "",
+                "comment": "",
+                "deduction": deductions.get(cid, 0),
+                "critical": cid in critical,
+            }
+        out.append(entry)
+    # Anything the model emitted that the catalogue doesn't know about is kept rather than
+    # silently dropped — it is still a record of what the model said.
+    out.extend(reported.values())
+    return out
 
 
 class GradesStore:
@@ -147,7 +188,7 @@ class GradesStore:
         d["overridden_at"] = row["overridden_at"]
         d["human_criteria"] = json.loads(row["human_criteria"]) if row["human_criteria"] else None
         d["human_deductions"] = json.loads(row["human_deductions"]) if row["human_deductions"] else None
-        _annotate_criteria(d.get("rule_results"), d["ruleset_id"])
+        d["rule_results"] = _normalize_criteria(d.get("rule_results"), d["ruleset_id"])
         return d
 
     def agent_scores(self, since: str | None = None, until: str | None = None) -> list[dict]:
