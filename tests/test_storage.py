@@ -326,3 +326,104 @@ def test_trash_expire_respects_cutoff(tmp_path):
     assert ts.count() == 1
     assert ts.list_all()[0]["conversation_id"] == "new"
     ts.close()
+
+
+# ── rule_results normalization ────────────────────────────────────────────────────────
+# The Qwen grader emits only the criteria it chooses to — usually 24 of the standard
+# ruleset's 27, sometimes far fewer. GradesStore.get() fills the gaps so the Grade panel
+# always shows the full checklist and every criterion stays re-scorable.
+def _ollama_grade(cid="42", ruleset_id="default", rule_results=None):
+    return ConversationGrade(
+        conversation_id=cid, agent_name="Ada", overall_score=85, summary="ok",
+        rule_results=rule_results if rule_results is not None else [
+            RuleResult("res-no-fake-close", "No Fake Closure", "fail", "closed early"),
+            RuleResult("open-greet", "Greeting", "pass", "hi"),
+        ],
+        ruleset_id=ruleset_id, rules_version="v1", model="ollama/test",
+        graded_at="2026-05-01T00:00:00+00:00",
+    )
+
+
+def test_partial_grade_is_backfilled_to_the_full_ruleset(tmp_path):
+    from intercom_summary.qa.rulesets import get_ruleset
+
+    gstore = GradesStore(tmp_path / "t.db")
+    gstore.save(_ollama_grade())
+    got = gstore.get("42")
+    gstore.close()
+
+    criteria = get_ruleset("default").criteria
+    # Every criterion is present, in catalogue order — crit-* first.
+    assert [r["rule_id"] for r in got["rule_results"]] == [c["id"] for c in criteria]
+
+    by_id = {r["rule_id"]: r for r in got["rule_results"]}
+    # What the model actually said survives untouched...
+    assert by_id["res-no-fake-close"]["verdict"] == "fail"
+    assert by_id["res-no-fake-close"]["evidence"] == "closed early"
+    assert by_id["open-greet"]["verdict"] == "pass"
+    # ...and the criteria it never reported come back as score-neutral n/a.
+    assert by_id["crit-data-care"]["verdict"] == "n/a"
+    assert by_id["crit-data-care"]["title"] == "Data Security"
+    assert by_id["crit-data-care"]["evidence"] == ""
+    # Backfilled rows carry deduction/critical too, or the UI drops to the manual slider.
+    assert all(isinstance(r["deduction"], int) for r in got["rule_results"])
+    assert by_id["crit-data-care"]["critical"] is True
+
+
+def test_backfill_does_not_change_the_score(tmp_path):
+    """n/a deducts nothing, so a backfilled grade must score exactly as it did before."""
+    from intercom_summary.qa.schema import score_from_verdicts
+
+    gstore = GradesStore(tmp_path / "t.db")
+    gstore.save(_ollama_grade())
+    got = gstore.get("42")
+    gstore.close()
+
+    verdicts = {r["rule_id"]: r["verdict"] for r in got["rule_results"]}
+    score, _band, _result = score_from_verdicts(verdicts, ruleset_id="default")
+    assert score == got["overall_score"] == 85     # 100 − 15 for res-no-fake-close
+
+
+def test_backfill_uses_the_grade_s_own_ruleset(tmp_path):
+    from intercom_summary.qa.rulesets import get_ruleset
+
+    gstore = GradesStore(tmp_path / "t.db")
+    gstore.save(_ollama_grade(ruleset_id="vip", rule_results=[
+        RuleResult("vip-recognition", "VIP Recognition", "fail", "no tier check"),
+    ]))
+    got = gstore.get("42")
+    gstore.close()
+
+    assert len(got["rule_results"]) == len(get_ruleset("vip").criteria)
+    assert len(got["rule_results"]) != len(get_ruleset("default").criteria)
+    # A VIP grade must not be backfilled with standard-only criteria.
+    ids = {r["rule_id"] for r in got["rule_results"]}
+    assert "vip-comp-protocol" in ids and "open-greet" not in ids
+
+
+def test_legacy_claude_grade_is_left_alone(tmp_path):
+    """Old Claude-backend grades use a different criteria vocabulary; grafting the casino
+    catalogue onto them would invent checks that were never part of that grade."""
+    gstore = GradesStore(tmp_path / "t.db")
+    gstore.save(_ollama_grade(rule_results=[RuleResult("tone-greeting", "Greeting", "pass")]))
+    got = gstore.get("42")
+    gstore.close()
+
+    assert [r["rule_id"] for r in got["rule_results"]] == ["tone-greeting"]
+
+
+def test_unknown_criterion_survives_alongside_the_backfill(tmp_path):
+    """A hallucinated id is kept at the end rather than silently dropped."""
+    from intercom_summary.qa.rulesets import get_ruleset
+
+    gstore = GradesStore(tmp_path / "t.db")
+    gstore.save(_ollama_grade(rule_results=[
+        RuleResult("open-greet", "Greeting", "pass"),
+        RuleResult("made-up-rule", "Invented", "fail"),
+    ]))
+    got = gstore.get("42")
+    gstore.close()
+
+    ids = [r["rule_id"] for r in got["rule_results"]]
+    assert ids[-1] == "made-up-rule"
+    assert len(ids) == len(get_ruleset("default").criteria) + 1

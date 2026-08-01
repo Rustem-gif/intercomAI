@@ -179,6 +179,34 @@ def test_criteria_override_rejects_unknown_criterion(client):
     assert r.status_code == 422
 
 
+def test_grade_exposes_the_full_criteria_checklist(client):
+    """The seeded grade holds 2 criteria; the panel must still get all 27 to toggle."""
+    from intercom_summary.qa.rulesets import get_ruleset
+
+    _seed_casino_grade()
+    _login(client, "ana", "pw")
+    grade = client.get("/api/conversations/42").json()["grade"]
+    assert [r["rule_id"] for r in grade["rule_results"]] == \
+        [c["id"] for c in get_ruleset("default").criteria]
+
+
+def test_criteria_override_accepts_a_criterion_the_model_never_emitted(client):
+    """Qwen omits the crit-* rules on ~91% of grades. An analyst must still be able to fail
+    one — before the rule_results backfill this returned 422 and compliance breaches were
+    ungradeable."""
+    _seed_casino_grade()  # contains only res-no-fake-close + open-greet
+    _login(client, "ana", "pw")
+    r = client.post("/api/conversations/42/override", json={
+        "criteria": {"crit-data-care": "fail"},
+        "reason": "Agent asked the player for their full card number",
+    })
+    assert r.status_code == 200
+    assert r.json()["human_score"] == 0          # a critical fail forces 0
+
+    grade = client.get("/api/conversations/42").json()["grade"]
+    assert grade["human_criteria"] == {"crit-data-care": "fail"}
+
+
 def test_criteria_override_requires_a_change(client):
     _seed_casino_grade()
     _login(client, "ana", "pw")
