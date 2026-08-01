@@ -14,3 +14,4 @@ data/backups/
 .DS_Store
 node_modules/
 src/intercom_summary/web/frontend/dist/
+config/web_users.yaml

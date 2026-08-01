@@ -46,6 +46,7 @@ intercomSummary/
 │   └── qa_system_prompt.txt  ← The AI grader's instructions/persona.
 ├── config/
 │   ├── web_users.yaml        ← Who can log into the website + their role (admin/analyst/viewer).
+│   │                           Gitignored (holds password hashes) — see web_users.example.yaml.
 │   └── roles.yaml            ← Who can use the Slack bot.
 ├── data/
 │   ├── grades.db             ← THE DATABASE (conversations, grades, jobs, comments — everything).
@@ -213,7 +214,9 @@ A **ruleset** = a system prompt (what Qwen follows) + a criteria catalogue (ids,
   **viewer** (read-only).
 
 ### Add or remove a website login
-- Edit `config/web_users.yaml` (username, password hash, role). To make a password hash:
+- Edit `config/web_users.yaml` (username, password hash, role). The file is **gitignored** —
+  it never gets committed, so on a fresh clone start from `config/web_users.example.yaml`.
+  To make a password hash:
   ```bash
   .venv/bin/python -c "from intercom_summary.web.auth import hash_password; print(hash_password('NEWPASS'))"
   ```
