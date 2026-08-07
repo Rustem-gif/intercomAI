@@ -60,6 +60,26 @@ def test_query_filters_and_score_join(tmp_path):
     assert total == 1  # only the graded one passes a score filter
 
 
+def test_agent_filter_accepts_email_or_name(tmp_path):
+    """The UI's agent picker sends e-mails; conversations are keyed by display name."""
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    ada = _convo("1", "Ada")
+    bob = _convo("2", "Bob")
+    bob.assignee.email = "bob@co.com"
+    cstore.save(ada)
+    cstore.save(bob)
+
+    for selector in (["ada@co.com"], ["Ada"], ["ADA@CO.COM"]):
+        rows, total = cstore.query(agents=selector)
+        assert total == 1 and rows[0]["id"] == "1", selector
+        assert cstore.count(agents=selector) == 1, selector
+
+    rows, total = cstore.query(agents=["ada@co.com", "Bob"])
+    assert total == 2
+    assert cstore.evaluation_counts(agents=["bob@co.com"])["total"] == 1
+
+
 def _tagged(cid, tags):
     c = _convo(cid)
     c.tags = tags

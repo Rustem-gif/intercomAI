@@ -24,6 +24,23 @@ def tags_are_ignored(tags: "list[str] | None") -> bool:
     return any((t or "").strip().lower() in IGNORE_TAGS for t in (tags or []))
 
 
+def _agent_sql(agents: list[str], alias: str = "c") -> tuple[str, list[object]]:
+    """SQL predicate (+args) matching conversations handled by any of `agents`.
+
+    An agent identifier may be either a display name ("Lenny") or an e-mail — the UI's
+    agent picker sends whichever Intercom exposes, preferring the e-mail, while a
+    conversation row carries both. Matching only `agent_name` made every agent-scoped
+    review, listing and export come back empty. Compared case-insensitively.
+    """
+    placeholders = ",".join("?" * len(agents))
+    lowered: list[object] = [(a or "").strip().lower() for a in agents]
+    sql = (
+        f"(lower({alias}.agent_name) IN ({placeholders}) "
+        f"OR lower({alias}.agent_email) IN ({placeholders}))"
+    )
+    return sql, [*lowered, *lowered]
+
+
 def _ignore_sql(alias: str = "c") -> tuple[str, list[object]]:
     """SQL predicate (+args) matching conversations that carry any IGNORE_TAGS in their
     native `tags` column, case-insensitively. Mirrors `tags_are_ignored`."""
@@ -185,8 +202,9 @@ class ConversationsStore:
         where: list[str] = []
         args: list[object] = []
         if agents:
-            where.append(f"c.agent_name IN ({','.join('?' * len(agents))})")
-            args.extend(agents)
+            agent_sql, agent_args = _agent_sql(agents)
+            where.append(agent_sql)
+            args.extend(agent_args)
         if since:
             where.append("c.created_at >= ?")
             args.append(since)
@@ -304,10 +322,10 @@ class ConversationsStore:
         if agents is not None:
             if not agents:
                 return 0
+            agent_sql, agent_args = _agent_sql(agents, "conversations")
             return self._conn.execute(
-                f"SELECT COUNT(*) AS n FROM conversations "
-                f"WHERE agent_name IN ({','.join('?' * len(agents))})",
-                agents,
+                f"SELECT COUNT(*) AS n FROM conversations WHERE {agent_sql}",
+                agent_args,
             ).fetchone()["n"]
         return self._conn.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]
 
@@ -343,8 +361,9 @@ class ConversationsStore:
             if not agents:  # an empty group matches nothing (rather than everything)
                 return {"total": 0, "graded": 0, "graded_current": 0,
                         "wrong_ruleset": 0, "ignored": 0}
-            where.append(f"c.agent_name IN ({','.join('?' * len(agents))})")
-            args.extend(agents)
+            agent_sql, agent_args = _agent_sql(agents)
+            where.append(agent_sql)
+            args.extend(agent_args)
         base_where = " AND ".join(where)
 
         gradeable = f"FROM conversations c WHERE {base_where}"
