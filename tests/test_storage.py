@@ -154,6 +154,38 @@ def test_agent_scores_period_and_override(tmp_path):
     gstore.close()
 
 
+def test_grades_on_ignored_conversations_drop_out_of_aggregates(tmp_path):
+    """A Follow-Up tag applied *after* grading still pulls the grade out of every aggregate.
+
+    Support routinely tags a chat "Follow-Up" in Intercom days after we graded it; the next
+    fetch refreshes `conversations.tags` but the stored grade stays. Filtering only at grading
+    time would leave that grade counting towards the agent's score and the client's export
+    forever, which is exactly what "don't grade follow-ups" is meant to prevent.
+    """
+    db = tmp_path / "t.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_tagged("plain", ["login"]))
+    cstore.save(_tagged("later", ["login"]))          # not a follow-up yet
+    gstore = GradesStore(db)
+    for cid, score in [("plain", 90), ("later", 50)]:
+        gstore.save(ConversationGrade(
+            conversation_id=cid, agent_name="Ada", overall_score=score, summary="ok",
+            graded_at="2026-06-25T00:00:00+00:00",
+        ))
+    assert gstore.agent_scores()[0]["count"] == 2      # both count while untagged
+
+    cstore.save(_tagged("later", ["login", "Follow-Up"]))   # Intercom tags it; re-fetched
+
+    scores = {r["agent"]: r for r in gstore.agent_scores()}
+    assert scores["Ada"]["count"] == 1                 # the follow-up no longer counts
+    assert scores["Ada"]["avg_score"] == 90.0          # and no longer drags the average
+    assert [g["conversation_id"] for g in gstore.all()] == ["plain"]          # XLSX export
+    assert [g["conversation_id"] for g in gstore.for_agent("Ada")] == ["plain"]
+    assert gstore.accuracy_stats()["summary"]["total_graded"] == 1
+    cstore.close()
+    gstore.close()
+
+
 def _convo_csat(cid, agent, rating):
     c = _convo(cid, agent)
     c.csat_rating = rating

@@ -10,6 +10,7 @@ from pathlib import Path
 from intercom_summary.intercom.brands import brand_filter_value
 from intercom_summary.settings import settings
 from intercom_summary.qa.schema import ConversationGrade
+from intercom_summary.storage.conversations_store import IGNORE_TAGS
 from intercom_summary.storage.db import connect
 
 
@@ -35,6 +36,25 @@ def _brand_sql(brand: str | None, alias: str = "") -> tuple[str, list[object]]:
         return "", []
     col = f"{alias}.conversation_id" if alias else "conversation_id"
     return f"{col} IN (SELECT id FROM conversations WHERE brand = ?)", [value]
+
+
+def _not_ignored_sql(alias: str = "") -> tuple[str, list[object]]:
+    """Predicate (+args) dropping grades whose conversation carries an IGNORE_TAGS tag.
+
+    Triage/noise chats (spam, empty, test, Jira, Follow-Up, no request) are never graded in the
+    first place, but a grade can predate its tag: support tags a chat "Follow-Up" in Intercom
+    days after we graded it, the next fetch refreshes `conversations.tags`, and the stored grade
+    stays behind. Filtering on read — not only at grading time — drops such a chat out of every
+    score, export and dashboard the moment the tag arrives, with no re-grade or cleanup needed.
+
+    Mirrors `_brand_sql`'s sub-select so the caller's FROM clause is untouched, and likewise
+    keeps a grade whose conversation row is gone (deleted to the trash): with no tags to judge
+    it by, excluding it would be a guess.
+    """
+    col = f"{alias}.conversation_id" if alias else "conversation_id"
+    ors = " OR ".join("(',' || lower(tags) || ',') LIKE ?" for _ in IGNORE_TAGS)
+    args: list[object] = [f"%,{t},%" for t in sorted(IGNORE_TAGS)]
+    return f"{col} NOT IN (SELECT id FROM conversations WHERE {ors})", args
 
 
 def _normalize_criteria(rule_results: list | None, ruleset_id: str | None = None) -> list:
@@ -240,6 +260,9 @@ class GradesStore:
         if brand_value is not None:
             clauses.append("c.brand = ?")
             args.append(brand_value)
+        ign_sql, ign_args = _not_ignored_sql("g")
+        clauses.append(ign_sql)
+        args.extend(ign_args)
         if clauses:
             sql += "WHERE " + " AND ".join(clauses) + " "
         sql += "GROUP BY g.agent_name ORDER BY avg_score DESC"
@@ -247,9 +270,11 @@ class GradesStore:
         return [dict(r) for r in rows]
 
     def for_agent(self, agent_name: str) -> list[dict]:
+        ign_sql, ign_args = _not_ignored_sql()
         rows = self._conn.execute(
-            "SELECT payload_json FROM grades WHERE agent_name=? ORDER BY graded_at DESC",
-            (agent_name,),
+            f"SELECT payload_json FROM grades WHERE agent_name=? AND {ign_sql} "
+            "ORDER BY graded_at DESC",
+            (agent_name, *ign_args),
         ).fetchall()
         return [json.loads(r["payload_json"]) for r in rows]
 
@@ -267,6 +292,9 @@ class GradesStore:
         if brand_sql:
             where.append(brand_sql)
             args.extend(brand_args)
+        ign_sql, ign_args = _not_ignored_sql()
+        where.append(ign_sql)
+        args.extend(ign_args)
         if where:
             sql += f" WHERE {' AND '.join(where)}"
         sql += " ORDER BY graded_at DESC"
@@ -325,6 +353,9 @@ class GradesStore:
         if brand_sql:
             where.append(brand_sql)
             args.extend(brand_args)
+        ign_sql, ign_args = _not_ignored_sql()
+        where.append(ign_sql)
+        args.extend(ign_args)
         if where:
             sql += f" WHERE {' AND '.join(where)}"
         rows = self._conn.execute(sql, args).fetchall()
@@ -378,10 +409,11 @@ class GradesStore:
 
         # Recent overrides
         recent_rows = self._conn.execute(
-            """SELECT conversation_id, overall_score, human_score, agent_name,
-                      override_reason, overridden_by, overridden_at
-               FROM grades WHERE human_score IS NOT NULL
-               ORDER BY overridden_at DESC LIMIT 25"""
+            f"""SELECT conversation_id, overall_score, human_score, agent_name,
+                       override_reason, overridden_by, overridden_at
+                FROM grades WHERE human_score IS NOT NULL AND {ign_sql}
+                ORDER BY overridden_at DESC LIMIT 25""",
+            ign_args,
         ).fetchall()
         recent_overrides = [dict(r) for r in recent_rows]
 
