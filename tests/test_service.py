@@ -99,3 +99,25 @@ def test_fetch_and_store_reports_blacklisted_skips(temp_db, monkeypatch):
     assert cstore.get("1") is not None and cstore.get("3") is not None
     assert cstore.get("2") is None
     cstore.close()
+
+
+def test_build_overview_scopes_kpis_to_one_brand(temp_db):
+    """Two brands are two products — the dashboard must be able to describe one at a time."""
+    store = ConversationsStore(temp_db)
+    for cid, agent, brand in (("1", "Ada", "Betncare"),
+                              ("2", "Ada", "Betncare"),
+                              ("3", "Bob", "Tomb Riches")):
+        c = _convo(cid)
+        c.assignee = Admin(id="1", name=agent, email=f"{agent.lower()}@co.com")
+        c.brand = brand
+        store.save(c)
+    store.close()
+
+    assert service.build_overview()["kpis"]["conversations"] == 3
+    assert service.build_overview()["kpis"]["agents"] == 2
+
+    kb = service.build_overview(brand="Betncare")["kpis"]
+    assert kb["conversations"] == 2 and kb["agents"] == 1
+
+    tr = service.build_overview(brand="Tomb Riches")["kpis"]
+    assert tr["conversations"] == 1 and tr["agents"] == 1

@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from intercom_summary.intercom.brands import brand_filter_value
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.settings import settings
 from intercom_summary.storage.db import connect
@@ -41,6 +42,19 @@ def _agent_sql(agents: list[str], alias: str = "c") -> tuple[str, list[object]]:
     return sql, [*lowered, *lowered]
 
 
+def _brand_sql(brand: str | None, alias: str = "c") -> tuple[str, list[object]]:
+    """SQL predicate (+args) restricting rows to one brand, or ("", []) for no filter.
+
+    `brand` is the API-facing token: a raw Intercom brand value, the UNBRANDED sentinel, or
+    None/"" meaning every brand. Returning an empty predicate for "no filter" keeps unfiltered
+    queries byte-identical to what they were before brands existed.
+    """
+    value = brand_filter_value(brand)
+    if value is None:
+        return "", []
+    return f"{alias}.brand = ?", [value]
+
+
 def _ignore_sql(alias: str = "c") -> tuple[str, list[object]]:
     """SQL predicate (+args) matching conversations that carry any IGNORE_TAGS in their
     native `tags` column, case-insensitively. Mirrors `tags_are_ignored`."""
@@ -71,16 +85,24 @@ class ConversationsStore:
 
         # Preserve any custom_tags an analyst has already set on this conversation.
         existing = self._conn.execute(
-            "SELECT custom_tags FROM conversations WHERE id=?", (convo.id,)
+            "SELECT custom_tags, brand FROM conversations WHERE id=?", (convo.id,)
         ).fetchone()
         custom_tags = existing["custom_tags"] if existing else ""
+
+        # Keep a brand we already know when the incoming payload carries none, so a re-fetch
+        # that comes back without the Brand attribute can't wipe a backfilled value.
+        brand = convo.brand or (existing["brand"] if existing else "")
+        # Mirror the resolved brand into the payload too, so the cached JSON the drawer reads
+        # never disagrees with the column the filters use.
+        payload = convo.to_dict()
+        payload["brand"] = brand
 
         self._conn.execute(
             """INSERT OR REPLACE INTO conversations
                (id, agent_name, agent_email, customer_name, customer_email, state,
                 subject, created_at, updated_at, message_count, csat_rating, tags,
-                custom_tags, payload_json, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                custom_tags, brand, payload_json, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 convo.id,
                 convo.assignee_name,
@@ -95,7 +117,8 @@ class ConversationsStore:
                 convo.csat_rating,
                 ",".join(convo.tags),
                 custom_tags,
-                json.dumps(convo.to_dict()),
+                brand,
+                json.dumps(payload),
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -186,6 +209,7 @@ class ConversationsStore:
         max_csat: int | None = None,
         search: str | None = None,
         tag: str | None = None,
+        brand: str | None = None,
         ungraded: bool = False,
         sort: str = "created_at",
         descending: bool = True,
@@ -214,6 +238,10 @@ class ConversationsStore:
         if state:
             where.append("c.state = ?")
             args.append(state)
+        brand_sql, brand_args = _brand_sql(brand)
+        if brand_sql:
+            where.append(brand_sql)
+            args.extend(brand_args)
         if min_score is not None:
             where.append("g.overall_score >= ?")
             args.append(min_score)
@@ -256,7 +284,7 @@ class ConversationsStore:
         rows = self._conn.execute(
             f"""SELECT c.id, c.agent_name, c.customer_name, c.customer_email, c.state,
                        c.subject, c.created_at, c.message_count, c.csat_rating, c.tags,
-                       c.custom_tags,
+                       c.custom_tags, c.brand,
                        d.status AS grade_dispute_status,
                        COALESCE(g.human_score, g.overall_score) AS score,
                        g.overall_score AS ai_score,
@@ -270,13 +298,29 @@ class ConversationsStore:
         ).fetchall()
         return [dict(r) for r in rows], total
 
-    def agents(self) -> list[str]:
-        rows = self._conn.execute(
-            "SELECT DISTINCT agent_name FROM conversations WHERE agent_name <> '' ORDER BY agent_name"
-        ).fetchall()
+    def agents(self, brand: str | None = None) -> list[str]:
+        sql = "SELECT DISTINCT agent_name FROM conversations WHERE agent_name <> ''"
+        args: list[object] = []
+        brand_sql, brand_args = _brand_sql(brand, "conversations")
+        if brand_sql:
+            sql += f" AND {brand_sql}"
+            args.extend(brand_args)
+        rows = self._conn.execute(sql + " ORDER BY agent_name", args).fetchall()
         return [r["agent_name"] for r in rows]
 
-    def agent_csat(self, since: str | None = None, until: str | None = None) -> list[dict]:
+    def brands(self) -> list[dict]:
+        """Every brand present in the cache, with its conversation count, busiest first.
+
+        Derived rather than configured, so a brand that has never been seen produces no row and
+        a newly seen one needs no code change. Unbranded rows come back with brand ''.
+        """
+        rows = self._conn.execute(
+            "SELECT brand, COUNT(*) AS count FROM conversations GROUP BY brand ORDER BY count DESC"
+        ).fetchall()
+        return [{"brand": r["brand"], "count": r["count"]} for r in rows]
+
+    def agent_csat(self, since: str | None = None, until: str | None = None,
+                   brand: str | None = None) -> list[dict]:
         """Per-agent Intercom CSAT summary over conversations that received a rating.
 
         Returns one row per agent: `avg_csat` (mean 1-5 rating), `csat_count` (how many
@@ -299,6 +343,10 @@ class ConversationsStore:
         if until:
             sql += "AND created_at < ? "
             args.append(until)
+        brand_sql, brand_args = _brand_sql(brand, "conversations")
+        if brand_sql:
+            sql += f"AND {brand_sql} "
+            args.extend(brand_args)
         sql += "GROUP BY agent_name ORDER BY avg_csat ASC"
         rows = self._conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
@@ -318,22 +366,30 @@ class ConversationsStore:
         self._conn.commit()
         return cur.rowcount
 
-    def count(self, agents: list[str] | None = None) -> int:
+    def count(self, agents: list[str] | None = None, brand: str | None = None) -> int:
+        where: list[str] = []
+        args: list[object] = []
         if agents is not None:
             if not agents:
                 return 0
             agent_sql, agent_args = _agent_sql(agents, "conversations")
-            return self._conn.execute(
-                f"SELECT COUNT(*) AS n FROM conversations WHERE {agent_sql}",
-                agent_args,
-            ).fetchone()["n"]
-        return self._conn.execute("SELECT COUNT(*) AS n FROM conversations").fetchone()["n"]
+            where.append(agent_sql)
+            args.extend(agent_args)
+        brand_sql, brand_args = _brand_sql(brand, "conversations")
+        if brand_sql:
+            where.append(brand_sql)
+            args.extend(brand_args)
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        return self._conn.execute(
+            f"SELECT COUNT(*) AS n FROM conversations{clause}", args
+        ).fetchone()["n"]
 
     def evaluation_counts(
         self,
         versions: dict[str, str] | None = None,
         vip_agents: list[str] | None = None,
         agents: list[str] | None = None,
+        brand: str | None = None,
     ) -> dict:
         """Counts for the Evaluation page over the *gradeable* population (conversations
         without any IGNORE_TAGS).
@@ -357,6 +413,16 @@ class ConversationsStore:
         ign_sql, ign_args = _ignore_sql("c")
         where = [f"NOT {ign_sql}"]
         args: list[object] = [*ign_args]
+        # Brand scopes the ignored count too, so the Evaluation page's numbers add up within
+        # whichever brand is selected.
+        brand_sql, brand_args = _brand_sql(brand, "c")
+        ignored_where = ign_sql
+        ignored_args: list[object] = [*ign_args]
+        if brand_sql:
+            where.append(brand_sql)
+            args.extend(brand_args)
+            ignored_where = f"{ign_sql} AND {brand_sql}"
+            ignored_args.extend(brand_args)
         if agents is not None:
             if not agents:  # an empty group matches nothing (rather than everything)
                 return {"total": 0, "graded": 0, "graded_current": 0,
@@ -373,7 +439,7 @@ class ConversationsStore:
         )
         total = self._conn.execute(f"SELECT COUNT(*) AS n {gradeable}", args).fetchone()["n"]
         ignored = self._conn.execute(
-            f"SELECT COUNT(*) AS n FROM conversations c WHERE {ign_sql}", ign_args
+            f"SELECT COUNT(*) AS n FROM conversations c WHERE {ignored_where}", ignored_args
         ).fetchone()["n"]
         graded = self._conn.execute(f"SELECT COUNT(*) AS n {graded_base}", args).fetchone()["n"]
 

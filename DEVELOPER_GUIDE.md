@@ -232,6 +232,33 @@ A **ruleset** = a system prompt (what Qwen follows) + a criteria catalogue (ids,
 - `intercom/fetch.py` (what we pull) and `intercom/client.py` (raw API). The data shape is in
   `intercom/models.py`.
 
+### Work with brands (one Intercom workspace, several casinos)
+The workspace serves several casino brands. Each conversation carries the brand it arrived
+through, and the dashboard's **brand tabs** (under the header) scope every page to one at a
+time — two brands are two products, so blending their QA scores describes neither.
+
+- **The names.** `intercom/brands.py` maps the raw Intercom value to what people call it.
+  Watch out: King Billy's conversations say **`Betncare`** (Intercom names the default brand
+  after the workspace), so filtering on `"King Billy"` matches nothing. The database always
+  stores the raw value; the label is display-only.
+- **Adding a brand takes no code.** The tabs come from `GET /api/brands`, which is a
+  `GROUP BY brand` over the cache — a new brand grows its own tab from the first fetch that
+  includes it. Add a `BRAND_LABELS` entry only if Intercom's name for it isn't the name you
+  want on screen. The tab strip stays hidden while there is only one brand.
+- **Fetching is brand-blind, and has to be.** Intercom's conversation search has no `Brand`
+  field (it rejects the query), so we always fetch every brand for the chosen agents and
+  record the brand during normalisation (`intercom/fetch.py`). Don't add a brand option to
+  the fetch dialog — it would promise a server-side filter that doesn't exist. Filtering
+  happens locally, against our own cache.
+- **Backfilling old rows.** `scripts/backfill_brands.py` (`--dry-run` first). It writes only
+  the `brand` column, never through `ConversationsStore.save()` — a full re-save would
+  rewrite `agent_name` from Intercom's current assignee and quietly shift per-agent averages.
+- **Adding a brand filter somewhere new.** Thread `brand` through the same way as `agents`:
+  `_brand_sql()` in `storage/conversations_store.py`, or the sub-select version in
+  `storage/grades_store.py` (`grades` has no brand of its own — the conversation is the
+  source of truth). Keep it additive: with no brand selected the SQL must stay exactly as it
+  was, which is what keeps existing numbers stable.
+
 ### Change the Slack bot
 - `slack/handlers.py` (what happens on commands/clicks), `slack/blocks.py` (the message UI),
   `slack/auth.py` (who's allowed).

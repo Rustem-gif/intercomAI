@@ -306,10 +306,13 @@ export default function Overview() {
           onClose={() => setDialog(null)}
           onPartialData={() => {
             qc.invalidateQueries({ queryKey: ["conversations"] });
+            // Mid-fetch: a brand arriving for the first time gets its tab right away.
+            qc.invalidateQueries({ queryKey: ["brands"] });
           }}
           onDone={() => {
             qc.invalidateQueries({ queryKey: ["overview"] });
             qc.invalidateQueries({ queryKey: ["conversations"] });
+            qc.invalidateQueries({ queryKey: ["brands"] });
           }}
         />
       )}

@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Search, Trash2, ChevronDown, Sparkles, RotateCcw, Archive, X } from "lucide-react";
-import { api, ConversationList, TrashItem } from "@/lib/api";
+import { api, ConversationList, TrashItem, activeBrandParam } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import { Badge, Button, Card, Input, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import RunDialog from "@/components/RunDialog";
 import CsatBadge from "@/components/CsatBadge";
-import { fmtDate, scoreColor } from "@/lib/utils";
+import { ALL_BRANDS, brandDot, useBrand } from "@/lib/brand";
+import { cn, fmtDate, scoreColor } from "@/lib/utils";
 
 const PAGE = 50;
 
@@ -15,6 +16,10 @@ export default function Conversations() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const writer = canWrite(user?.role);
+  // Rows only need a brand badge while more than one brand is on screen; when the tabs
+  // have already scoped the page to one, repeating it on every row is noise.
+  const { brand: activeBrand, brands, showTabs } = useBrand();
+  const showBrandCol = showTabs && activeBrand === ALL_BRANDS;
 
   const [search, setSearch] = useState("");
   const [agent, setAgent] = useState("");
@@ -115,6 +120,9 @@ export default function Conversations() {
     qc.invalidateQueries({ queryKey: ["overview"] });
     qc.invalidateQueries({ queryKey: ["agents"] });
     qc.invalidateQueries({ queryKey: ["trash"] });
+    // Deleting or restoring can add or remove a brand's last conversation, so the tabs and
+    // their counts move with it (lib/brand.tsx resets the scope if the active one vanishes).
+    qc.invalidateQueries({ queryKey: ["brands"] });
   };
 
   const { data: trashData } = useQuery({
@@ -141,8 +149,13 @@ export default function Conversations() {
     setDeleting(true);
     setShowDeleteMenu(false);
     try {
+      // A filtered delete resolves its own id set on the server, so the active brand has to
+      // travel in the body or "delete everything matching" would reach into other brands.
+      // Explicit ids are already unambiguous, so they are left alone.
+      const b = activeBrandParam();
+      const scoped = !body.ids && b ? { ...body, brand: b } : body;
       const res = await api.post<{ deleted: number; ids: string[] }>(
-        "/api/conversations/delete", body,
+        "/api/conversations/delete", scoped,
       );
       setSelected(new Set());
       setLastDeleted(res.ids?.length ? { ids: res.ids, label } : null);
@@ -469,6 +482,7 @@ export default function Conversations() {
                 )}
                 <th className="px-4 py-2.5 font-medium">Subject</th>
                 <th className="px-4 py-2.5 font-medium">Agent</th>
+                {showBrandCol && <th className="px-4 py-2.5 font-medium">Brand</th>}
                 <th className="px-4 py-2.5 font-medium">Customer</th>
                 <th className="px-4 py-2.5 font-medium">State</th>
                 <th className="px-4 py-2.5 font-medium">Msgs</th>
@@ -510,6 +524,18 @@ export default function Conversations() {
                     )}
                   </td>
                   <td className="px-4 py-2.5">{c.agent_name}</td>
+                  {showBrandCol && (
+                    <td className="px-4 py-2.5">
+                      {c.brand ? (
+                        <span className="flex items-center gap-1.5 whitespace-nowrap text-xs">
+                          <span className={cn("h-2 w-2 shrink-0 rounded-full", brandDot(c.brand, brands))} />
+                          {brands.find((b) => b.value === c.brand)?.label ?? c.brand}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-2.5 text-muted-foreground">{c.customer_name || c.customer_email}</td>
                   <td className="px-4 py-2.5">
                     <Badge className="border-border">{c.state}</Badge>
@@ -576,6 +602,7 @@ export default function Conversations() {
             setSelected(new Set());
             qc.invalidateQueries({ queryKey: ["conversations"] });
             qc.invalidateQueries({ queryKey: ["overview"] });
+            qc.invalidateQueries({ queryKey: ["brands"] });
           }}
         />
       )}

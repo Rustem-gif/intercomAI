@@ -22,15 +22,45 @@ export function setActiveGroup(g: Group) {
   activeGroup = g;
 }
 
-function applyGroup(url: string): string {
-  if (activeGroup === "all") return url;
+// ── Brand scoping (multi-brand workspace) ────────────────────────────────────
+// One Intercom workspace serves several casino brands. Two brands are two different
+// products, so blending their conversations into one average says nothing useful about
+// either — the brand tabs scope every page to one at a time, applied here for the same
+// reason as the group above. `"all"` means every brand; any other value is a raw Intercom
+// brand value (or the unbranded token) passed straight through to the API.
+const BRAND_SCOPED = [...GROUP_SCOPED, "/api/export/conversations.xlsx"];
+
+export type Brand = string; // "all" | raw Intercom brand value | "__unbranded__"
+
+/** Filter token the API understands for conversations that carry no brand. */
+export const UNBRANDED = "__unbranded__";
+
+let activeBrand: Brand = "all";
+
+export function setActiveBrand(b: Brand) {
+  activeBrand = b;
+}
+
+/** Active brand as a request-body value: undefined when unscoped, so it can be spread in. */
+export function activeBrandParam(): string | undefined {
+  return activeBrand === "all" ? undefined : activeBrand;
+}
+
+function applyScope(url: string): string {
   const path = url.split("?")[0];
-  if (!GROUP_SCOPED.includes(path)) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}group=${activeGroup}`;
+  const params: string[] = [];
+  if (activeGroup !== "all" && GROUP_SCOPED.includes(path)) {
+    params.push(`group=${encodeURIComponent(activeGroup)}`);
+  }
+  if (activeBrand !== "all" && BRAND_SCOPED.includes(path)) {
+    params.push(`brand=${encodeURIComponent(activeBrand)}`);
+  }
+  if (!params.length) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}${params.join("&")}`;
 }
 
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
-  if (method === "GET") url = applyGroup(url);
+  if (method === "GET") url = applyScope(url);
   const res = await fetch(url, {
     method,
     credentials: "include",
@@ -111,9 +141,20 @@ export interface AgentScores {
   }[];
 }
 
+/** One brand of the multi-brand workspace, as offered by the brand tabs. */
+export interface BrandInfo {
+  /** Raw Intercom brand value, or UNBRANDED. This is what the API filters on. */
+  value: string;
+  /** Display name — King Billy's raw value is "Betncare", so these differ. */
+  label: string;
+  count: number;
+}
+
 export interface ConversationRow {
   id: string;
   agent_name: string;
+  /** Raw Intercom brand value; "" when unknown. */
+  brand: string;
   customer_name: string;
   customer_email: string;
   state: string;

@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from intercom_summary.intercom.brands import brand_filter_value
 from intercom_summary.settings import settings
 from intercom_summary.qa.schema import ConversationGrade
 from intercom_summary.storage.db import connect
@@ -14,6 +15,26 @@ from intercom_summary.storage.db import connect
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _brand_sql(brand: str | None, alias: str = "") -> tuple[str, list[object]]:
+    """Predicate (+args) restricting grades to one brand, or ("", []) for no filter.
+
+    `grades` carries no brand of its own — the conversation is the single source of truth — so
+    we go through a sub-select on conversation_id rather than a join, which keeps the caller's
+    FROM clause (and therefore its unfiltered behaviour) exactly as it was.
+
+    Note what this means for a grade whose conversation row is gone — deleted to the trash
+    after it was graded. It has no brand to be attributed to, so it counts under "all brands"
+    but under no individual brand. That is the honest answer rather than a bug: we cannot know
+    which brand a conversation we no longer hold belonged to. Restoring it from the trash puts
+    its grade back in the brand's totals.
+    """
+    value = brand_filter_value(brand)
+    if value is None:
+        return "", []
+    col = f"{alias}.conversation_id" if alias else "conversation_id"
+    return f"{col} IN (SELECT id FROM conversations WHERE brand = ?)", [value]
 
 
 def _normalize_criteria(rule_results: list | None, ruleset_id: str | None = None) -> list:
@@ -191,7 +212,8 @@ class GradesStore:
         d["rule_results"] = _normalize_criteria(d.get("rule_results"), d["ruleset_id"])
         return d
 
-    def agent_scores(self, since: str | None = None, until: str | None = None) -> list[dict]:
+    def agent_scores(self, since: str | None = None, until: str | None = None,
+                     brand: str | None = None) -> list[dict]:
         """Average effective QA score (human override if present, else AI) per agent.
 
         Joins grades with conversations so the period filter reflects when the chat
@@ -213,6 +235,11 @@ class GradesStore:
         if until:
             clauses.append("c.created_at < ?")
             args.append(until)
+        # This one already joins conversations, so it can filter the column directly.
+        brand_value = brand_filter_value(brand)
+        if brand_value is not None:
+            clauses.append("c.brand = ?")
+            args.append(brand_value)
         if clauses:
             sql += "WHERE " + " AND ".join(clauses) + " "
         sql += "GROUP BY g.agent_name ORDER BY avg_score DESC"
@@ -226,15 +253,22 @@ class GradesStore:
         ).fetchall()
         return [json.loads(r["payload_json"]) for r in rows]
 
-    def all(self, agents: list[str] | None = None) -> list[dict]:
+    def all(self, agents: list[str] | None = None, brand: str | None = None) -> list[dict]:
         sql = ("SELECT payload_json, human_score, override_reason, overridden_by, overridden_at "
                "FROM grades")
         args: list[object] = []
+        where: list[str] = []
         if agents is not None:
             if not agents:  # an empty group matches nothing, not everything
                 return []
-            sql += f" WHERE agent_name IN ({','.join('?' * len(agents))})"
+            where.append(f"agent_name IN ({','.join('?' * len(agents))})")
             args.extend(agents)
+        brand_sql, brand_args = _brand_sql(brand)
+        if brand_sql:
+            where.append(brand_sql)
+            args.extend(brand_args)
+        if where:
+            sql += f" WHERE {' AND '.join(where)}"
         sql += " ORDER BY graded_at DESC"
         rows = self._conn.execute(sql, args).fetchall()
         result = []
@@ -275,17 +309,24 @@ class GradesStore:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def accuracy_stats(self, agents: list[str] | None = None) -> dict:
+    def accuracy_stats(self, agents: list[str] | None = None, brand: str | None = None) -> dict:
         """AI-vs-human accuracy metrics for the traceability dashboard."""
         sql = ("SELECT conversation_id, overall_score, human_score, agent_name, "
                "override_reason, overridden_by, overridden_at, graded_at FROM grades")
         args: list[object] = []
+        where: list[str] = []
         if agents is not None:
             if not agents:
-                sql += " WHERE 0"
+                where.append("0")
             else:
-                sql += f" WHERE agent_name IN ({','.join('?' * len(agents))})"
+                where.append(f"agent_name IN ({','.join('?' * len(agents))})")
                 args.extend(agents)
+        brand_sql, brand_args = _brand_sql(brand)
+        if brand_sql:
+            where.append(brand_sql)
+            args.extend(brand_args)
+        if where:
+            sql += f" WHERE {' AND '.join(where)}"
         rows = self._conn.execute(sql, args).fetchall()
 
         total = len(rows)

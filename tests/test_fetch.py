@@ -67,3 +67,44 @@ def test_normalise_extracts_thread_and_metadata():
     assert convo.csat_rating == 5
     assert convo.first_response_time == 120
     assert "login" in convo.tags
+
+
+def _raw_convo(custom_attributes=None):
+    raw = {
+        "id": "7",
+        "created_at": 1_700_000_000,
+        "state": "closed",
+        "source": {"body": "<p>Hi</p>", "author": {"type": "user", "name": "Cara"}},
+        "conversation_parts": {"conversation_parts": []},
+    }
+    if custom_attributes is not None:
+        raw["custom_attributes"] = custom_attributes
+    return raw
+
+
+def test_normalise_reads_brand_from_custom_attributes():
+    conv = normalise_conversation(_raw_convo({"Brand": "Tomb Riches", "Language": "English"}))
+    assert conv.brand == "Tomb Riches"
+
+
+def test_normalise_brand_is_empty_when_absent():
+    # Payloads without custom_attributes, or without a Brand in them, must not blow up —
+    # they simply come back unbranded and the backfill can fill them in later.
+    assert normalise_conversation(_raw_convo()).brand == ""
+    assert normalise_conversation(_raw_convo({"Language": "English"})).brand == ""
+
+
+def test_brand_survives_conversation_roundtrip():
+    from intercom_summary.intercom.models import Conversation
+
+    conv = normalise_conversation(_raw_convo({"Brand": "Betncare"}))
+    assert Conversation.from_dict(conv.to_dict()).brand == "Betncare"
+
+
+def test_brand_label_maps_default_brand_to_product_name():
+    # The whole point of the label map: King Billy's conversations say "Betncare".
+    from intercom_summary.intercom.brands import UNBRANDED_LABEL, brand_label
+
+    assert brand_label("Betncare") == "King Billy"
+    assert brand_label("Tomb Riches") == "Tomb Riches"   # unmapped → raw value
+    assert brand_label("") == UNBRANDED_LABEL

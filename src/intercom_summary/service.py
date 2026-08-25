@@ -186,6 +186,7 @@ def review_and_store(
     since: str | None = None,
     until: str | None = None,
     state: str | None = None,
+    brand: str | None = None,
     regrade: bool = False,
     backend: str | None = None,
     on_progress: Callable[[int, int, int], None] | None = None,
@@ -214,7 +215,8 @@ def review_and_store(
             convos = [c for cid in conversation_ids if (c := convos_store.get(cid))]
         else:
             rows, _ = convos_store.query(
-                agents=agents, since=since, until=until, state=state, limit=10_000
+                agents=agents, since=since, until=until, state=state, brand=brand,
+                limit=10_000,
             )
             convos = [c for r in rows if (c := convos_store.get(r["id"]))]
 
@@ -397,16 +399,21 @@ def build_conversation_snapshot(conversation_id: str) -> dict[str, Any] | None:
 
 
 # ── Overview (bento dashboard payload) ───────────────────────────────────────────
-def build_overview(agents_scope: list[str] | None = None) -> dict[str, Any]:
+def build_overview(agents_scope: list[str] | None = None,
+                   brand: str | None = None) -> dict[str, Any]:
     """Dashboard aggregates. `agents_scope` limits everything to a group's agents (the UI's
     Standard/VIP switcher) — None means all agents. Scores from different rulesets are not
-    comparable, which is exactly why the dashboard can be scoped to one group at a time."""
+    comparable, which is exactly why the dashboard can be scoped to one group at a time.
+
+    `brand` limits everything to one brand of the multi-brand workspace (the UI's brand tabs)
+    — None means every brand. Two brands are two different products, so blending their scores
+    into one average says nothing useful about either."""
     convos_store = ConversationsStore()
     grades_store = GradesStore()
     try:
-        grades = grades_store.all(agents=agents_scope)
-        total_convos = convos_store.count(agents=agents_scope)
-        agents = convos_store.agents()
+        grades = grades_store.all(agents=agents_scope, brand=brand)
+        total_convos = convos_store.count(agents=agents_scope, brand=brand)
+        agents = convos_store.agents(brand=brand)
         if agents_scope is not None:
             in_scope = {a.lower() for a in agents_scope}
             agents = [a for a in agents if a.lower() in in_scope]
