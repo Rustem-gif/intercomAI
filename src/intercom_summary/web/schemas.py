@@ -28,6 +28,7 @@ class ReviewRequest(BaseModel):
     since: str | None = None
     until: str | None = None
     state: str | None = None
+    brand: str | None = None    # grade only one brand of the workspace
     regrade: bool = False
     backend: str | None = None  # override QA_BACKEND setting: "ollama" | "api"
 
@@ -68,6 +69,9 @@ class DeleteConversationsRequest(BaseModel):
     min_score: int | None = None
     search: str | None = None
     tag: str | None = None
+    # Must mirror the UI's active brand: a filtered delete resolves its own id set
+    # server-side, so without this a user scoped to one brand would delete across all of them.
+    brand: str | None = None
     ungraded: bool = False
 
 

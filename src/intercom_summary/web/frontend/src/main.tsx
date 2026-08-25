@@ -6,6 +6,7 @@ import App from "./App";
 import { ThemeProvider } from "./lib/theme";
 import { AuthProvider } from "./lib/auth";
 import { GroupProvider } from "./lib/group";
+import { BrandProvider } from "./lib/brand";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -18,9 +19,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <ThemeProvider>
         <AuthProvider>
           <GroupProvider>
-            <BrowserRouter>
-              <App />
-            </BrowserRouter>
+            <BrandProvider>
+              <BrowserRouter>
+                <App />
+              </BrowserRouter>
+            </BrandProvider>
           </GroupProvider>
         </AuthProvider>
       </ThemeProvider>

@@ -20,6 +20,7 @@ import { useAuth } from "@/lib/auth";
 import { useGroup } from "@/lib/group";
 import type { Group } from "@/lib/api";
 import { Button } from "./ui/primitives";
+import BrandTabs from "./BrandTabs";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -113,6 +114,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </Button>
           </div>
         </header>
+        {/* Brand scope. Renders nothing while the workspace has only one brand. */}
+        <BrandTabs />
         <main className="flex-1 overflow-auto p-6">{children}</main>
         <footer className="px-6 py-1.5 text-center text-[10px] text-muted-foreground/30 select-none">
           Created and administered by Rustem Samoilenko

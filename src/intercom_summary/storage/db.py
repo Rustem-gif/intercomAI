@@ -50,12 +50,18 @@ CREATE TABLE IF NOT EXISTS conversations (
     csat_rating     INTEGER,
     tags            TEXT,        -- comma-separated (Intercom tags)
     custom_tags     TEXT NOT NULL DEFAULT '',  -- comma-separated (analyst tags)
+    -- Which brand of the multi-brand workspace this came through, raw as Intercom names it
+    -- ('Betncare' is King Billy — see intercom/brands.py). '' = unknown/not yet backfilled.
+    brand           TEXT NOT NULL DEFAULT '',
     payload_json    TEXT,        -- full Conversation as JSON
     fetched_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_convo_agent ON conversations(agent_name);
 CREATE INDEX IF NOT EXISTS idx_convo_created ON conversations(created_at);
 CREATE INDEX IF NOT EXISTS idx_convo_state ON conversations(state);
+-- idx_convo_brand is created in _migrate(), not here: this script runs *before* the
+-- migrations, so on a pre-brand database the CREATE TABLE above is a no-op and indexing
+-- conversations(brand) would fail on a column that does not exist yet.
 
 -- Knowledge base of iconic / representative cases curated by managers.
 CREATE TABLE IF NOT EXISTS iconic_cases (
@@ -174,6 +180,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "custom_tags" not in convo_cols:
         conn.execute("ALTER TABLE conversations ADD COLUMN custom_tags TEXT NOT NULL DEFAULT ''")
         conn.commit()
+
+    # Multi-brand workspace support (added 2026-08). Existing rows start unbranded; the
+    # backfill in scripts/backfill_brands.py fills them from Intercom.
+    if "brand" not in convo_cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN brand TEXT NOT NULL DEFAULT ''")
+    # Unconditional: the column exists by now either way (fresh DBs get it from _SCHEMA), and
+    # the index has to be created here rather than in _SCHEMA — see the note there.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_convo_brand ON conversations(brand)")
+    conn.commit()
 
     grade_cols = {row[1] for row in conn.execute("PRAGMA table_info(grades)").fetchall()}
     for col, definition in [

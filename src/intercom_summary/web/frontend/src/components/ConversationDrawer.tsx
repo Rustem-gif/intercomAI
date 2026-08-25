@@ -7,7 +7,8 @@ import GradePanel from "./GradePanel";
 import AiChatPanel from "./AiChatPanel";
 import TagEditor from "./TagEditor";
 import { X, Bot, ClipboardList, BookOpen, BookMarked, GraduationCap, Check, MessageSquare, Trash2, Send } from "lucide-react";
-import { fmtDate, fmtTime, fmtGap, gapSeconds, isLowCsat } from "@/lib/utils";
+import { fmtDate, fmtTime, fmtGap, gapSeconds, isLowCsat, cn } from "@/lib/utils";
+import { brandDot, brandLabel, useBrand } from "@/lib/brand";
 
 type RightPanel = "grade" | "chat";
 
@@ -24,6 +25,7 @@ interface DrawerProps {
 export default function ConversationDrawer({ id, onClose, readOnly = false, detailUrl, disputeUrl }: DrawerProps) {
   const { user } = useAuth();
   const qc = useQueryClient();
+  const { brands } = useBrand();
   const writer = !readOnly && canWrite(user?.role);
   const [rightPanel, setRightPanel] = useState<RightPanel>("grade");
   const [savingTags, setSavingTags] = useState(false);
@@ -181,6 +183,16 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                 <div>
                   {data.conversation.assignee?.name ?? "?"} ↔ {data.conversation.contact?.name ?? "?"} ·{" "}
                   {data.conversation.state} · {fmtDate(data.conversation.created_at)}
+                  {/* Which brand this chat came through — the transcript alone rarely says. */}
+                  {data.conversation.brand && (
+                    <>
+                      {" · "}
+                      <span className="inline-flex items-center gap-1.5 align-middle">
+                        <span className={cn("h-2 w-2 rounded-full", brandDot(data.conversation.brand, brands))} />
+                        {brandLabel(data.conversation.brand, brands)}
+                      </span>
+                    </>
+                  )}
                 </div>
                 {data.sla && (
                   <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">

@@ -447,3 +447,156 @@ def test_unknown_criterion_survives_alongside_the_backfill(tmp_path):
     ids = [r["rule_id"] for r in got["rule_results"]]
     assert ids[-1] == "made-up-rule"
     assert len(ids) == len(get_ruleset("default").criteria) + 1
+
+
+# ── Brand filtering (multi-brand workspace) ──────────────────────────────────────
+def _branded(cid: str, brand: str, agent: str = "Ada"):
+    c = _convo(cid=cid, agent=agent)
+    c.brand = brand
+    return c
+
+
+def test_brand_roundtrips_and_filters(tmp_path):
+    store = ConversationsStore(tmp_path / "b.db")
+    store.save(_branded("1", "Betncare"))
+    store.save(_branded("2", "Tomb Riches"))
+    store.save(_branded("3", ""))            # unbranded
+
+    assert store.get("2").brand == "Tomb Riches"
+
+    rows, total = store.query(brand="Tomb Riches")
+    assert total == 1 and rows[0]["id"] == "2"
+    assert rows[0]["brand"] == "Tomb Riches"
+
+    assert store.count(brand="Betncare") == 1
+    assert store.count(brand="Tomb Riches") == 1
+
+
+def test_unbranded_rows_are_selectable_by_their_own_token(tmp_path):
+    from intercom_summary.intercom.brands import UNBRANDED
+
+    store = ConversationsStore(tmp_path / "b.db")
+    store.save(_branded("1", "Betncare"))
+    store.save(_branded("2", ""))
+
+    rows, total = store.query(brand=UNBRANDED)
+    assert total == 1 and rows[0]["id"] == "2"
+
+
+def test_no_brand_filter_returns_everything(tmp_path):
+    # The additive guarantee: an unfiltered query must behave exactly as it did before
+    # brands existed, whatever brands the rows happen to carry.
+    store = ConversationsStore(tmp_path / "b.db")
+    store.save(_branded("1", "Betncare"))
+    store.save(_branded("2", "Tomb Riches"))
+    store.save(_branded("3", ""))
+
+    assert store.query()[1] == 3
+    assert store.query(brand=None)[1] == 3
+    assert store.count() == 3
+
+
+def test_brands_lists_counts_busiest_first(tmp_path):
+    store = ConversationsStore(tmp_path / "b.db")
+    for i in range(3):
+        store.save(_branded(f"kb{i}", "Betncare"))
+    store.save(_branded("tr", "Tomb Riches"))
+
+    assert store.brands() == [
+        {"brand": "Betncare", "count": 3},
+        {"brand": "Tomb Riches", "count": 1},
+    ]
+
+
+def test_save_keeps_known_brand_when_refetch_has_none(tmp_path):
+    # A re-fetch that comes back without the Brand attribute must not wipe a backfilled value.
+    store = ConversationsStore(tmp_path / "b.db")
+    store.save(_branded("1", "Tomb Riches"))
+    store.save(_branded("1", ""))            # same conversation, brand missing this time
+
+    assert store.get("1").brand == "Tomb Riches"
+    assert store.query(brand="Tomb Riches")[1] == 1
+
+
+def test_agents_and_csat_are_brand_scoped(tmp_path):
+    store = ConversationsStore(tmp_path / "b.db")
+    store.save(_branded("1", "Betncare", agent="Ada"))
+    store.save(_branded("2", "Tomb Riches", agent="Bob"))
+
+    assert store.agents() == ["Ada", "Bob"]
+    assert store.agents(brand="Tomb Riches") == ["Bob"]
+    assert [r["agent"] for r in store.agent_csat(brand="Betncare")] == ["Ada"]
+
+
+def test_grades_are_brand_filtered_through_their_conversation(tmp_path):
+    db = tmp_path / "b.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_branded("1", "Betncare", agent="Ada"))
+    cstore.save(_branded("2", "Tomb Riches", agent="Bob"))
+
+    gstore = GradesStore(db)
+    for cid, agent, score in (("1", "Ada", 90), ("2", "Bob", 40)):
+        gstore.save(ConversationGrade(
+            conversation_id=cid, agent_name=agent, overall_score=score,
+            summary="s", rule_results=[RuleResult("r", "t", "pass", "", "")],
+        ))
+
+    assert len(gstore.all()) == 2                              # unfiltered unchanged
+    assert [g["agent_name"] for g in gstore.all(brand="Tomb Riches")] == ["Bob"]
+    assert gstore.accuracy_stats()["summary"]["total_graded"] == 2
+    assert gstore.accuracy_stats(brand="Betncare")["summary"]["total_graded"] == 1
+    assert [r["agent"] for r in gstore.agent_scores(brand="Betncare")] == ["Ada"]
+
+
+def test_migration_adds_brand_to_a_pre_brand_database(tmp_path):
+    """Regression: `_SCHEMA` runs before `_migrate()`, so anything in the schema script that
+    references `conversations.brand` blows up on a database created before the column existed
+    — every test here builds a *fresh* DB, so only an old-shaped one catches it."""
+    import sqlite3
+
+    from intercom_summary.storage.db import connect
+
+    db = tmp_path / "old.db"
+    old = sqlite3.connect(db)
+    old.execute("""
+        CREATE TABLE conversations (
+            id TEXT PRIMARY KEY, agent_name TEXT, agent_email TEXT, customer_name TEXT,
+            customer_email TEXT, state TEXT, subject TEXT, created_at TEXT, updated_at TEXT,
+            message_count INTEGER, csat_rating INTEGER, tags TEXT, payload_json TEXT,
+            fetched_at TEXT
+        )""")
+    old.execute("INSERT INTO conversations (id, agent_name) VALUES ('1', 'Ada')")
+    old.commit()
+    old.close()
+
+    conn = connect(db)                       # must not raise
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(conversations)")}
+    assert {"brand", "custom_tags"} <= cols
+    indexes = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='conversations'")}
+    assert "idx_convo_brand" in indexes
+    # Pre-existing rows survive, unbranded until the backfill runs.
+    assert conn.execute("SELECT brand FROM conversations WHERE id='1'").fetchone()[0] == ""
+    conn.close()
+
+    connect(db).close()                      # idempotent on a second open
+
+
+def test_grade_without_a_conversation_counts_only_under_all_brands(tmp_path):
+    """A conversation deleted after grading leaves its grade behind. There is no brand to
+    attribute that grade to, so it counts unfiltered but under no individual brand — real
+    databases carry a few of these, and the behaviour should be deliberate, not a surprise."""
+    db = tmp_path / "b.db"
+    cstore = ConversationsStore(db)
+    cstore.save(_branded("1", "Betncare", agent="Ada"))
+    cstore.close()
+
+    gstore = GradesStore(db)
+    for cid in ("1", "gone"):
+        gstore.save(ConversationGrade(
+            conversation_id=cid, agent_name="Ada", overall_score=70,
+            summary="s", rule_results=[RuleResult("r", "t", "pass", "", "")],
+        ))
+
+    assert len(gstore.all()) == 2                      # unfiltered: both
+    assert len(gstore.all(brand="Betncare")) == 1      # scoped: only the one we can place

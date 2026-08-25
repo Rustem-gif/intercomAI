@@ -605,3 +605,88 @@ def test_storage_stats_is_admin_only(client):
     assert body["trash"]["retention_days"] == settings.trash_retention_days
     assert any(t["table"] == "conversations" for t in body["db"]["tables"])
     assert client.post("/api/storage/vacuum", json={}).json()["before_bytes"] > 0
+
+
+# ── Per-brand filtering ──────────────────────────────────────────────────────────
+def _seed_brands(client):
+    """Add a second-brand conversation next to the fixture's unbranded '42'."""
+    from intercom_summary.storage.conversations_store import ConversationsStore
+
+    store = ConversationsStore(settings.db_path)
+    for cid, agent, brand in (("100", "Ada", "Betncare"), ("200", "Bob", "Tomb Riches")):
+        store.save(Conversation(
+            id=cid, created_at=datetime(2026, 8, 22, tzinfo=timezone.utc), updated_at=None,
+            state="closed", subject=f"Chat {cid}",
+            assignee=Admin(id="1", name=agent, email=f"{agent.lower()}@co.com"),
+            contact=Contact(name="Cara"),
+            messages=[Message(0, "admin", agent, None, "Hi")],
+            brand=brand,
+        ))
+    store.close()
+
+
+def test_brands_endpoint_lists_what_is_in_the_cache(client):
+    from intercom_summary.intercom.brands import UNBRANDED
+
+    _login(client)
+    _seed_brands(client)
+
+    brands = client.get("/api/brands").json()["brands"]
+    by_value = {b["value"]: b for b in brands}
+
+    # The default brand is stored as "Betncare" but shown as the product name.
+    assert by_value["Betncare"]["label"] == "King Billy"
+    assert by_value["Betncare"]["count"] == 1
+    assert by_value["Tomb Riches"]["label"] == "Tomb Riches"
+    # The fixture's conversation has no brand, so it is reachable under its own token.
+    assert by_value[UNBRANDED]["count"] == 1
+
+
+def test_conversations_filtered_by_brand(client):
+    _login(client)
+    _seed_brands(client)
+
+    assert client.get("/api/conversations").json()["total"] == 3      # unfiltered
+    tr = client.get("/api/conversations?brand=Tomb Riches").json()
+    assert tr["total"] == 1 and tr["items"][0]["id"] == "200"
+    assert tr["items"][0]["brand"] == "Tomb Riches"
+
+
+def test_overview_and_agents_are_brand_scoped(client):
+    _login(client)
+    _seed_brands(client)
+
+    assert client.get("/api/overview").json()["kpis"]["conversations"] == 3
+    assert client.get("/api/overview?brand=Betncare").json()["kpis"]["conversations"] == 1
+    assert client.get("/api/agents?brand=Tomb Riches").json()["agents"] == ["Bob"]
+
+
+def test_unknown_brand_matches_nothing_rather_than_erroring(client):
+    # The brand set is data-driven, so an unrecognised value must not 4xx the way an unknown
+    # agent group does — a brand can appear or disappear without a deploy.
+    _login(client)
+    r = client.get("/api/conversations?brand=Olympia")
+    assert r.status_code == 200 and r.json()["total"] == 0
+
+
+def test_filtered_delete_cannot_reach_across_brands(client):
+    """The safety property: a filtered delete resolves its ids server-side, so it must stay
+    inside the brand the caller is scoped to."""
+    _login(client)
+    _seed_brands(client)
+
+    r = client.post("/api/conversations/delete", json={"state": "closed", "brand": "Tomb Riches"})
+    assert r.status_code == 200
+    assert r.json()["ids"] == ["200"]
+
+    remaining = {c["id"] for c in client.get("/api/conversations").json()["items"]}
+    assert remaining == {"42", "100"}
+
+
+def test_delete_all_is_still_bounded_by_the_active_brand(client):
+    _login(client)
+    _seed_brands(client)
+
+    r = client.post("/api/conversations/delete", json={"all": True, "brand": "Betncare"})
+    assert r.json()["ids"] == ["100"]
+    assert client.get("/api/conversations").json()["total"] == 2

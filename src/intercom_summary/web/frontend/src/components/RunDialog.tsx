@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Job } from "@/lib/api";
+import { api, Job, activeBrandParam } from "@/lib/api";
 import { Button, Input, Spinner } from "./ui/primitives";
 import { X } from "lucide-react";
 import AgentMultiSelect from "./AgentMultiSelect";
@@ -51,9 +51,13 @@ export default function RunDialog({
   const start = async () => {
     setError("");
     try {
+      // A review grades whatever the filters select, so it honours the active brand tab —
+      // you can grade one brand's backlog on its own. A fetch cannot: Intercom's conversation
+      // search has no Brand field, so fetching is brand-blind and brand is assigned on the
+      // way in (see intercom/brands.py).
       const body =
         kind === "review"
-          ? { agents: selected.length ? selected : null, since: since || null, until: until || null, state: state || null }
+          ? { agents: selected.length ? selected : null, since: since || null, until: until || null, state: state || null, brand: activeBrandParam() ?? null }
           : { agents: selected, since: since || null, until: until || null, state: state || null };
       const j = await api.post<Job>(endpoint, body);
       setJob(j);

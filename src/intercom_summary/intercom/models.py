@@ -75,6 +75,9 @@ class Conversation:
     tags: list[str] = field(default_factory=list)
     csat_rating: int | None = None   # 1-5 if a rating was left
     csat_remark: str = ""
+    # Which brand of the multi-brand workspace this came through, as Intercom names it
+    # ("Betncare" is King Billy — see intercom/brands.py). "" when unknown.
+    brand: str = ""
     # Selected metrics from the Intercom `statistics` object (seconds).
     first_response_time: int | None = None
     time_to_close: int | None = None
@@ -174,6 +177,7 @@ class Conversation:
                 {**vars(m), "created_at": _iso(m.created_at)} for m in self.messages
             ],
             "tags": self.tags,
+            "brand": self.brand,
             "csat_rating": self.csat_rating,
             "csat_remark": self.csat_remark,
             "first_response_time": self.first_response_time,
@@ -217,6 +221,8 @@ class Conversation:
             contact=contact,
             messages=messages,
             tags=list(d.get("tags", [])),
+            # Absent from payloads cached before brand capture existed.
+            brand=d.get("brand", ""),
             csat_rating=d.get("csat_rating"),
             csat_remark=d.get("csat_remark", ""),
             first_response_time=d.get("first_response_time"),

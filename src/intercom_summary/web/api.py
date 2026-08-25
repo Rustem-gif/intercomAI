@@ -209,15 +209,43 @@ def create_app() -> FastAPI:
             cstore.close()
 
     @app.get("/api/overview")
-    def overview(group: str | None = None, user: dict = Depends(auth.current_user)):
-        return service.build_overview(agents_scope=_group_agents(group))
+    def overview(group: str | None = None, brand: str | None = None,
+                 user: dict = Depends(auth.current_user)):
+        return service.build_overview(agents_scope=_group_agents(group), brand=brand)
+
+    @app.get("/api/brands")
+    def brands(user: dict = Depends(auth.current_user)):
+        """Brands present in the local cache, busiest first, for the UI's brand tabs.
+
+        Derived from the data rather than configured, so a newly launched brand grows its own
+        tab from the first fetch that includes it, with no code change. Unbranded rows are
+        reported under the UNBRANDED token so they stay selectable.
+        """
+        from intercom_summary.intercom.brands import UNBRANDED, brand_label
+
+        store = ConversationsStore()
+        try:
+            rows = store.brands()
+        finally:
+            store.close()
+        return {
+            "brands": [
+                {
+                    "value": r["brand"] or UNBRANDED,
+                    "label": brand_label(r["brand"]),
+                    "count": r["count"],
+                }
+                for r in rows
+            ]
+        }
 
     @app.get("/api/agents")
-    def agents(group: str | None = None, user: dict = Depends(auth.current_user)):
+    def agents(group: str | None = None, brand: str | None = None,
+               user: dict = Depends(auth.current_user)):
         # Agents present in the local cache (used for filtering existing conversations).
         store = ConversationsStore()
         try:
-            names = store.agents()
+            names = store.agents(brand=brand)
         finally:
             store.close()
         scope = _group_agents(group)
@@ -279,6 +307,7 @@ def create_app() -> FastAPI:
         user: dict = Depends(auth.current_user),
         agent: list[str] | None = Query(None),
         group: str | None = None,
+        brand: str | None = None,
         since: str | None = None,
         until: str | None = None,
         state: str | None = None,
@@ -303,7 +332,7 @@ def create_app() -> FastAPI:
         store = ConversationsStore()
         try:
             rows, total = store.query(
-                agents=agents, since=since, until=until, state=state,
+                agents=agents, since=since, until=until, state=state, brand=brand,
                 min_score=min_score, max_csat=max_csat, search=search, tag=tag,
                 ungraded=ungraded, sort=sort, descending=descending,
                 limit=limit, offset=offset,
@@ -560,10 +589,11 @@ def create_app() -> FastAPI:
         return {"items": get_ruleset(ruleset_id).manual_deductions}
 
     @app.get("/api/accuracy")
-    def accuracy(group: str | None = None, user: dict = Depends(auth.current_user)):
+    def accuracy(group: str | None = None, brand: str | None = None,
+                 user: dict = Depends(auth.current_user)):
         gstore = GradesStore()
         try:
-            return gstore.accuracy_stats(agents=_group_agents(group))
+            return gstore.accuracy_stats(agents=_group_agents(group), brand=brand)
         finally:
             gstore.close()
 
@@ -686,16 +716,19 @@ def create_app() -> FastAPI:
             return body.ids, True
         has_filter = any([
             body.agent, body.since, body.until, body.state,
-            body.min_score is not None, body.search, body.tag, body.ungraded,
+            body.min_score is not None, body.search, body.tag, body.brand, body.ungraded,
         ])
         if not has_filter and not body.all:
             raise HTTPException(400, "Specify ids, at least one filter, or all=true.")
         cstore = ConversationsStore()
         try:
+            # body.brand carries the UI's active brand tab. It is applied even for all=true,
+            # so "delete everything" means everything *in the brand you are looking at* and
+            # can never reach across into another brand's conversations.
             rows, _ = cstore.query(
                 agents=body.agent, since=body.since, until=body.until, state=body.state,
                 min_score=body.min_score, search=body.search, tag=body.tag,
-                ungraded=body.ungraded, limit=1_000_000,
+                brand=body.brand, ungraded=body.ungraded, limit=1_000_000,
             )
         finally:
             cstore.close()
@@ -933,7 +966,8 @@ def create_app() -> FastAPI:
         ]}
 
     @app.get("/api/evaluation/stats")
-    def evaluation_stats(group: str | None = None, user: dict = Depends(auth.current_user)):
+    def evaluation_stats(group: str | None = None, brand: str | None = None,
+                         user: dict = Depends(auth.current_user)):
         """Counts of conversations vs graded vs active job, used by the Evaluation page."""
         from intercom_summary.qa.backends import get_grader
         from intercom_summary.qa.rulesets import GROUP_VIP, list_rulesets
@@ -961,7 +995,8 @@ def create_app() -> FastAPI:
             # the live version of the ruleset that produced it, so "stale" means "its own
             # ruleset was edited" — not "its agent changed group", which is wrong_ruleset.
             counts = cstore.evaluation_counts(
-                versions=versions, vip_agents=vip_agents, agents=_group_agents(group)
+                versions=versions, vip_agents=vip_agents, agents=_group_agents(group),
+                brand=brand,
             )
             total = counts["total"]
             graded = counts["graded"]
@@ -1177,12 +1212,12 @@ def create_app() -> FastAPI:
                              agent: list[str] | None = Query(None),
                              since: str | None = None, until: str | None = None,
                              state: str | None = None, search: str | None = None,
-                             tag: str | None = None):
+                             tag: str | None = None, brand: str | None = None):
         from intercom_summary.export.xlsx import export_xlsx
 
         store = ConversationsStore()
         try:
-            rows, _ = store.query(agents=agent, since=since, until=until,
+            rows, _ = store.query(agents=agent, since=since, until=until, brand=brand,
                                   state=state, search=search, tag=tag, limit=10_000)
             convos = [c for r in rows if (c := store.get(r["id"]))]
         finally:
@@ -1561,6 +1596,7 @@ def create_app() -> FastAPI:
         start: str | None = None,
         end: str | None = None,
         group: str | None = None,
+        brand: str | None = None,
         user: dict = Depends(auth.current_user),
     ):
         """Average effective QA score per agent (by conversation date).
@@ -1592,11 +1628,13 @@ def create_app() -> FastAPI:
         gstore = GradesStore()
         cstore = ConversationsStore()
         try:
-            agents = gstore.agent_scores(since, until)
+            agents = gstore.agent_scores(since, until, brand=brand)
             if scope is not None:
                 in_scope = {a.lower() for a in scope}
                 agents = [a for a in agents if (a["agent"] or "").lower() in in_scope]
-            csat_by_agent = {r["agent"]: r for r in cstore.agent_csat(since, until)}
+            csat_by_agent = {
+                r["agent"]: r for r in cstore.agent_csat(since, until, brand=brand)
+            }
             for a in agents:
                 c = csat_by_agent.get(a["agent"])
                 a["avg_csat"] = c["avg_csat"] if c else None

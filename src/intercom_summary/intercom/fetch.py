@@ -178,6 +178,12 @@ def normalise_conversation(
 
     tags = [t.get("name", "") for t in (raw.get("tags") or {}).get("tags", []) if t.get("name")]
 
+    # Which brand of the multi-brand workspace this arrived through. Intercom puts it on every
+    # conversation payload (full threads and search stubs alike), so capturing it is free — but
+    # it is NOT a searchable field, hence we record it here and filter locally. See
+    # intercom/brands.py for why the raw value is kept verbatim.
+    brand = str((raw.get("custom_attributes") or {}).get("Brand") or "")
+
     return Conversation(
         id=str(raw.get("id", "")),
         created_at=ts_to_dt(raw.get("created_at")),
@@ -188,6 +194,7 @@ def normalise_conversation(
         contact=contact,
         messages=messages,
         tags=tags,
+        brand=brand,
         csat_rating=rating.get("rating"),
         csat_remark=rating.get("remark") or "",
         first_response_time=stats.get("first_admin_reply_time") or stats.get("time_to_admin_reply"),
