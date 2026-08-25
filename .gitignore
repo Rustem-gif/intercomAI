@@ -15,3 +15,7 @@ data/backups/
 node_modules/
 src/intercom_summary/web/frontend/dist/
 config/web_users.yaml
+
+# Ad-hoc screenshots dropped in the project root
+image.png
+*.screenshot.png
