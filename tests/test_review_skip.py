@@ -95,3 +95,41 @@ def test_failed_grade_is_skipped_not_saved(temp_db, monkeypatch):
         assert gs.get("bad") is None             # failed grade NOT saved as a 0/100
     finally:
         gs.close()
+
+
+async def test_cli_review_does_not_grade_ignored_tags(temp_db, monkeypatch, tmp_path):
+    """`intercom-summary review` fetches straight from Intercom, bypassing
+    service.review_and_store — it has to drop ignored-tag chats itself, or the CLI
+    re-introduces the very grades the web path refuses to produce."""
+    import argparse
+
+    from intercom_summary import cli
+
+    graded: list[str] = []
+
+    class _Grader(_FakeGrader):
+        def grade(self, convo):
+            graded.append(convo.id)
+            return super().grade(convo)
+
+    async def _fake_fetch(**kwargs):
+        return [_conv("plain"), _conv_tagged("followup", ["KYC", "Follow-Up"])]
+
+    monkeypatch.setattr(cli, "fetch_conversations_for_agents", _fake_fetch)
+    monkeypatch.setattr("intercom_summary.qa.backends.get_grader",
+                        lambda backend=None, ruleset_id=None: _Grader())
+    # Settings is a frozen dataclass, so these patch the class, not the instance.
+    monkeypatch.setattr(type(settings), "require_intercom", lambda self: None)
+    monkeypatch.setattr(type(settings), "require_qa", lambda self: None)
+
+    args = argparse.Namespace(agent=["Ada"], since=None, until=None, state=None,
+                              limit=None, regrade=True, out=str(tmp_path / "r.xlsx"))
+    await cli._review(args)
+
+    assert graded == ["plain"]          # the Follow-Up was never sent to the grader
+
+    gs = GradesStore()
+    try:
+        assert gs.get("followup") is None
+    finally:
+        gs.close()

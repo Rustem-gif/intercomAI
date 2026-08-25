@@ -14,6 +14,7 @@ from intercom_summary.export.transcript import export_transcripts
 from intercom_summary.export.xlsx import export_xlsx
 from intercom_summary.intercom.fetch import fetch_conversations_for_agents
 from intercom_summary.logging_setup import get_logger
+from intercom_summary.storage.conversations_store import tags_are_ignored
 
 log = get_logger("cli")
 
@@ -63,6 +64,18 @@ async def _review(args: argparse.Namespace):
     )
     if not convos:
         log.warning("No conversations to grade.")
+        return
+
+    # Triage/noise chats (tagged spam, empty, test, Jira, Follow-Up, no request) are never
+    # graded. The web path drops them in service.review_and_store; this one fetches straight
+    # from Intercom and so has to drop them itself, or `review` re-introduces exactly the
+    # grades the rest of the system refuses to produce.
+    ignored = [c for c in convos if tags_are_ignored(c.tags)]
+    if ignored:
+        convos = [c for c in convos if not tags_are_ignored(c.tags)]
+        log.info("Skipping %d conversation(s) with an ignored tag.", len(ignored))
+    if not convos:
+        log.warning("No conversations to grade (all carried an ignored tag).")
         return
 
     from intercom_summary.qa.rulesets import agent_ruleset_resolver

@@ -232,6 +232,27 @@ A **ruleset** = a system prompt (what Qwen follows) + a criteria catalogue (ids,
 - `intercom/fetch.py` (what we pull) and `intercom/client.py` (raw API). The data shape is in
   `intercom/models.py`.
 
+### Exclude a kind of conversation from grading (e.g. follow-ups)
+Triage/noise chats are never graded and never count towards an agent's score. They're picked
+out by their **native Intercom tag**, listed in one place:
+
+- `storage/conversations_store.py` → **`IGNORE_TAGS`** — currently `empty`, `spam`, `test`,
+  `jira`, `follow-up`, `no request`. Add or remove a tag here and nothing else needs changing;
+  match is case-insensitive, so `Follow-Up` and `follow-up` are the same tag.
+
+The set is enforced in three places, all reading that one constant:
+1. **Grading (web)** — `service.review_and_store` drops them before the grader runs.
+2. **Grading (CLI)** — `cli.py` `_review` does the same for `intercom-summary review`, which
+   fetches straight from Intercom and never goes through `review_and_store`.
+3. **Reading** — `storage/grades_store.py` `_not_ignored_sql`, applied to `agent_scores`
+   (leaderboard), `all` (XLSX export), `for_agent` and `accuracy_stats`.
+
+Step 3 is the one that's easy to miss. A tag often arrives *after* we graded a chat — support
+marks it "Follow-Up" in Intercom days later, and the next fetch refreshes `conversations.tags`
+while the stored grade stays put. Filtering on read means such a grade silently stops counting
+the moment the tag appears; no re-grade or database cleanup is needed. The grade row is left in
+the table on purpose, so that untagging the chat in Intercom brings its score straight back.
+
 ### Work with brands (one Intercom workspace, several casinos)
 The workspace serves several casino brands. Each conversation carries the brand it arrived
 through, and the dashboard's **brand tabs** (under the header) scope every page to one at a
