@@ -690,3 +690,38 @@ def test_delete_all_is_still_bounded_by_the_active_brand(client):
     r = client.post("/api/conversations/delete", json={"all": True, "brand": "Betncare"})
     assert r.json()["ids"] == ["100"]
     assert client.get("/api/conversations").json()["total"] == 2
+
+
+# ── SPA cache policy ─────────────────────────────────────────────────────────────
+def test_index_html_is_revalidated_but_hashed_assets_are_immutable(client):
+    """index.html names the content-hashed bundles, so a cached copy pins the app to the
+    previous deploy's JavaScript while the API serves current data — a deploy that looks
+    like it did nothing. Starlette sets no Cache-Control at all, which lets browsers cache
+    heuristically, so the header has to be explicit."""
+    from intercom_summary.web.api import FRONTEND_DIST, SPAStaticFiles
+
+    if not FRONTEND_DIST.exists():
+        pytest.skip("frontend not built")
+
+    index = client.get("/")
+    assert index.status_code == 200
+    assert "no-cache" in index.headers.get("cache-control", "")
+
+    # A client-side route falls back to index.html and must not be cached either.
+    spa_route = client.get("/conversations")
+    assert "no-cache" in spa_route.headers.get("cache-control", "")
+
+    assets = list((FRONTEND_DIST / "assets").glob("index-*.js"))
+    if assets:
+        r = client.get(f"/assets/{assets[0].name}")
+        assert r.status_code == 200
+        assert "immutable" in r.headers.get("cache-control", "")
+
+
+def test_api_404s_are_not_swallowed_by_the_spa_fallback(client):
+    # The cache-header change touches the fallback path; make sure it still lets API
+    # 404s through as JSON instead of returning the SPA shell.
+    _login(client)
+    r = client.get("/api/definitely-not-a-route")
+    assert r.status_code == 404
+    assert "text/html" not in r.headers.get("content-type", "")

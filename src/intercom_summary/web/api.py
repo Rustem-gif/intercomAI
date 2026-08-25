@@ -1805,7 +1805,25 @@ class SPAStaticFiles(StaticFiles):
 
     API paths are never caught by this fallback — they propagate the 404 so
     FastAPI (or a real 404 handler) can respond with JSON instead of HTML.
+
+    Also sets the cache policy, which StaticFiles does not do on its own. Without a
+    Cache-Control header browsers apply *heuristic* caching and may serve index.html from
+    cache without revalidating — and since index.html is what names the content-hashed
+    bundles, a stale copy pins the whole app to the previous deploy's JavaScript while the
+    API happily returns current data. That looks exactly like "the deploy did nothing".
     """
+
+    # Vite fingerprints these (index-Do7xCN9X.js), so a changed file always has a changed
+    # URL and old copies can be kept forever. index.html cannot: its URL never changes.
+    _IMMUTABLE_PREFIX = "assets/"
+
+    @staticmethod
+    def _set_cache_headers(response, norm: str) -> None:
+        if norm.startswith(SPAStaticFiles._IMMUTABLE_PREFIX):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        else:
+            # Revalidate every load. The ETag keeps that cheap — an unchanged page is a 304.
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -1817,11 +1835,15 @@ class SPAStaticFiles(StaticFiles):
             raise StarletteHTTPException(status_code=404)
 
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
             if exc.status_code == 404:
-                return await super().get_response("index.html", scope)
+                response = await super().get_response("index.html", scope)
+                self._set_cache_headers(response, "index.html")
+                return response
             raise
+        self._set_cache_headers(response, norm)
+        return response
 
 
 # ── Background job runners ───────────────────────────────────────────────────────
