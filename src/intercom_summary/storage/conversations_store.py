@@ -8,8 +8,11 @@ from pathlib import Path
 
 from intercom_summary.intercom.brands import brand_filter_value
 from intercom_summary.intercom.models import Conversation
+from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import settings
 from intercom_summary.storage.db import connect
+
+log = get_logger(__name__)
 
 
 # Conversations carrying any of these (native Intercom) tags are triage/noise and must
@@ -72,8 +75,16 @@ class ConversationsStore:
 
     def save(self, convo: Conversation) -> bool:
         """Store (or refresh) a conversation. Returns False if it was skipped because an
-        analyst blacklisted it — callers must report that, or a fetch looks like it worked
-        while importing nothing."""
+        analyst blacklisted it or because it is a ticket — callers must report that, or a
+        fetch looks like it worked while importing nothing."""
+        # The cache holds chats only: the client asked for tickets out of both the exports
+        # and the QA population, and every screen, export and grade run reads this table.
+        # `fetch_conversations_for_agents` already drops ticket stubs before the full-thread
+        # GET; this is the backstop for any other path into the store.
+        if convo.is_ticket:
+            log.debug("Not caching %s — it is a ticket, not a chat.", convo.id)
+            return False
+
         # Never re-import a conversation an analyst deliberately deleted: it lives in the
         # trash and Intercom re-fetches would otherwise resurrect it. Bulk cache clears
         # (blacklist=0) do not block re-import.

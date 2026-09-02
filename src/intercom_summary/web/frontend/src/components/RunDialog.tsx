@@ -253,6 +253,7 @@ function FetchDonePanel({
   const count = result?.fetched ?? ids.length;
   const skipped: number = result?.skipped_deleted ?? 0;
   const saved: number = result?.saved ?? count;
+  const tickets: number = result?.skipped_tickets ?? 0;
 
   return (
     <div>
@@ -261,9 +262,15 @@ function FetchDonePanel({
       </p>
       <div className="mt-2 text-left text-sm space-y-2">
         <p>
-          Fetched {count} conversation{count === 1 ? "" : "s"}
+          Fetched {count} chat{count === 1 ? "" : "s"}
           {skipped > 0 && <> · stored {saved}</>}.
         </p>
+        {tickets > 0 && (
+          <p className="text-xs text-muted-foreground">
+            {tickets} ticket{tickets === 1 ? " was" : "s were"} skipped — this workspace
+            grades and exports chats only.
+          </p>
+        )}
         {skipped > 0 && (
           <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3">
             <p className="font-medium text-sm text-amber-600 dark:text-amber-400">

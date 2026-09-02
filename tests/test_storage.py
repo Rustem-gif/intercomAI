@@ -632,3 +632,28 @@ def test_grade_without_a_conversation_counts_only_under_all_brands(tmp_path):
 
     assert len(gstore.all()) == 2                      # unfiltered: both
     assert len(gstore.all(brand="Betncare")) == 1      # scoped: only the one we can place
+
+
+def test_store_refuses_tickets_so_only_chats_are_listed_and_graded(tmp_path):
+    # Backstop for the fetch-time filter: whatever route a ticket arrives by, the cache the
+    # UI, exports and grading all read must never hold one.
+    store = ConversationsStore(tmp_path / "t.db")
+    chat = _convo("chat-1")
+    ticket = _convo("ticket-1")
+    ticket.is_ticket = True
+
+    assert store.save(chat) is True
+    assert store.save(ticket) is False
+    assert store.save_many([chat, ticket]) == 1
+
+    rows, total = store.query()
+    assert total == 1 and [r["id"] for r in rows] == ["chat-1"]
+    assert store.get("ticket-1") is None
+    store.close()
+
+
+def test_is_ticket_survives_the_payload_roundtrip(tmp_path):
+    store = ConversationsStore(tmp_path / "t.db")
+    store.save(_convo("chat-1"))
+    assert store.get("chat-1").is_ticket is False
+    store.close()

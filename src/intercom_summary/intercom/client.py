@@ -100,25 +100,20 @@ class IntercomClient:
             "GET", f"/conversations/{conversation_id}", params={"display_as": "plaintext"}
         )
 
-    async def search_conversations(
-        self, query: dict[str, Any], per_page: int = 150
+    async def _search(
+        self, path: str, key: str, query: dict[str, Any], per_page: int
     ) -> AsyncIterator[dict[str, Any]]:
-        """Yield conversation stubs matching an Intercom search query.
-
-        Follows cursor pagination (`pages.next.starting_after`) until exhausted.
-        Note: search returns *partial* conversations — call get_conversation() for the
-        full thread.
-        """
+        """Yield every item of a cursor-paginated Intercom search endpoint."""
         starting_after: str | None = None
         while True:
             pagination: dict[str, Any] = {"per_page": per_page}
             if starting_after:
                 pagination["starting_after"] = starting_after
             body = {"query": query, "pagination": pagination}
-            data = await self._request("POST", "/conversations/search", json=body)
+            data = await self._request("POST", path, json=body)
 
-            for convo in data.get("conversations", []):
-                yield convo
+            for item in data.get(key, []):
+                yield item
 
             nxt = (data.get("pages") or {}).get("next")
             # `next` may be a string (older) or an object with starting_after.
@@ -130,3 +125,27 @@ class IntercomClient:
                 starting_after = None
             if not starting_after:
                 break
+
+    async def search_conversations(
+        self, query: dict[str, Any], per_page: int = 150
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield conversation stubs matching an Intercom search query.
+
+        Note: search returns *partial* conversations — call get_conversation() for the
+        full thread. It also returns **tickets** alongside chats; `fetch.is_ticket()`
+        tells them apart from the stub alone.
+        """
+        async for convo in self._search("/conversations/search", "conversations", query, per_page):
+            yield convo
+
+    async def search_tickets(
+        self, query: dict[str, Any], per_page: int = 150
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield ticket stubs matching an Intercom search query.
+
+        Tickets share the conversation id namespace — a ticket's `id` here is the same id
+        `/conversations/search` reports it under — which is what makes this usable as an
+        after-the-fact "which of my cached ids were tickets?" lookup.
+        """
+        async for ticket in self._search("/tickets/search", "tickets", query, per_page):
+            yield ticket

@@ -138,12 +138,17 @@ def result_message(action: str, summary: dict, params: dict) -> list[dict]:
         fetched, skipped = summary.get("fetched", 0), summary.get("skipped_deleted", 0)
         if skipped:
             text = (
-                f":warning: Fetched *{fetched}* conversation(s) but stored only "
+                f":warning: Fetched *{fetched}* chat(s) but stored only "
                 f"*{summary.get('saved', 0)}* — *{skipped}* are in the Trash and are blocked "
                 f"from re-import. Restore or purge them to import them again."
             )
         else:
-            text = f":white_check_mark: Fetched *{fetched}* conversation(s)."
+            text = f":white_check_mark: Fetched *{fetched}* chat(s)."
+        # Not a warning: tickets are deliberately out of scope, but saying so stops the count
+        # looking short against what Intercom reports for the same window.
+        tickets = summary.get("skipped_tickets", 0)
+        if tickets:
+            text += f" (Skipped *{tickets}* ticket(s) — chats only.)"
     elif action == "review":
         text = (
             f":clipboard: Graded *{summary.get('graded', 0)}* "
