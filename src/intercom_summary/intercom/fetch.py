@@ -99,6 +99,21 @@ def build_search_query(
     return {"operator": "AND", "value": clauses}
 
 
+def is_ticket(raw: dict[str, Any]) -> bool:
+    """True when an Intercom conversation payload is really a *ticket*, not a chat.
+
+    Tickets and chats share one id namespace and one search endpoint: `/conversations/search`
+    returns both, and every payload carries `"type": "conversation"` either way, so neither the
+    endpoint nor the type field separates them. The one reliable marker — present on the search
+    *stub* as well as the full thread — is the `ticket` object, which is `null` for a chat and a
+    `{"type": "ticket", "ticket_type": …, "ticket_state": …}` dict for a ticket.
+
+    Filtering on the stub is what matters: it keeps tickets out before we spend a full-thread
+    GET on each one.
+    """
+    return bool(raw.get("ticket"))
+
+
 def _author_name(author: dict[str, Any]) -> str:
     return author.get("name") or author.get("email") or author.get("type", "") or "unknown"
 
@@ -186,6 +201,7 @@ def normalise_conversation(
 
     return Conversation(
         id=str(raw.get("id", "")),
+        is_ticket=is_ticket(raw),
         created_at=ts_to_dt(raw.get("created_at")),
         updated_at=ts_to_dt(raw.get("updated_at")),
         state=raw.get("state", ""),
@@ -211,13 +227,22 @@ async def fetch_conversations_for_agents(
     limit: int | None = None,
     concurrency: int = 10,
     on_conversation: Callable[[Conversation, int, int], None] | None = None,
+    stats: dict[str, int] | None = None,
 ) -> list[Conversation]:
     """End-to-end: resolve agents, search, fetch full threads, normalise.
 
-    `limit` caps the number of conversations fetched (useful for smoke tests).
+    **Chats only.** Intercom's conversation search returns tickets alongside chats and we
+    grade and export chats only, so ticket stubs are dropped here — before the full-thread
+    GET, so they cost nothing.
+
+    `limit` caps the number of conversations fetched (useful for smoke tests) and is applied
+    to chats, so `limit=50` still yields 50 chats in a ticket-heavy window.
     `concurrency` controls how many full-thread GETs run in parallel.
     `on_conversation` is called with (conv, fetched_so_far, total) after each conversation
     is fetched — useful for incremental saves and progress reporting.
+    `stats`, when given, is filled with {"matched", "tickets_skipped"} so callers can report
+    the gap between what Intercom matched and what we imported instead of leaving it
+    looking like a short fetch.
     """
     import asyncio
 
@@ -237,13 +262,25 @@ async def fetch_conversations_for_agents(
 
         # Collect all stubs first (pagination is sequential but fast — no body data).
         stubs: list[dict] = []
+        matched = 0
+        tickets_skipped = 0
         async for stub in client.search_conversations(query):
+            matched += 1
+            if is_ticket(stub):
+                tickets_skipped += 1
+                continue
             stubs.append(stub)
             if limit and len(stubs) >= limit:
                 break
 
+        if stats is not None:
+            stats["matched"] = matched
+            stats["tickets_skipped"] = tickets_skipped
+        if tickets_skipped:
+            log.info("Skipping %d ticket(s) of %d matched — chats only.", tickets_skipped, matched)
+
         total = len(stubs)
-        log.info("Found %d conversation stub(s), fetching full threads (concurrency=%d)…", total, concurrency)
+        log.info("Found %d chat stub(s), fetching full threads (concurrency=%d)…", total, concurrency)
 
         conversations: list[Conversation] = []
         sem = asyncio.Semaphore(concurrency)
@@ -260,7 +297,7 @@ async def fetch_conversations_for_agents(
 
         await asyncio.gather(*[fetch_one(s) for s in stubs])
 
-        log.info("Fetched %d conversation(s).", len(conversations))
+        log.info("Fetched %d chat(s).", len(conversations))
         return conversations
     finally:
         if own:

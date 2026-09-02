@@ -2,6 +2,8 @@ import pytest
 
 from intercom_summary.intercom.fetch import (
     build_search_query,
+    fetch_conversations_for_agents,
+    is_ticket,
     normalise_conversation,
     resolve_admin_ids,
 )
@@ -108,3 +110,69 @@ def test_brand_label_maps_default_brand_to_product_name():
     assert brand_label("Betncare") == "King Billy"
     assert brand_label("Tomb Riches") == "Tomb Riches"   # unmapped → raw value
     assert brand_label("") == UNBRANDED_LABEL
+
+
+# ── tickets are not chats ────────────────────────────────────────────────────────
+def test_is_ticket_reads_the_ticket_object_not_the_type_field():
+    # Both chats and tickets come back from /conversations/search as type "conversation";
+    # only the `ticket` object separates them, and it is present on the search stub too.
+    chat_stub = {"id": "1", "type": "conversation", "ticket": None}
+    ticket_stub = {"id": "2", "type": "conversation",
+                   "ticket": {"type": "ticket", "ticket_state": "resolved"}}
+    assert is_ticket(chat_stub) is False
+    assert is_ticket(ticket_stub) is True
+    assert is_ticket({"id": "3"}) is False          # field absent entirely
+    assert normalise_conversation(ticket_stub).is_ticket is True
+    assert normalise_conversation(chat_stub).is_ticket is False
+
+
+class _StubSearchClient:
+    """Minimal client double: yields the given stubs, serves full threads from a dict."""
+
+    def __init__(self, stubs):
+        self._stubs = stubs
+        self.fetched: list[str] = []
+
+    async def list_admins(self):
+        return [{"id": "1", "name": "Ada", "email": "ada@co.com"}]
+
+    async def search_conversations(self, query, per_page=150):
+        for s in self._stubs:
+            yield s
+
+    async def get_conversation(self, conversation_id):
+        self.fetched.append(conversation_id)
+        return {"id": conversation_id, "state": "closed",
+                "source": {"type": "conversation", "body": "<p>hi</p>",
+                           "author": {"type": "user", "name": "Cara"}}}
+
+    async def aclose(self):
+        pass
+
+
+async def test_fetch_skips_tickets_before_spending_a_full_thread_fetch():
+    client = _StubSearchClient([
+        {"id": "chat-1", "ticket": None},
+        {"id": "ticket-1", "ticket": {"type": "ticket"}},
+        {"id": "chat-2", "ticket": None},
+    ])
+    stats: dict[str, int] = {}
+    convos = await fetch_conversations_for_agents(
+        agents=["Ada"], client=client, stats=stats
+    )
+
+    assert {c.id for c in convos} == {"chat-1", "chat-2"}
+    # The point of filtering on the stub: the ticket costs no GET at all.
+    assert sorted(client.fetched) == ["chat-1", "chat-2"]
+    assert stats == {"matched": 3, "tickets_skipped": 1}
+
+
+async def test_fetch_limit_counts_chats_not_matched_stubs():
+    client = _StubSearchClient([
+        {"id": "ticket-1", "ticket": {"type": "ticket"}},
+        {"id": "ticket-2", "ticket": {"type": "ticket"}},
+        {"id": "chat-1", "ticket": None},
+        {"id": "chat-2", "ticket": None},
+    ])
+    convos = await fetch_conversations_for_agents(agents=["Ada"], client=client, limit=2)
+    assert {c.id for c in convos} == {"chat-1", "chat-2"}

@@ -46,7 +46,12 @@ async def fetch_and_store(
     limit: int | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Fetch conversations from Intercom and cache them locally.
+    """Fetch chats from Intercom and cache them locally.
+
+    Tickets are not chats and are excluded end to end — they never reach the cache, so they
+    are never listed, exported or graded. `skipped_tickets` in the result reports how many
+    the search matched, so a window that looks short against Intercom's own count explains
+    itself.
 
     `on_progress(fetched, total)` is called after each conversation is saved,
     enabling incremental DB writes and progress reporting.
@@ -68,10 +73,11 @@ async def fetch_and_store(
         if on_progress:
             on_progress(fetched, total)
 
+    fetch_stats: dict[str, int] = {}
     try:
         convos = await fetch_conversations_for_agents(
             agents=agents, since=since, until=until, state=state, limit=limit,
-            on_conversation=_on_conversation,
+            on_conversation=_on_conversation, stats=fetch_stats,
         )
         # Flush any stragglers (e.g. when total < BATCH_SIZE).
         if batch:
@@ -92,6 +98,7 @@ async def fetch_and_store(
         "fetched": len(convos),
         "saved": saved,
         "skipped_deleted": skipped,
+        "skipped_tickets": fetch_stats.get("tickets_skipped", 0),
         "agents": agents,
         "conversation_ids": [c.id for c in convos],
     }

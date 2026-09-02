@@ -231,6 +231,52 @@ A **ruleset** = a system prompt (what Qwen follows) + a criteria catalogue (ids,
 ### Change how conversations are fetched from Intercom
 - `intercom/fetch.py` (what we pull) and `intercom/client.py` (raw API). The data shape is in
   `intercom/models.py`.
+- Note that the search returns **tickets** as well as chats and we keep only the chats — see
+  *Tickets vs chats* below before changing what the sweep keeps.
+
+### Hand a client a bulk export of their chats
+`python scripts/export_client_archive.py --dry-run` to see how many conversations a window
+holds, then drop `--dry-run` to run it. It produces **one ZIP per brand** in `EXPORT_DIR`,
+each containing an `index.xlsx` and one readable Markdown transcript per conversation,
+foldered by month and agent.
+
+- **It deliberately bypasses everything else.** It never writes to the database, so the Trash
+  blacklist can't silently drop conversations from the client's copy and the grading tables
+  stay clean. It also doesn't use `fetch_conversations_for_agents` — that buffers every
+  conversation in memory and loses the lot if the run dies, which is no good at ~27k.
+- **It doesn't fetch per agent.** A date-only search returns everything, including the ~24%
+  with no human assignee; looping over teammates would miss those. `--per-agent` exists only
+  as a fallback.
+- **Interrupted runs resume.** Raw payloads are cached under `<out-dir>/raw/`; `--resume`
+  continues and retries failures, `--only-build` re-cuts the ZIPs from that cache with no
+  network calls. Delete `raw/` before handing the export over.
+- **Chats only.** Tickets are filtered out of both the sweep and the build — see
+  *Tickets vs chats* below for why the `--dry-run` count is higher than what you get.
+  `--include-tickets` puts them back.
+- `--redact-emails` masks addresses if the archive leaves the workspace;
+  `--include-system-events` keeps the empty bot/automation entries that are hidden by default.
+
+### Tickets vs chats (why the numbers are smaller than Intercom's)
+**We handle chats only.** Intercom tickets are excluded from every export, every listing and
+every grade — the client asked for chats only, so a ticket never enters the system at all.
+
+- **How they're told apart.** Both come back from `/conversations/search` and both say
+  `"type": "conversation"`, so neither the endpoint nor the type field separates them. The
+  marker is the payload's **`ticket` object**: `null` on a chat, a `{...}` dict on a ticket.
+  That's `intercom/fetch.py` → **`is_ticket()`**, the single source of truth.
+- **Where it's applied.** `fetch_conversations_for_agents` drops ticket **stubs**, before the
+  full-thread GET — so a ticket costs nothing, and on a ticket-heavy agent that's hundreds of
+  requests saved. `ConversationsStore.save()` refuses one as a backstop, which is what keeps
+  every screen, export and grade run chat-only without a filter in each of them.
+  `scripts/export_client_archive.py` filters at both the sweep and the build (a cache from an
+  older run still holds tickets; `--only-build` must not put them back).
+- **The counts won't match Intercom's.** A window Intercom reports as 3,833 conversations is
+  ~3,780 chats. The fetch result carries `skipped_tickets`, and the run dialog, the Slack
+  reply and `--dry-run` all state it — otherwise a correct run looks like a short one.
+- **Tickets fetched before this rule existed.** `scripts/purge_tickets.py --dry-run` reports
+  which cached conversations Intercom calls tickets (it asks `/tickets/search`, because a
+  cached row carries no marker); without `--dry-run` it moves them to the **Trash**, which
+  snapshots each conversation and its grade first, so it's one Restore away from undone.
 
 ### Exclude a kind of conversation from grading (e.g. follow-ups)
 Triage/noise chats are never graded and never count towards an agent's score. They're picked

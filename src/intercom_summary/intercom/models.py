@@ -68,6 +68,11 @@ class Conversation:
     created_at: datetime | None
     updated_at: datetime | None
     state: str                       # "open" | "closed" | "snoozed"
+    # True when Intercom classes this thread as a *ticket* rather than a chat. Tickets are
+    # filtered out at fetch time (see intercom/fetch.is_ticket), so this is False on
+    # everything that reaches the cache — it exists so the filter is visible in the data
+    # rather than only in the code that applies it.
+    is_ticket: bool = False
     subject: str = ""
     assignee: Admin | None = None
     contact: Contact = field(default_factory=Contact)
@@ -170,6 +175,7 @@ class Conversation:
             "created_at": _iso(self.created_at),
             "updated_at": _iso(self.updated_at),
             "state": self.state,
+            "is_ticket": self.is_ticket,
             "subject": self.display_subject,
             "assignee": vars(self.assignee) if self.assignee else None,
             "contact": vars(self.contact),
@@ -216,6 +222,8 @@ class Conversation:
             created_at=_parse_iso(d.get("created_at")),
             updated_at=_parse_iso(d.get("updated_at")),
             state=d.get("state", ""),
+            # Absent from payloads cached before tickets were split out from chats.
+            is_ticket=bool(d.get("is_ticket", False)),
             subject=d.get("subject", ""),
             assignee=assignee,
             contact=contact,
