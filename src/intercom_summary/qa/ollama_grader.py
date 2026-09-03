@@ -22,6 +22,7 @@ from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
 from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
 from intercom_summary.qa.schema import ConversationGrade
+from intercom_summary.qa.verdict_guard import apply_guards
 from intercom_summary.settings import settings
 
 log = get_logger(__name__)
@@ -203,6 +204,11 @@ class OllamaGrader:
             raise GradeParseError(
                 f"No usable grade for conversation {conversation.id} after {_MAX_ATTEMPTS} attempts"
             )
+
+        # Overturn opening-criteria verdicts the transcript contradicts, BEFORE the grade is
+        # built — from_ollama_output computes the score from these same criteria entries.
+        if guard_flags := apply_guards(conversation, data):
+            data["flags"] = [*(data.get("flags") or []), *guard_flags]
 
         grade = ConversationGrade.from_ollama_output(
             conversation.id, conversation.assignee_name, data, ruleset_id=self._ruleset.id

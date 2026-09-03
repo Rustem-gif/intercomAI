@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from intercom_summary.intercom.client import IntercomClient
 from intercom_summary.intercom.htmltext import html_to_text
@@ -118,6 +118,44 @@ def _author_name(author: dict[str, Any]) -> str:
     return author.get("name") or author.get("email") or author.get("type", "") or "unknown"
 
 
+def iter_authors(raw: dict[str, Any]) -> "Iterator[dict[str, Any]]":
+    """Every author record in a conversation payload, opening message first."""
+    yield (raw.get("source") or {}).get("author") or {}
+    for part in (raw.get("conversation_parts") or {}).get("conversation_parts", []):
+        yield part.get("author") or {}
+
+
+def contact_from_payload(raw: dict[str, Any]) -> Contact:
+    """The customer on a conversation, read from `contacts` and then from the thread itself.
+
+    `raw["contacts"]["contacts"]` is a list of *stubs* — in this workspace, an id and nothing
+    else — so taking the contact from there alone left `Contact.name` empty on 100% of cached
+    conversations. That is not cosmetic: `qa/prompt.py` puts the name in the grader's prompt,
+    so every grade was made against "Customer name: unknown" while the transcript byline right
+    below it named the player, which reads as the `open-name-use` criterion's own N/A escape
+    ("name not visible").
+
+    Every message the customer sent carries their name and email, so fall back to those. A
+    `lead` (Intercom's unidentified visitor) is a customer too, and is included.
+    """
+    contacts = (raw.get("contacts") or {}).get("contacts") or []
+    stub = contacts[0] if contacts else {}
+    cid = str(stub.get("id", ""))
+    name = stub.get("name") or ""
+    email = stub.get("email") or ""
+
+    if not (name and email):
+        for author in iter_authors(raw):
+            if author.get("type") not in ("user", "contact", "lead"):
+                continue
+            name = name or author.get("name") or ""
+            email = email or author.get("email") or ""
+            if name and email:
+                break
+
+    return Contact(id=cid, name=name, email=email)
+
+
 def normalise_conversation(
     raw: dict[str, Any],
     known_admins: dict[str, Admin] | None = None,
@@ -144,11 +182,7 @@ def normalise_conversation(
         if admin_id and known_admins and admin_id in known_admins:
             assignee_admin = known_admins[admin_id]
 
-    contact = Contact()
-    contacts = (raw.get("contacts") or {}).get("contacts") or []
-    if contacts:
-        c = contacts[0]
-        contact = Contact(id=str(c.get("id", "")), name=c.get("name", ""), email=c.get("email", ""))
+    contact = contact_from_payload(raw)
 
     messages: list[Message] = []
     seq = 0

@@ -78,6 +78,21 @@ def _csat_block(conversation: Conversation) -> str:
     )
 
 
+def _closed_by_line(conversation: Conversation) -> str:
+    """Who ended the chat.
+
+    Three criteria judge the agent's closing behaviour and two of them carry the N/A clause
+    "agent didn't close the chat" — a correct rule the model could never apply, because nothing
+    in this prompt named the actor. `State: closed` is binary and `Time to close` is a duration.
+    The bot closes 52.8% of chats here, so the missing fact was worth up to −15 a time.
+    """
+    return {
+        "bot":   "Chat closed by: automation — the bot closed this chat, NOT the agent. "
+                 "The agent had no control over the closing.",
+        "admin": "Chat closed by: the agent",
+    }.get(conversation.closed_by, "Chat closed by: nobody — the chat is still open")
+
+
 def transcript_block(conversation: Conversation) -> str:
     customer_name = conversation.contact.name or conversation.contact.email or "unknown"
     return (
@@ -85,10 +100,12 @@ def transcript_block(conversation: Conversation) -> str:
         f"Assigned agent: {conversation.assignee_name or 'unknown'}\n"
         f"Customer name: {customer_name}\n"
         f"Subject: {conversation.subject}\n"
-        f"State: {conversation.state}\n\n"
+        f"State: {conversation.state}\n"
+        f"{_closed_by_line(conversation)}\n\n"
         f"{_timing_block(conversation)}\n\n"
         f"{_csat_block(conversation)}"
-        f"=== TRANSCRIPT ===\n{conversation.transcript_text()}\n=== END ==="
+        "=== TRANSCRIPT (agent and player only — automation removed) ===\n"
+        f"{conversation.transcript_text(include_bots=False)}\n=== END ==="
     )
 
 

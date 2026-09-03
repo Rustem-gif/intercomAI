@@ -68,6 +68,7 @@ intercomSummary/
     │   ├── grader.py         ← Grades using the Claude API (fallback, needs a key).
     │   ├── casino_prompt.py  ← The scoring rubric + JSON schema the AI must fill in. ⚠️ delicate.
     │   ├── schema.py          ← Turns the AI's answer into a score (does the math itself).
+    │   ├── verdict_guard.py  ← Overturns greeting/name verdicts the transcript contradicts.
     │   ├── agent.py / chat.py ← The "Ask Qwen" chat assistant in the UI.
     │   └── rules.py          ← Loads/versions the rulebook.
     │
@@ -277,6 +278,57 @@ every grade — the client asked for chats only, so a ticket never enters the sy
   which cached conversations Intercom calls tickets (it asks `/tickets/search`, because a
   cached row carries no marker); without `--dry-run` it moves them to the **Trash**, which
   snapshots each conversation and its grade first, so it's one Restore away from undone.
+
+### The grader blamed the agent for the bot or the player
+This workspace runs a Fin bot ("Billy Jr.") that writes about **41% of the text in a chat** and
+closes **52.8% of them**, while the agent writes a median of four turns. Two rules follow:
+
+- **The grader sees agent and player only.** `transcript_text(include_bots=False)` strips
+  automation and leaves a count-only marker (`— 3 automated messages omitted —`). The marker is
+  load-bearing: it keeps the timing gaps honest and stops `resp-no-ghost` firing on questions the
+  bot answered. `qa/prompt.py` and `qa/grader.py` pass `include_bots=False`; **everything the UI
+  shows keeps the full thread** — analysts need it, so the default is `True`.
+- **`Conversation.closed_by`** (`"admin"` / `"bot"` / `""`) is derived from the last `close`
+  part's author. It is a property, not a column, so it works on every conversation ever cached
+  with no migration — Intercom always sent it, we just never read it. `qa/prompt.py` puts it in
+  the prompt header; without it, `close-confirm` and `close-courtesy` had a correct N/A clause
+  ("agent didn't close the chat") that the model could never apply, and used it on 6.8% of
+  verdicts while the bot closed half the chats.
+
+`qa/verdict_guard.py` enforces both deterministically: a `fail` whose cited quote is a bot or
+player line is dropped, and a closing criterion is dropped when the agent did not close. Note
+`PLAYER_EVIDENCED_CRITERIA` — churn detection, RG care and withdrawal sensitivity exist to react
+to *what the player said*, so a player quote is correct evidence there and must not be overturned.
+
+### The grader marked something absent that is plainly in the chat
+This happened for real with greetings and player names, and the shape of the bug is worth
+knowing because it will recur with other criteria.
+
+- **Check what the model was actually given, not what is in Intercom.** `qa/prompt.py`
+  `transcript_block()` is the whole of the model's view. Print it for the conversation in
+  question before assuming the model is at fault — the greeting bug was largely
+  `Customer name: unknown` in that header, because `contacts.contacts` comes back as id-only
+  stubs. `intercom/fetch.py` `contact_from_payload()` now recovers the name from the thread's
+  own message authors.
+- **Watch what `transcript_text()` drops** (`intercom/models.py`). It keeps a turn only if it
+  has text or is a `comment`. Empty `admin (assignment)` / `(close)` rows used to survive, so
+  the first `AGENT` line was blank and the model read the agent as opening with nothing.
+- **Criteria must describe the agent's turn, not the conversation's.** `open-greet` used to
+  read *"No greeting at conversation start"*. These chats start with the customer and the Fin
+  bot; the agent joins minutes later, so read literally the criterion fires on almost every
+  chat. Anchor the wording to *the agent's first message*.
+- **Read the evidence the model cites.** In the failing grades, 433 of 434 `open-greet` fails
+  quoted the rubric's own FAIL text instead of the chat, and 89 of 112 `open-name-use` fails
+  quoted the agent greeting the player *by name*. `qa/verdict_guard.py` now catches both:
+  a `fail` whose evidence is not in the transcript becomes `n/a`, and an `open-name-use` `fail`
+  is overturned when the agent demonstrably used the name. Corrections are recorded as
+  `signal_flags`, never silent. It is scoped to those two criteria on purpose — the same rule
+  applied everywhere would move 37% of failing verdicts and shift scores by ~6 points.
+
+⚠️ **Editing any prompt file re-grades everything.** `rules_version` is a hash of the whole
+prompt file (`qa/rulesets.py`), so a one-word change marks every existing grade stale. Nothing
+re-grades on its own — `review_and_store` only runs when a human triggers it from the dashboard
+or Slack — but the Evaluation page's "graded" count will drop until someone does.
 
 ### Exclude a kind of conversation from grading (e.g. follow-ups)
 Triage/noise chats are never graded and never count towards an agent's score. They're picked

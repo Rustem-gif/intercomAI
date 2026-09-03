@@ -96,6 +96,26 @@ class Conversation:
         return self.assignee.name if self.assignee else ""
 
     @property
+    def closed_by(self) -> str:
+        """Who closed the thread: "admin", "bot", or "" when it was never closed.
+
+        In this workspace the bot closes 52.8% of chats after the player goes quiet, yet three
+        criteria — res-no-fake-close, close-confirm, close-courtesy — ask the grader to judge
+        the agent's closing behaviour, two of them with an N/A clause reading "agent didn't
+        close the chat". Nothing in the prompt supplied that fact, so the escape was taken on
+        6.8% of verdicts and the agent was penalised for the bot's automation.
+
+        Derived rather than stored: Intercom sends a `close` part whose author names the closer,
+        and `normalise_conversation` already keeps it, so every conversation ever cached can
+        answer this without a re-fetch or a migration. The part carries no text, so
+        `transcript_text` drops it — this property is the only place the fact survives.
+        """
+        for m in reversed(self.messages):
+            if m.part_type == "close":
+                return m.author_type
+        return ""
+
+    @property
     def display_subject(self) -> str:
         """Subject for display: uses the Intercom subject when set, otherwise
         falls back to the first customer message text (truncated)."""
@@ -115,7 +135,10 @@ class Conversation:
     def _role_of(author_type: str) -> str:
         if author_type == "admin":
             return "AGENT"
-        if author_type in ("user", "contact"):
+        # A "lead" is Intercom's not-yet-identified visitor — a real customer, not a system
+        # actor. Labelling them LEAD hid them from the grader as a person and suppressed the
+        # "waited" SLA marker below, which only fires when the previous turn was a customer.
+        if author_type in ("user", "contact", "lead"):
             return "CUSTOMER"
         return author_type.upper()
 
@@ -136,24 +159,59 @@ class Conversation:
             "first_response_breached": (frt is not None and frt > first_response_target),
         }
 
-    def transcript_text(self) -> str:
-        """Flatten the thread into a single readable string for the QA agent.
+    def transcript_text(self, include_bots: bool = True) -> str:
+        """Flatten the thread into a single readable string.
 
         Each line shows the message clock time plus the gap since the previous message;
         on an AGENT turn that follows a CUSTOMER turn the gap is the SLA-relevant wait the
         customer experienced, so it's labelled explicitly. Pre-computing these gaps means
         the model judges timeliness from stated numbers instead of doing timestamp math.
         """
-        # Drop empty-text bot/system parts (assignment, language_detection, sla_applied, …):
-        # they're pure token noise for the grader. Keep every human turn and any bot/system
-        # message that actually said something (e.g. an auto-reply).
+        # Drop empty bookkeeping parts (assignment, close, language_detection, sla_applied, …):
+        # they're pure token noise. This applies to *every* author, not just bots — an empty
+        # `admin (assignment)` part used to survive, so a thread's first AGENT line was
+        # routinely blank and the grader read "the agent opened with nothing" where the
+        # greeting should be. It also stole the "waited after customer" marker below from the
+        # first real reply. A `comment` with no text is kept: that is a human turn that really
+        # was empty, which is itself worth seeing.
         meaningful = [
             m for m in self.messages
-            if (m.text and m.text.strip()) or m.author_type in ("admin", "user", "contact")
+            if (m.text and m.text.strip()) or m.part_type in ("", "comment")
         ]
+
+        # `include_bots=False` is the grader's view. Automation writes ~41% of the text here
+        # and more than half of it in 37% of chats, while the agent writes a median of four
+        # turns — and a `BOT Billy Jr.:` byline looks exactly like `AGENT Lenny:`, so the model
+        # read the bot's marketing copy and its auto-close line as the agent's own words and
+        # deducted for them. Removing the text removes the thing being misattributed.
+        #
+        # Each removed run leaves a count-only marker. That is not decoration: the marker keeps
+        # the timeline honest, and without it `resp-no-ghost` ("a direct player question
+        # received no answer") would fire on questions the bot did in fact answer.
+        omitted = 0
+        if not include_bots:
+            kept: list[Message | int] = []
+            run = 0
+            for m in meaningful:
+                if self._role_of(m.author_type) not in ("AGENT", "CUSTOMER"):
+                    run += 1
+                    continue
+                if run:
+                    kept.append(run)
+                    omitted += run
+                    run = 0
+                kept.append(m)
+            if run:
+                kept.append(run)
+                omitted += run
+            meaningful = kept
+
         lines: list[str] = []
         prev: Message | None = None
         for m in meaningful:
+            if isinstance(m, int):
+                lines.append(f"— {m} automated message{'' if m == 1 else 's'} omitted —")
+                continue
             when = m.created_at.strftime("%H:%M:%S") if m.created_at else "?"
             role = self._role_of(m.author_type)
             gap = ""
