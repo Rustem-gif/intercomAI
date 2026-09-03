@@ -67,6 +67,7 @@ from intercom_summary.intercom.client import IntercomClient
 from intercom_summary.intercom.fetch import (
     _to_unix,
     build_search_query,
+    contact_from_payload,
     is_ticket,
     normalise_conversation,
 )
@@ -437,31 +438,18 @@ def _attachments_by_seq(raw: dict) -> list[list[dict]]:
     return out
 
 
-def _iter_authors(raw: dict) -> Iterator[dict]:
-    yield (raw.get("source") or {}).get("author") or {}
-    for part in (raw.get("conversation_parts") or {}).get("conversation_parts", []):
-        yield part.get("author") or {}
-
-
 def _customer_identity(convo: Conversation, raw: dict) -> tuple[str, str]:
-    """Name and email for the customer, falling back to the thread's own author records.
+    """Name and email for the customer.
 
-    `raw["contacts"]["contacts"]` is a list of *stubs* — usually just an id — so
-    `normalise_conversation` often ends up with an empty contact even though every message the
-    customer sent carries their name and email. Reading it back off the authors means the
-    archive shows a person instead of "(unknown)".
+    The fallback that reads these off the thread's own authors used to live here, because
+    `normalise_conversation` left the contact empty. It now lives in `intercom/fetch.py` and
+    runs during normalisation, so `convo.contact` is already populated; `raw` is still
+    consulted for payloads normalised before that fix.
     """
-    name, email = convo.contact.name, convo.contact.email
-    if name and email:
-        return name, email
-    for author in _iter_authors(raw):
-        if author.get("type") not in ("user", "contact", "lead"):
-            continue
-        name = name or author.get("name") or ""
-        email = email or author.get("email") or ""
-        if name and email:
-            break
-    return name, email
+    if convo.contact.name and convo.contact.email:
+        return convo.contact.name, convo.contact.email
+    recovered = contact_from_payload(raw)
+    return (convo.contact.name or recovered.name, convo.contact.email or recovered.email)
 
 
 def _role(author_type: str) -> str:

@@ -176,3 +176,56 @@ async def test_fetch_limit_counts_chats_not_matched_stubs():
     ])
     convos = await fetch_conversations_for_agents(agents=["Ada"], client=client, limit=2)
     assert {c.id for c in convos} == {"chat-1", "chat-2"}
+
+
+# ── the customer's identity ──────────────────────────────────────────────────────
+def test_contact_recovered_from_message_authors_when_contacts_is_a_stub():
+    # This workspace returns `contacts.contacts` as id-only stubs, which left Contact.name
+    # empty on 100% of cached conversations — and so put "Customer name: unknown" in every
+    # grader prompt, matching the open-name-use criterion's own "name not visible" escape.
+    raw = {
+        "id": "42",
+        "created_at": 1_700_000_000,
+        "state": "closed",
+        "contacts": {"contacts": [{"type": "contact", "id": "c1"}]},   # no name, no email
+        "source": {"type": "conversation", "body": "<p>Game error</p>",
+                   "author": {"type": "user", "name": "Keely Smith", "email": "keely@x.com"}},
+        "conversation_parts": {"conversation_parts": [
+            {"part_type": "comment", "body": "<p>Hello, Keely!</p>", "created_at": 1_700_000_100,
+             "author": {"type": "admin", "name": "Lenny"}},
+        ]},
+    }
+    convo = normalise_conversation(raw)
+    assert convo.contact.id == "c1"          # the stub still supplies the id
+    assert convo.contact.name == "Keely Smith"
+    assert convo.contact.email == "keely@x.com"
+
+
+def test_contact_prefers_the_contacts_record_when_it_is_populated():
+    raw = {
+        "id": "43", "state": "closed",
+        "contacts": {"contacts": [{"id": "c1", "name": "Real Name", "email": "real@x.com"}]},
+        "source": {"type": "conversation", "body": "<p>hi</p>",
+                   "author": {"type": "user", "name": "Byline Name", "email": "byline@x.com"}},
+    }
+    convo = normalise_conversation(raw)
+    assert (convo.contact.name, convo.contact.email) == ("Real Name", "real@x.com")
+
+
+def test_contact_recovery_ignores_agents_and_bots():
+    raw = {
+        "id": "44", "state": "closed",
+        "contacts": {"contacts": []},
+        "source": {"type": "conversation", "body": "<p>hi</p>",
+                   "author": {"type": "bot", "name": "Billy Jr."}},
+        "conversation_parts": {"conversation_parts": [
+            {"part_type": "comment", "body": "<p>hello</p>",
+             "author": {"type": "admin", "name": "Lenny", "email": "lenny@co.com"}},
+            {"part_type": "comment", "body": "<p>my issue</p>",
+             "author": {"type": "lead", "name": "Sanna Rokka"}},
+        ]},
+    }
+    convo = normalise_conversation(raw)
+    # A lead is a customer; the bot and the agent are not.
+    assert convo.contact.name == "Sanna Rokka"
+    assert convo.contact.email == ""

@@ -67,7 +67,8 @@ class Grader:
             f"Assigned agent: {conversation.assignee_name or 'unknown'}\n"
             f"Subject: {conversation.subject}\n"
             f"State: {conversation.state}\n\n"
-            f"=== TRANSCRIPT ===\n{conversation.transcript_text()}\n=== END ==="
+            "=== TRANSCRIPT (agent and player only — automation removed) ===\n"
+            f"{conversation.transcript_text(include_bots=False)}\n=== END ==="
         )
 
         resp = self._client.messages.create(
