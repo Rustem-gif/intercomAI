@@ -15,7 +15,10 @@ log = get_logger(__name__)
 
 
 def _compute_score(
-    criteria: list[dict], critical_fail: bool, deductions: dict[str, int] | None = None
+    criteria: list[dict],
+    critical_fail: bool,
+    deductions: dict[str, int] | None = None,
+    critical: "frozenset[str] | None" = None,
 ) -> tuple[int, str, str]:
     """Compute (score, band, overall_result) from the deduction-based criteria list.
 
@@ -35,9 +38,28 @@ def _compute_score(
       real verdicts, so this changes almost nothing — it just removes the model's ability to
       choose how much a mistake costs.
 
-    Omit `deductions` only where no ruleset is in scope; the model's own numbers are then used
-    as before.
+    `critical` is the ruleset's set of criteria that zero a score. When given, a critical fail is
+    **derived from the verdicts** and the model's own `critical_fail` boolean is ignored. The
+    model sets that flag on its own initiative: of 30 grades stored at 0/Critical, 24 had no
+    critical criterion failing at all, and for 16 of those the deductions alone would not have
+    reached zero — the flag is what zeroed them. This mirrors `score_from_verdicts` below, which
+    has always derived it this way, so an analyst's manual re-score and the AI score finally
+    agree on what "critical" means.
+
+    Omit `deductions` / `critical` only where no ruleset is in scope; the model's own numbers and
+    flag are then used as before.
     """
+    if critical is not None:
+        derived = any(
+            c.get("v") == "fail" and c.get("id") in critical for c in (criteria or [])
+        )
+        if critical_fail and not derived:
+            log.warning(
+                "Ignoring critical_fail=true — no critical criterion (%s) failed; "
+                "scoring from deductions instead", ", ".join(sorted(critical)) or "none",
+            )
+        critical_fail = derived
+
     if critical_fail:
         return 0, "Critical", "FAIL"
 
@@ -220,7 +242,9 @@ class ConversationGrade:
 
         # Recompute score from deductions — the model's arithmetic, its criterion ids and its
         # point values are all unreliable; the ruleset is the authority.
-        score, band, result = _compute_score(criteria, critical_fail, ruleset.deductions)
+        score, band, result = _compute_score(
+            criteria, critical_fail, ruleset.deductions, ruleset.critical
+        )
 
         grade = cls(
             conversation_id=conversation_id,

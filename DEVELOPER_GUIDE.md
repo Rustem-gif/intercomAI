@@ -279,6 +279,19 @@ every grade — the client asked for chats only, so a ticket never enters the sy
   cached row carries no marker); without `--dry-run` it moves them to the **Trash**, which
   snapshots each conversation and its grade first, so it's one Restore away from undone.
 
+### A conversation scored 0
+Only two things zero a score, and the model's opinion is not one of them:
+
+- **A critical criterion failed** — `crit-data-care` or `crit-rg-care` (the set is whatever
+  carries `critical: true` in `config/rulesets.yaml`). This is derived from the verdicts, so the
+  model can neither invent a critical fail nor hide one: it reported `critical_fail: true` on 24
+  grades where no critical criterion had failed, and for 16 of those the flag was the only reason
+  the score was 0. `crit-no-unsupported-promises` is **not** critical — it is a −20 deduction.
+- **Deductions reaching 100.** That is the honest route to 0 and needs no flag.
+
+`_compute_score` and `score_from_verdicts` now agree on this, so an analyst's manual re-score and
+the AI score mean the same thing by "critical".
+
 ### Response-time / SLA looks wrong
 - **The agent's clock starts when the chat reaches them.** `Conversation.agent_first_reply_seconds`
   measures from the last assignment event before the agent's first substantive reply. It is a
