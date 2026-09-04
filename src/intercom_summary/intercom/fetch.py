@@ -247,8 +247,14 @@ def normalise_conversation(
         brand=brand,
         csat_rating=rating.get("rating"),
         csat_remark=rating.get("remark") or "",
-        first_response_time=stats.get("first_admin_reply_time") or stats.get("time_to_admin_reply"),
-        time_to_close=stats.get("time_to_last_close") or stats.get("median_time_to_reply"),
+        # `time_to_admin_reply` is Intercom's seconds from conversation CREATION to the first
+        # human reply — it correctly ignores the bot as an author, but the window still contains
+        # the bot's handling and the player's own idle time. It is the player's total wait, not
+        # the agent's latency; `Conversation.agent_first_reply_seconds` is what the SLA is judged
+        # on. (This used to read a `first_admin_reply_time` key that Intercom does not send —
+        # 0 of 500 sampled payloads — so it always fell through to the same value anyway.)
+        first_response_time=stats.get("time_to_admin_reply"),
+        time_to_close=stats.get("time_to_last_close"),
     )
 
 

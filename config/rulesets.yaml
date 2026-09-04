@@ -53,6 +53,9 @@ rulesets:
     - id: resp-no-template-abuse
       title: No Template Abuse
       deduction: 7
+    - id: resp-first-reply
+      title: First Reply Speed
+      deduction: 5
     - id: resp-delay-handling
       title: Delay Handling
       deduction: 5

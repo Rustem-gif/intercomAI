@@ -106,6 +106,26 @@ def _player_names(conversation: Conversation) -> list[str]:
     return sorted((n for n in names if len(n) >= _MIN_NAME), key=len, reverse=True)
 
 
+# Lines the prompt itself supplies. A fail "evidenced" by one of these quotes the instructions
+# rather than the conversation — 46 stored verdicts do exactly that, most of them citing the SLA
+# header to justify a deduction the header was never meant to carry.
+_PROMPT_HEADER_MARKERS: tuple[str, ...] = (
+    "first response time:", "agent's first reply:", "time to close:",
+    "follow-up sla target", "=== timing", "target ≤",
+)
+
+
+# The one criterion whose correct evidence IS the header line: first-reply speed is judged from
+# the stated SLA figure precisely so the model stops doing its own transcript arithmetic.
+HEADER_EVIDENCED_CRITERIA: frozenset[str] = frozenset({"resp-first-reply"})
+
+
+def _quotes_the_prompt(evidence: str) -> bool:
+    """True if the citation is a line of the prompt header, not something anyone said."""
+    ev = _norm(evidence)
+    return bool(ev) and any(marker in ev for marker in _PROMPT_HEADER_MARKERS)
+
+
 def _role_of_evidence(evidence: str, conversation: Conversation) -> str | None:
     """The role of the transcript line a citation came from, or None if it matches nothing.
 
@@ -175,6 +195,15 @@ def apply_guards(conversation: Conversation, data: dict[str, Any]) -> list[str]:
             flags.append(f"guard:{cid} fail dropped — the chat was closed by {closer}, "
                          f"not the agent")
             log.info("Guard dropped %s on %s: closed by %r", cid, conversation.id, closer)
+            continue
+
+        # The "quote" is a line of this prompt's own timing header. Nobody said it, so it
+        # cannot evidence anything the agent did.
+        if cid not in HEADER_EVIDENCED_CRITERIA and _quotes_the_prompt(c.get("ev", "")):
+            c["v"] = "n/a"
+            flags.append(f"guard:{cid} fail dropped — the cited quote is a line of the prompt "
+                         f"header, not the conversation")
+            log.info("Guard dropped prompt-quoting %s on %s", cid, conversation.id)
             continue
 
         # The quote belongs to someone else. Applies to every criterion: automation's words and

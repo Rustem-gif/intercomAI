@@ -209,3 +209,28 @@ def test_res_next_step_is_not_excused_by_a_bot_close():
     data = _criteria(("res-next-step", "fail", f"AGENT Lenny: {_GREETING}", -8))
     assert apply_guards(_thread(closed_by="bot"), data) == []
     assert _verdicts(data) == {"res-next-step": "fail"}
+
+
+# ── the prompt's own header is not evidence ──────────────────────────────────────
+def test_a_fail_quoting_the_timing_header_is_dropped():
+    # 46 stored verdicts cite the SLA header rather than the chat, 21 of them
+    # resp-delay-handling at −5 apiece. Nobody said these words.
+    data = _criteria(
+        ("resp-delay-handling", "fail",
+         "First response time: 2h 04m (target ≤ 2m 00s → BREACHED)", -5),
+        ("res-next-step", "fail", "Time to close: 9m 32s", -8),
+    )
+    flags = apply_guards(_thread(), data)
+
+    assert _verdicts(data) == {"resp-delay-handling": "n/a", "res-next-step": "n/a"}
+    assert len(flags) == 2 and all("prompt header" in f for f in flags)
+
+
+def test_the_first_reply_criterion_may_cite_the_header_because_that_is_its_source():
+    # resp-first-reply is judged FROM the stated SLA figure, precisely so the model stops doing
+    # its own arithmetic over the transcript. Dropping it would break the criterion.
+    data = _criteria(("resp-first-reply", "fail",
+                      "Agent's first reply: 8m 12s after the chat reached them "
+                      "(target ≤ 2m 00s → BREACHED)", -5))
+    assert apply_guards(_thread(), data) == []
+    assert _verdicts(data) == {"resp-first-reply": "fail"}

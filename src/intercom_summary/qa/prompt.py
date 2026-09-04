@@ -43,13 +43,13 @@ def _timing_block(conversation: Conversation) -> str:
     first_target = settings.sla_first_response_sec
     followup_target = settings.sla_followup_sec
     sla = conversation.sla_summary(first_target, followup_target)
-    frt = sla["first_response_time"]
-    if frt is None:
-        first_line = "First response time: unknown"
+    agent_frt = sla["agent_first_reply"]
+    if agent_frt is None:
+        first_line = "Agent's first reply: the agent never replied in this chat"
     else:
         verdict = "BREACHED" if sla["first_response_breached"] else "OK"
         first_line = (
-            f"First response time: {sla['first_response_time_human']} "
+            f"Agent's first reply: {sla['agent_first_reply_human']} after the chat reached them "
             f"(target ≤ {fmt_duration(first_target)} → {verdict})"
         )
     return (
@@ -57,7 +57,11 @@ def _timing_block(conversation: Conversation) -> str:
         f"{first_line}\n"
         f"Time to close: {sla['time_to_close_human']}\n"
         f"Follow-up SLA target: ≤ {fmt_duration(followup_target)} between agent replies\n"
-        "(In the transcript, '+Xm waited after customer' on an AGENT line is the customer's wait.)"
+        "The first-reply clock starts when the chat was routed to the agent, not when the player\n"
+        "wrote — a bot answers first and holds the chat, and the agent cannot reply before it is\n"
+        "handed over. Judge first-reply speed ONLY against the number above, never by doing your\n"
+        "own arithmetic on the transcript, and record it ONLY under resp-first-reply.\n"
+        "(In the transcript, '+Xm waited after customer' on a later AGENT line is the player's wait.)"
     )
 
 

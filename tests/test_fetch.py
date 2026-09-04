@@ -57,7 +57,10 @@ def test_normalise_extracts_thread_and_metadata():
         ]},
         "tags": {"tags": [{"name": "login"}]},
         "conversation_rating": {"rating": 5, "remark": "great"},
-        "statistics": {"first_admin_reply_time": 120},
+        # `time_to_admin_reply` is the real Intercom key. This used to read
+        # `first_admin_reply_time`, which Intercom does not send — so the test
+        # passed while exercising a branch that never ran in production.
+        "statistics": {"time_to_admin_reply": 120},
     }
     convo = normalise_conversation(raw)
     assert convo.id == "42"
