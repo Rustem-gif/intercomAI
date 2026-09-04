@@ -37,6 +37,13 @@ def fmt_duration(seconds: int | float | None) -> str:
     return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
 
 
+# Conversation parts that mean "this thread was handed to someone". Intercom emits them with
+# no body, so they never appear in a transcript — they are only useful as timestamps.
+ASSIGNMENT_PARTS: frozenset[str] = frozenset(
+    {"assignment", "default_assignment", "message_strategy_assignment", "assign_and_reopen"}
+)
+
+
 @dataclass
 class Admin:
     id: str
@@ -96,6 +103,61 @@ class Conversation:
         return self.assignee.name if self.assignee else ""
 
     @property
+    def agent_first_reply_seconds(self) -> int | None:
+        """How long the agent took to reply once the chat actually reached them.
+
+        NOT the same as `first_response_time`, which is Intercom's `time_to_admin_reply`
+        measured from conversation creation. In this workspace a bot is assigned instantly and
+        holds the chat — answering the player within a second or two — and only routes to a
+        human minutes later, often after the player has gone idle. Charging that window to the
+        agent marked 22.3% of conversations as SLA breaches that were comfortably inside target
+        from the moment the agent could see them. The reported example was charged 5m 16s for a
+        reply sent 13 seconds after routing.
+
+        Measured from the last assignment at or before the agent's first substantive reply, so
+        an agent assigned at the start who then ignores the chat still measures the full delay.
+        Derived from `messages`, which already carry assignment parts, so every conversation
+        ever cached answers this with no migration. None when no agent ever replied.
+        """
+        reply = self._first_agent_reply
+        if reply is None or reply.created_at is None:
+            return None
+        started = self._assigned_at(reply)
+        if started is None:
+            return None
+        return max(0, int((reply.created_at - started).total_seconds()))
+
+    @property
+    def _first_agent_reply(self) -> "Message | None":
+        """The agent's first message that actually said something."""
+        return next(
+            (m for m in self.messages
+             if m.author_type == "admin" and (m.text or "").strip()),
+            None,
+        )
+
+    def _assigned_at(self, reply: "Message") -> datetime | None:
+        """When the chat reached the agent who sent `reply`.
+
+        Falls back to the player's first message for the handful of threads that carry no
+        assignment event at all — 3 of 6,131 in the cache — which is the old behaviour and the
+        right answer when nobody handed the chat over.
+        """
+        assigns = [
+            m.created_at for m in self.messages
+            if m.part_type in ASSIGNMENT_PARTS and m.created_at
+            and reply.created_at and m.created_at <= reply.created_at
+        ]
+        if assigns:
+            return max(assigns)
+        first_player = next(
+            (m.created_at for m in self.messages
+             if m.author_type in ("user", "contact", "lead") and m.created_at),
+            None,
+        )
+        return first_player
+
+    @property
     def closed_by(self) -> str:
         """Who closed the thread: "admin", "bot", or "" when it was never closed.
 
@@ -145,18 +207,26 @@ class Conversation:
     def sla_summary(self, first_response_target: int, followup_target: int) -> dict:
         """SLA facts for this conversation, for the UI and the grader prompt.
 
-        Uses Intercom's authoritative `first_response_time` (seconds) when available.
+        The target is applied to `agent_first_reply_seconds` — the agent's own latency once the
+        chat reached them — not to Intercom's `first_response_time`, which starts at conversation
+        creation and so bills the agent for time a bot held the thread and for the player's own
+        idle time. Both numbers are returned; only the first decides the breach.
         Targets are passed in (from settings) so this stays config-free.
         """
         frt = self.first_response_time
+        agent_frt = self.agent_first_reply_seconds
         return {
+            "agent_first_reply": agent_frt,
+            "agent_first_reply_human": fmt_duration(agent_frt),
             "first_response_time": frt,
             "first_response_time_human": fmt_duration(frt),
             "time_to_close": self.time_to_close,
             "time_to_close_human": fmt_duration(self.time_to_close),
             "first_response_target": first_response_target,
             "followup_target": followup_target,
-            "first_response_breached": (frt is not None and frt > first_response_target),
+            "first_response_breached": (
+                agent_frt is not None and agent_frt > first_response_target
+            ),
         }
 
     def transcript_text(self, include_bots: bool = True) -> str:
@@ -208,6 +278,7 @@ class Conversation:
 
         lines: list[str] = []
         prev: Message | None = None
+        first_reply = self._first_agent_reply
         for m in meaningful:
             if isinstance(m, int):
                 lines.append(f"— {m} automated message{'' if m == 1 else 's'} omitted —")
@@ -215,7 +286,13 @@ class Conversation:
             when = m.created_at.strftime("%H:%M:%S") if m.created_at else "?"
             role = self._role_of(m.author_type)
             gap = ""
-            if prev is not None and prev.created_at and m.created_at:
+            # The agent's opening turn is annotated from the moment the chat reached them, so
+            # the transcript agrees with the SLA header instead of restating the player's whole
+            # wait — most of which the agent could not see. Later agent turns keep the plain
+            # gap: those waits are genuinely theirs.
+            if m is first_reply and (secs := self.agent_first_reply_seconds) is not None:
+                gap = f" | +{fmt_duration(secs)} after the chat reached the agent"
+            elif prev is not None and prev.created_at and m.created_at:
                 secs = int((m.created_at - prev.created_at).total_seconds())
                 if secs > 0:
                     after = self._role_of(prev.author_type).lower()

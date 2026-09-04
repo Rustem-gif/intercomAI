@@ -41,15 +41,20 @@ def test_empty_bookkeeping_turns_are_dropped_so_the_agent_opens_with_the_greetin
     assert "(close)" not in convo.transcript_text()
 
 
-def test_the_sla_wait_marker_lands_on_the_real_reply_not_the_assignment_row():
+def test_the_first_reply_is_timed_from_when_the_chat_reached_the_agent():
+    # The player wrote at 0 and the chat was routed at 5m, so the agent's own latency is 1m —
+    # not the 6m the player waited. Billing the agent for the whole 6m marked 22.3% of chats
+    # as SLA breaches that were inside target from the moment the agent could see them.
     convo = _convo([
         Message(0, "user", "Keely Smith", _at(0), "Game error"),
         Message(1, "admin", "Lenny", _at(300), "", part_type="assignment"),
         Message(2, "admin", "Lenny", _at(360), "Hello, Keely!"),
     ])
     reply = next(ln for ln in convo.transcript_text().splitlines() if "Hello, Keely!" in ln)
-    assert "waited after customer" in reply
-    assert "6m 00s" in reply     # measured from the customer's turn, not the assignment
+
+    assert convo.agent_first_reply_seconds == 60
+    assert "+1m 00s after the chat reached the agent" in reply
+    assert "6m 00s" not in reply
 
 
 def test_an_empty_human_comment_is_still_shown():
@@ -62,8 +67,8 @@ def test_an_empty_human_comment_is_still_shown():
 
 
 def test_a_lead_reads_as_a_customer():
-    # Intercom calls an unidentified visitor a "lead". They are the customer; labelling them
-    # LEAD hid that from the model and suppressed the "waited" marker on the agent's reply.
+    # Intercom calls an unidentified visitor a "lead". They are the customer, and with no
+    # assignment event the agent's clock falls back to their first message.
     convo = _convo([
         Message(0, "lead", "Sanna Rokka", _at(0), "Please block my account"),
         Message(1, "admin", "Oswald", _at(120), "Hello, Sanna!"),
@@ -72,7 +77,7 @@ def test_a_lead_reads_as_a_customer():
 
     assert "CUSTOMER Sanna Rokka" in text
     assert "LEAD" not in text
-    assert "waited after customer" in text
+    assert convo.agent_first_reply_seconds == 120
 
 
 def test_bot_turns_with_content_are_kept_and_labelled_bot():
@@ -159,9 +164,79 @@ def test_each_removed_run_of_bot_turns_leaves_one_counted_marker():
 
 
 def test_timing_is_measured_between_the_surviving_turns():
-    # The customer waited 5 minutes for the agent. Two bot turns sat in between; removing them
-    # must not make the wait look shorter than it was.
-    reply = next(ln for ln in _mixed().transcript_text(include_bots=False).splitlines()
+    # The customer waited 5 minutes. Two bot turns sat in between and this chat carries no
+    # assignment event, so the agent's clock falls back to the player's message — removing the
+    # bot turns must not make the wait look shorter than it was.
+    convo = _mixed()
+    reply = next(ln for ln in convo.transcript_text(include_bots=False).splitlines()
                  if "Hello, Keely!" in ln)
-    assert "waited after customer" in reply
+
+    assert convo.agent_first_reply_seconds == 300
     assert "5m 00s" in reply
+
+
+# ── the agent's own SLA clock ────────────────────────────────────────────────────
+def test_the_agent_is_not_billed_for_time_the_bot_held_the_chat():
+    # The reported case: player wrote at 02:11:10, bot answered a second later and held the
+    # chat, routing happened at 02:16:13 and the agent replied at 02:16:26. Intercom reports
+    # 5m 16s; the agent's own latency is 13s.
+    convo = _convo([
+        Message(0, "user", "Sheraldyn Cassells", _at(0), "Bonus request"),
+        Message(1, "bot", "Billy Jr.", _at(1), "Which of the King's Treasures interests you?"),
+        Message(2, "bot", "Billy Jr.", _at(302), "", part_type="user_became_idle"),
+        Message(3, "bot", "Billy Jr.", _at(303), "", part_type="message_strategy_assignment"),
+        Message(4, "admin", "Lenny", _at(316), "Hello, Sheraldyn!"),
+    ])
+    assert convo.agent_first_reply_seconds == 13
+
+    sla = convo.sla_summary(120, 300)
+    assert sla["first_response_breached"] is False    # 13s is well inside the 2m target
+    assert sla["first_response_time"] is None         # Intercom's figure is not set here
+    assert sla["agent_first_reply_human"] == "13s"
+
+
+def test_an_agent_who_had_the_chat_all_along_is_still_measured_from_assignment():
+    # The clock must not become an excuse: assigned at the start, replied 20 minutes later.
+    convo = _convo([
+        Message(0, "user", "Keely Smith", _at(0), "Game error"),
+        Message(1, "bot", "Billy Jr.", _at(0), "", part_type="default_assignment"),
+        Message(2, "admin", "Lenny", _at(1200), "Sorry for the wait!"),
+    ])
+    assert convo.agent_first_reply_seconds == 1200
+    assert convo.sla_summary(120, 300)["first_response_breached"] is True
+
+
+def test_a_reassignment_starts_the_clock_again_for_whoever_replies():
+    convo = _convo([
+        Message(0, "user", "Keely Smith", _at(0), "Game error"),
+        Message(1, "bot", "Billy Jr.", _at(0), "", part_type="default_assignment"),
+        Message(2, "bot", "Billy Jr.", _at(600), "", part_type="assignment"),
+        Message(3, "admin", "Lenny", _at(630), "Hello, Keely!"),
+    ])
+    assert convo.agent_first_reply_seconds == 30
+
+
+def test_no_agent_reply_means_no_latency_and_no_breach():
+    convo = _convo([
+        Message(0, "user", "Keely Smith", _at(0), "Game error"),
+        Message(1, "bot", "Billy Jr.", _at(1), "Hi!"),
+    ])
+    assert convo.agent_first_reply_seconds is None
+    assert convo.sla_summary(120, 300)["first_response_breached"] is False
+
+
+def test_only_the_first_agent_turn_uses_the_assignment_clock():
+    convo = _convo([
+        Message(0, "user", "Keely Smith", _at(0), "Game error"),
+        Message(1, "bot", "Billy Jr.", _at(60), "", part_type="assignment"),
+        Message(2, "admin", "Lenny", _at(90), "Hello, Keely!"),
+        Message(3, "user", "Keely Smith", _at(120), "Any news?"),
+        Message(4, "admin", "Lenny", _at(300), "Still checking."),
+    ])
+    lines = convo.transcript_text().splitlines()
+    first = next(ln for ln in lines if "Hello, Keely!" in ln)
+    later = next(ln for ln in lines if "Still checking." in ln)
+
+    assert "+30s after the chat reached the agent" in first
+    # A later gap really is the agent keeping the player waiting, so it keeps the plain marker.
+    assert "waited after customer" in later and "3m 00s" in later

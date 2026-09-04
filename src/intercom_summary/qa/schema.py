@@ -9,18 +9,51 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from intercom_summary.logging_setup import get_logger
 
-def _compute_score(criteria: list[dict], critical_fail: bool) -> tuple[int, str, str]:
+log = get_logger(__name__)
+
+
+def _compute_score(
+    criteria: list[dict], critical_fail: bool, deductions: dict[str, int] | None = None
+) -> tuple[int, str, str]:
     """Compute (score, band, overall_result) from the deduction-based criteria list.
 
     Done in code rather than trusting the model's arithmetic. Formula:
-        score = max(0, 100 − sum of absolute deductions for failed criteria)
+        score = max(0, 100 − sum of deductions for failed criteria)
     Critical fail overrides everything to 0/Critical/FAIL.
+
+    `deductions` is the ruleset's catalogue (criterion id → points). When given it is the
+    authority twice over:
+
+    * a `fail` on an id the ruleset does not define is **ignored**. The model invents
+      criteria — a client was docked 20 points by a `first-response-time` that exists in no
+      prompt, no ruleset file and no catalogue, whose "evidence" was the prompt's own timing
+      header. Eight such verdicts carried deductions of −1, −2, −9, −10, −20 and even +10:
+      not a scale, a fresh number each time.
+    * the points come from the catalogue, not from the model. It already agrees on 99.9% of
+      real verdicts, so this changes almost nothing — it just removes the model's ability to
+      choose how much a mistake costs.
+
+    Omit `deductions` only where no ruleset is in scope; the model's own numbers are then used
+    as before.
     """
     if critical_fail:
         return 0, "Critical", "FAIL"
 
-    total_ded = sum(abs(c.get("ded", 0)) for c in (criteria or []) if c.get("v") == "fail")
+    total_ded = 0
+    for c in criteria or []:
+        if c.get("v") != "fail":
+            continue
+        cid = c.get("id", "")
+        if deductions is None:
+            total_ded += abs(c.get("ded", 0))
+            continue
+        if cid not in deductions:
+            log.warning("Ignoring fail on %r — not a criterion in this ruleset "
+                        "(model-invented; deduction %s discarded)", cid, c.get("ded"))
+            continue
+        total_ded += abs(deductions[cid])
     score = max(0, 100 - total_ded)
 
     if score >= 90:
@@ -168,7 +201,8 @@ class ConversationGrade:
         """Build a ConversationGrade from the deduction-based QA JSON produced by the Ollama grader."""
         from intercom_summary.qa.rulesets import get_ruleset
 
-        titles = get_ruleset(ruleset_id).titles
+        ruleset = get_ruleset(ruleset_id)
+        titles = ruleset.titles
 
         criteria = data.get("criteria") or []
         critical_fail = bool(data.get("critical_fail"))
@@ -184,8 +218,9 @@ class ConversationGrade:
             for c in criteria
         ]
 
-        # Recompute score from deductions — the model's arithmetic is unreliable.
-        score, band, result = _compute_score(criteria, critical_fail)
+        # Recompute score from deductions — the model's arithmetic, its criterion ids and its
+        # point values are all unreliable; the ruleset is the authority.
+        score, band, result = _compute_score(criteria, critical_fail, ruleset.deductions)
 
         grade = cls(
             conversation_id=conversation_id,

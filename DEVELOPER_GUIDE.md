@@ -279,6 +279,27 @@ every grade — the client asked for chats only, so a ticket never enters the sy
   cached row carries no marker); without `--dry-run` it moves them to the **Trash**, which
   snapshots each conversation and its grade first, so it's one Restore away from undone.
 
+### Response-time / SLA looks wrong
+- **The agent's clock starts when the chat reaches them.** `Conversation.agent_first_reply_seconds`
+  measures from the last assignment event before the agent's first substantive reply. It is a
+  property derived from cached `messages`, so it needs no migration. `first_response_time` (Intercom's
+  `time_to_admin_reply`) is still stored, but it runs from conversation *creation* — a bot is assigned
+  instantly, answers in ~1s and holds the chat, so that window is the player's total wait, not the
+  agent's latency. Judging on it marked **26.6%** of chats BREACHED; on the agent's clock it is 5.8%.
+- **Only `resp-first-reply` records a slow first reply**, from the figure in the TIMING header.
+  Everything else must be evidenced from the transcript — `verdict_guard` drops a fail that quotes the
+  header instead, which 46 stored verdicts did. `resp-first-reply` is the one criterion exempt from
+  that rule, because the header is its legitimate source.
+- **The ruleset decides what exists and what it costs.** `_compute_score` ignores a `fail` whose id is
+  not in the catalogue and takes the deduction from the catalogue, never from the model. This closes a
+  real hole: the model invented a `first-response-time` criterion with its own −20 and the score was
+  reduced by it. If a new criterion is genuinely needed, add it to **all** of `qa/casino_prompt.py`
+  (row, title, `CRITERION_DEDUCTIONS`), `rules/qa_system_prompt.txt`, `rules/support_rules.md` and
+  `config/rulesets.yaml` — `validate_ruleset` catches a copy left behind.
+- **Targets** live in `SLA_FIRST_RESPONSE_SEC` / `SLA_FOLLOWUP_SEC` (`.env`, defaults 120s/300s).
+  They were absent from `.env.example` for a long time, so the hard-coded defaults had never been
+  reviewed by anyone.
+
 ### The grader blamed the agent for the bot or the player
 This workspace runs a Fin bot ("Billy Jr.") that writes about **41% of the text in a chat** and
 closes **52.8% of them**, while the agent writes a median of four turns. Two rules follow:

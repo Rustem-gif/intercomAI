@@ -31,6 +31,7 @@ cf-ownership | Agent passively deflects; no real ownership of the issue | −8 |
 cf-clarity | Messages contain errors that impede understanding | −3 |
 resp-no-ghost | A direct player question received no answer and was not acknowledged | −10 |
 resp-no-template-abuse | Generic template used instead of addressing the specific problem | −7 |
+resp-first-reply | The agent's first reply came later than the stated target AFTER the chat reached them (use the TIMING header; never compute this yourself) | −5 | the agent never replied, or the chat never reached an agent
 resp-delay-handling | Agent asked player to wait but gave no context or explanation | −5 | no wait or delay occurred in chat
 res-effort | No reasonable attempt to resolve the issue within the chat | −10 |
 res-next-step | Issue unresolved; no explanation of what happens next or who handles it | −8 | issue fully resolved in chat
@@ -244,6 +245,23 @@ Potential flags:
 template_abuse_signal
 qa_fraud_signal
 fake_closure_signal
+resp-first-reply — slow first reply
+
+Trigger ONLY from the "Agent's first reply" line in the TIMING header. That clock starts when the
+chat was routed to the agent, not when the player wrote: a bot answers first and holds the chat, so
+the player's total wait is not the agent's latency and must never be used here.
+
+Do not compute this from the transcript, and do not record a slow first reply under any other
+criterion.
+
+Potential criteria:
+
+resp-first-reply
+
+Potential flags:
+
+csat_risk
+
 resp-delay-handling — poor wait / delay handling
 
 Trigger if the agent asks the player to wait but gives no context, no reason, or no follow-up.

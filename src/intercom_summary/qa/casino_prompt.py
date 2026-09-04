@@ -36,6 +36,7 @@ CRITERION_TITLES: dict[str, str] = {
     "cf-clarity": "Language Clarity",
     "resp-no-ghost": "No Ghosting",
     "resp-no-template-abuse": "No Template Abuse",
+    "resp-first-reply": "First Reply Speed",
     "resp-delay-handling": "Delay Handling",
     "res-effort": "Resolution Effort",
     "res-next-step": "Clear Next Step",
@@ -89,6 +90,7 @@ CRITERION_DEDUCTIONS: dict[str, int] = {
     "cf-clarity": 3,
     "resp-no-ghost": 10,
     "resp-no-template-abuse": 7,
+    "resp-first-reply": 5,
     "resp-delay-handling": 5,
     "res-effort": 10,
     "res-next-step": 8,
@@ -171,6 +173,7 @@ cf-ownership | Agent passively deflects; no real ownership of the issue | −8 |
 cf-clarity | Messages contain errors that impede understanding | −3 |
 resp-no-ghost | A direct player question received no answer and was not acknowledged | −10 |
 resp-no-template-abuse | Generic template used instead of addressing the specific problem | −7 |
+resp-first-reply | The agent's first reply came later than the stated target AFTER the chat reached them (use the TIMING header; never compute this yourself) | −5 | the agent never replied, or the chat never reached an agent
 resp-delay-handling | Agent asked player to wait but gave no context or explanation | −5 | no wait or delay occurred in chat
 res-effort | No reasonable attempt to resolve the issue within the chat | −10 |
 res-next-step | Issue unresolved; no explanation of what happens next or who handles it | −8 | issue fully resolved in chat
