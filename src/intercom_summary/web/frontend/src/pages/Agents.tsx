@@ -278,7 +278,7 @@ export default function Agents() {
       </Card>
 
       {linkAgent && (
-        <GenerateLinkModal agentName={linkAgent} onClose={() => setLinkAgent(null)} />
+        <GenerateLinkModal agentName={linkAgent} defaultSince={start} defaultUntil={end} onClose={() => setLinkAgent(null)} />
       )}
     </div>
   );

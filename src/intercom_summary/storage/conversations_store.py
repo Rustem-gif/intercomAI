@@ -66,6 +66,25 @@ def _ignore_sql(alias: str = "c") -> tuple[str, list[object]]:
     return "(" + " OR ".join(ors) + ")", args
 
 
+# The summary shape every conversation listing returns. Kept in one place so `query` and
+# `rows_by_ids` cannot drift apart — the review portal renders rows from both.
+_ROW_COLUMNS = """c.id, c.agent_name, c.customer_name, c.customer_email, c.state,
+                       c.subject, c.created_at, c.message_count, c.csat_rating, c.tags,
+                       c.custom_tags, c.brand,
+                       d.status AS grade_dispute_status,
+                       COALESCE(g.human_score, g.overall_score) AS score,
+                       g.overall_score AS ai_score,
+                       g.human_score,
+                       g.summary AS grade_summary,
+                       g.graded_at"""
+
+_ROW_SOURCE = (
+    "FROM conversations c "
+    "LEFT JOIN grades g ON g.conversation_id = c.id "
+    "LEFT JOIN grade_disputes d ON d.conversation_id = c.id "
+)
+
+
 class ConversationsStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._conn: sqlite3.Connection = connect(db_path or settings.db_path)
@@ -222,6 +241,7 @@ class ConversationsStore:
         tag: str | None = None,
         brand: str | None = None,
         ungraded: bool = False,
+        graded_only: bool = False,
         sort: str = "created_at",
         descending: bool = True,
         limit: int = 100,
@@ -261,6 +281,10 @@ class ConversationsStore:
             args.append(max_csat)
         if ungraded:
             where.append("g.conversation_id IS NULL")
+        # The mirror of `ungraded`, for callers that want only conversations QA has scored — a
+        # review link, say, where an ungraded chat gives the agent nothing to review.
+        if graded_only:
+            where.append("g.conversation_id IS NOT NULL")
         if search:
             where.append(
                 "(c.id LIKE ? OR c.subject LIKE ? OR c.customer_name LIKE ? OR c.customer_email LIKE ?)"
@@ -285,29 +309,35 @@ class ConversationsStore:
         }.get(sort, "c.created_at")
         direction = "DESC" if descending else "ASC"
 
-        base = (
-            "FROM conversations c "
-            "LEFT JOIN grades g ON g.conversation_id = c.id "
-            "LEFT JOIN grade_disputes d ON d.conversation_id = c.id "
-            f"{clause}"
-        )
+        base = f"{_ROW_SOURCE}{clause}"
         total = self._conn.execute(f"SELECT COUNT(*) AS n {base}", args).fetchone()["n"]
         rows = self._conn.execute(
-            f"""SELECT c.id, c.agent_name, c.customer_name, c.customer_email, c.state,
-                       c.subject, c.created_at, c.message_count, c.csat_rating, c.tags,
-                       c.custom_tags, c.brand,
-                       d.status AS grade_dispute_status,
-                       COALESCE(g.human_score, g.overall_score) AS score,
-                       g.overall_score AS ai_score,
-                       g.human_score,
-                       g.summary AS grade_summary,
-                       g.graded_at
+            f"""SELECT {_ROW_COLUMNS}
                 {base}
                 ORDER BY {sort_col} {direction} NULLS LAST
                 LIMIT ? OFFSET ?""",
             [*args, limit, offset],
         ).fetchall()
         return [dict(r) for r in rows], total
+
+    def rows_by_ids(self, conversation_ids: list[str]) -> list[dict]:
+        """Summary rows for an explicit set of ids, newest first.
+
+        Used by a review link, whose membership is frozen when the link is created. The rows
+        themselves are read live, so a re-grade or an analyst override still shows through — it
+        is the *set* that is fixed, not the scores. Ids that no longer exist (deleted since the
+        link was made) simply drop out.
+        """
+        if not conversation_ids:
+            return []
+        placeholders = ",".join("?" * len(conversation_ids))
+        rows = self._conn.execute(
+            f"""SELECT {_ROW_COLUMNS}
+                {_ROW_SOURCE}WHERE c.id IN ({placeholders})
+                ORDER BY c.created_at DESC NULLS LAST""",
+            conversation_ids,
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def agents(self, brand: str | None = None) -> list[str]:
         sql = "SELECT DISTINCT agent_name FROM conversations WHERE agent_name <> ''"

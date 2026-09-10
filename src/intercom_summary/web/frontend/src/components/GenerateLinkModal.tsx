@@ -3,18 +3,23 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { api, AgentLink } from "@/lib/api";
 import { Button, Spinner } from "./ui/primitives";
 import { X, Copy, Check, Trash2, Link2, CheckCircle2 } from "lucide-react";
-import { fmtDate } from "@/lib/utils";
+import { fmtDate, linkRange } from "@/lib/utils";
 
 interface Props {
   agentName: string;
+  /** Prefill for the date range, from the page's own From/To filter. */
+  defaultSince?: string;
+  defaultUntil?: string;
   onClose: () => void;
 }
 
-export default function GenerateLinkModal({ agentName, onClose }: Props) {
+export default function GenerateLinkModal({ agentName, defaultSince, defaultUntil, onClose }: Props) {
   const qc = useQueryClient();
   const [label, setLabel] = useState(`${agentName} — Review`);
   const [tag, setTag] = useState("");
   const [expiry, setExpiry] = useState<string>("30");
+  const [since, setSince] = useState(defaultSince ?? "");
+  const [until, setUntil] = useState(defaultUntil ?? "");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -35,6 +40,8 @@ export default function GenerateLinkModal({ agentName, onClose }: Props) {
         label: label.trim() || `${agentName} — Review`,
         tag: tag || null,
         expires_in_days: expiry === "never" ? null : parseInt(expiry),
+        since: since || null,
+        until: until || null,
       }),
     onSuccess: (link) => {
       setNewToken(link.token);
@@ -92,6 +99,34 @@ export default function GenerateLinkModal({ agentName, onClose }: Props) {
               className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
               placeholder={`${agentName} — Review`}
             />
+          </div>
+
+          {/* Date range — the conversations the link covers */}
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              Conversations from{" "}
+              <span className="font-normal opacity-70">
+                (the link is fixed to this range — leave both empty for every conversation)
+              </span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={since}
+                onChange={(e) => setSince(e.target.value)}
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+              <span className="text-xs text-muted-foreground">to</span>
+              <input
+                type="date"
+                value={until}
+                onChange={(e) => setUntil(e.target.value)}
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Only conversations that have been graded are included.
+            </p>
           </div>
 
           {/* Tag filter */}
@@ -200,6 +235,9 @@ function LinkRow({
       <div className="min-w-0">
         <div className="truncate font-medium">{link.label}</div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className={link.since || link.until ? "" : "text-amber-600"}>
+            {linkRange(link)}
+          </span>
           {link.tag ? <span>tag: {link.tag}</span> : null}
           <span>created {fmtDate(link.created_at)}</span>
           {link.expires_at ? (

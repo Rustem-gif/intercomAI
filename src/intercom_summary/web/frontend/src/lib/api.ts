@@ -336,6 +336,9 @@ export interface AgentLink {
   created_by: string;
   created_at: string;
   expires_at: string | null;
+  /** The date range the link covers. Both null on links made before ranges existed. */
+  since: string | null;
+  until: string | null;
 }
 
 export interface CoachingSession {
@@ -373,6 +376,9 @@ export interface ReviewPortal {
   label: string;
   tag: string | null;
   expires_at: string | null;
+  /** The date range the link covers; both null means every conversation. */
+  since: string | null;
+  until: string | null;
   // review mode
   conversations: ConversationRow[];
   total: number;
