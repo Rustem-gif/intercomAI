@@ -98,6 +98,15 @@ CREATE TABLE IF NOT EXISTS agent_review_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_art_agent ON agent_review_tokens(agent_name);
 
+-- The conversations a review link covers, resolved once when the link is created. A link is a
+-- record of what was handed to the agent, so its contents must not move afterwards. Absent rows
+-- mean an unscoped legacy link, which falls back to querying the agent's whole history.
+CREATE TABLE IF NOT EXISTS agent_review_token_items (
+    token           TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    PRIMARY KEY (token, conversation_id)
+);
+
 -- Acknowledgments: agents mark conversations as reviewed through the portal.
 CREATE TABLE IF NOT EXISTS review_acknowledgments (
     token           TEXT NOT NULL,
@@ -223,6 +232,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE agent_review_tokens ADD COLUMN session_id TEXT")
         conn.commit()
 
+    # The date range a review link covers. A link used to carry only an agent name, so it showed
+    # that agent's whole history for ever — a link generated for August kept growing September
+    # conversations at the top of the list as they were fetched. NULL on both means unbounded,
+    # which is what every link created before this migration was, so none of them changes.
+    for col in ("since", "until"):
+        if col not in token_cols:
+            conn.execute(f"ALTER TABLE agent_review_tokens ADD COLUMN {col} TEXT")
+    conn.commit()
+
     # Soft-delete trash (added after initial release).
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     if "deleted_conversations" not in tables:
@@ -246,6 +264,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE deleted_conversations ADD COLUMN blacklist INTEGER NOT NULL DEFAULT 1"
         )
+        conn.commit()
+
+    # Frozen membership for review links (added with the date-range scope).
+    if "agent_review_token_items" not in tables:
+        conn.execute("""
+            CREATE TABLE agent_review_token_items (
+                token           TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                PRIMARY KEY (token, conversation_id)
+            )""")
         conn.commit()
 
     # Manager comments on conversations (added after initial release).

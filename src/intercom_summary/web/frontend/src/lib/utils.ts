@@ -55,3 +55,24 @@ export function gapSeconds(prevIso?: string | null, iso?: string | null): number
   if (!prevIso || !iso) return null;
   return (new Date(iso).getTime() - new Date(prevIso).getTime()) / 1000;
 }
+
+
+/** A calendar day, with no time. `since`/`until` are date-only, so fmtDate's clock would be
+ *  noise — and, being parsed as UTC midnight, actively misleading in a westward timezone. */
+export function fmtDay(iso?: string | null): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** What a review link covers. Links made before ranges existed carry neither and show everything. */
+export function linkRange(link: { since: string | null; until: string | null }): string {
+  if (link.since && link.until) return `${fmtDay(link.since)} – ${fmtDay(link.until)}`;
+  if (link.since) return `from ${fmtDay(link.since)}`;
+  if (link.until) return `until ${fmtDay(link.until)}`;
+  return "all dates";
+}

@@ -1271,6 +1271,30 @@ def create_app() -> FastAPI:
                 raise HTTPException(404, "Coaching session not found")
             agent_name = session["agent_name"]
 
+        # Resolve what the link covers once, now, and freeze it. A plain review link used to
+        # carry only an agent name, so it re-queried their whole history on every open and a
+        # link generated for August grew September conversations at the top of the list. A
+        # coaching link is already scoped by its session items, so it is left alone.
+        conversation_ids: list[str] = []
+        if not body.session_id:
+            cstore = ConversationsStore()
+            try:
+                rows, _ = cstore.query(
+                    agents=[agent_name],
+                    tag=body.tag or None,
+                    since=body.since or None,
+                    # `until` is an inclusive date, but created_at carries a time, so compare
+                    # against the end of that day rather than its midnight.
+                    until=f"{body.until}T23:59:59+00:00" if body.until else None,
+                    graded_only=True,
+                    sort="created_at",
+                    descending=True,
+                    limit=10_000,
+                )
+            finally:
+                cstore.close()
+            conversation_ids = [r["id"] for r in rows]
+
         store = AgentTokensStore()
         try:
             store.create(
@@ -1281,6 +1305,9 @@ def create_app() -> FastAPI:
                 tag=body.tag or None,
                 expires_at=expires_at,
                 session_id=body.session_id or None,
+                since=body.since or None,
+                until=body.until or None,
+                conversation_ids=conversation_ids,
             )
             result = store.get(token)
         finally:
@@ -1373,16 +1400,27 @@ def create_app() -> FastAPI:
                 "conversations": [],
             }
 
-        # Plain review mode: filtered conversation list.
+        # Plain review mode. A link created since the date-range fix carries its own frozen list
+        # of conversations; anything older has none and keeps the original agent-wide query, so
+        # links already shared with agents behave exactly as they did.
+        tstore = AgentTokensStore()
+        try:
+            frozen = tstore.item_ids(token)
+        finally:
+            tstore.close()
+
         cstore = ConversationsStore()
         try:
-            rows, total = cstore.query(
-                agents=[link["agent_name"]],
-                tag=link["tag"] or None,
-                sort="created_at",
-                descending=True,
-                limit=500,
-            )
+            if frozen:
+                rows = cstore.rows_by_ids(frozen)
+            else:
+                rows, _ = cstore.query(
+                    agents=[link["agent_name"]],
+                    tag=link["tag"] or None,
+                    sort="created_at",
+                    descending=True,
+                    limit=500,
+                )
         finally:
             cstore.close()
         return {
@@ -1391,8 +1429,13 @@ def create_app() -> FastAPI:
             "label": link["label"],
             "tag": link["tag"],
             "expires_at": link["expires_at"],
+            "since": link.get("since"),
+            "until": link.get("until"),
             "conversations": rows,
-            "total": total,
+            # The count of what is actually rendered. This used to be a COUNT(*) over the
+            # unfiltered query while the list was capped at 500, so an agent with 919
+            # conversations saw "N/919 reviewed" above a list of 500.
+            "total": len(rows),
             "session": None,
             "items": [],
         }
@@ -1495,7 +1538,19 @@ def create_app() -> FastAPI:
             db_row = cstore._conn.execute(
                 "SELECT agent_name, custom_tags FROM conversations WHERE id=?", (conversation_id,)
             ).fetchone()
-            if not db_row or db_row["agent_name"] != link["agent_name"]:
+            # A scoped link authorises by membership; without that, any conversation belonging
+            # to the agent would be reachable by id straight through the link's date range.
+            # Legacy links have no membership to test, so they keep the agent-name check.
+            tstore = AgentTokensStore()
+            try:
+                covered = tstore.covers(token, conversation_id)
+            finally:
+                tstore.close()
+            in_review = (
+                covered if covered is not None
+                else bool(db_row and db_row["agent_name"] == link["agent_name"])
+            )
+            if not db_row or not in_review:
                 raise HTTPException(403, "This conversation is not part of your review.")
             convo_dict = convo.to_dict()
             convo_dict["custom_tags"] = db_row["custom_tags"] if db_row else ""

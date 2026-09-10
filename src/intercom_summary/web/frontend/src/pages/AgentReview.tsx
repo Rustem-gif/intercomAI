@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ConversationRow, ReviewPortal, CoachingItem } from "@/lib/api";
 import { Spinner, Button } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
-import { scoreColor, fmtDate } from "@/lib/utils";
+import { scoreColor, fmtDate, linkRange } from "@/lib/utils";
 import {
   AlertTriangle, CheckCircle2, Circle, GraduationCap,
   CalendarClock, MessageSquare, BookMarked,
@@ -363,6 +363,9 @@ function ReviewPortalView({
             Conversations for{" "}
             <span className="font-medium text-foreground">{data.agent_name}</span>
             {data.tag ? ` · tagged "${data.tag}"` : ""}
+            {" · "}
+            {/* An agent should be able to see what period they are being asked to review. */}
+            <span className="font-medium text-foreground">{linkRange(data)}</span>
           </p>
           {totalCount > 0 && (
             <span className={`flex items-center gap-1 text-sm font-medium ${viewedCount === totalCount ? "text-emerald-600" : "text-muted-foreground"}`}>

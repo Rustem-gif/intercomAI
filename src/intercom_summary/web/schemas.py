@@ -132,6 +132,11 @@ class AgentLinkCreate(BaseModel):
     tag: str | None = None
     expires_in_days: int | None = None  # None = never expires
     session_id: str | None = None       # if set, link points to a coaching session
+    # The date range of conversations the link covers (YYYY-MM-DD, `until` inclusive). Both None
+    # means every conversation the agent has — which is what links were before this existed, and
+    # why one generated for August kept growing September chats at the top of the list.
+    since: str | None = None
+    until: str | None = None
 
 
 class AgentLinkOut(BaseModel):

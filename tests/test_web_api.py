@@ -725,3 +725,119 @@ def test_api_404s_are_not_swallowed_by_the_spa_fallback(client):
     r = client.get("/api/definitely-not-a-route")
     assert r.status_code == 404
     assert "text/html" not in r.headers.get("content-type", "")
+
+
+# ── review links are scoped to a date range and frozen at creation ───────────────
+def _seed_for_link(cid: str, when: datetime, agent="Ada", score: int | None = 90):
+    """A conversation on a given date, graded unless score is None."""
+    cstore = ConversationsStore(settings.db_path)
+    cstore.save(Conversation(
+        id=cid, created_at=when, updated_at=when, state="closed", subject=f"Chat {cid}",
+        assignee=Admin(id="1", name=agent, email="a@co.com"), contact=Contact(name="Cara"),
+        messages=[Message(0, "admin", agent, when, "Hi")],
+    ))
+    cstore.close()
+    if score is None:
+        return
+    from intercom_summary.qa.schema import ConversationGrade
+    from intercom_summary.storage.grades_store import GradesStore
+    gstore = GradesStore(settings.db_path)
+    gstore.save(ConversationGrade(
+        conversation_id=cid, agent_name=agent, overall_score=score, summary="ok",
+        rules_version="v1", model="test", graded_at=when.isoformat(),
+    ))
+    gstore.close()
+
+
+def _aug_link(client, **body):
+    """Create an August-scoped link for Ada and return its portal payload."""
+    _login(client)
+    resp = client.post("/api/agent-links", json={
+        "agent_name": "Ada", "label": "Ada — August",
+        "since": "2026-08-01", "until": "2026-08-31", **body,
+    })
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    return token, client.get(f"/api/review/{token}").json()
+
+
+def test_a_link_shows_only_conversations_inside_its_range(client):
+    # The reported bug: a link generated for August also listed September, because the token
+    # carried nothing but an agent name and the portal re-queried the whole history each open.
+    _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
+    _seed_for_link("aug-2", datetime(2026, 8, 31, 23, 30, tzinfo=timezone.utc))
+    _seed_for_link("sep-1", datetime(2026, 9, 1, tzinfo=timezone.utc))
+
+    _, portal = _aug_link(client)
+    ids = {c["id"] for c in portal["conversations"]}
+
+    assert ids == {"aug-1", "aug-2"}          # aug-2 proves `until` covers the whole last day
+    assert portal["since"] == "2026-08-01" and portal["until"] == "2026-08-31"
+
+
+def test_a_link_excludes_conversations_with_no_grade(client):
+    _seed_for_link("graded", datetime(2026, 8, 5, tzinfo=timezone.utc), score=70)
+    _seed_for_link("ungraded", datetime(2026, 8, 6, tzinfo=timezone.utc), score=None)
+
+    _, portal = _aug_link(client)
+    assert {c["id"] for c in portal["conversations"]} == {"graded"}
+
+
+def test_a_conversation_fetched_after_the_link_was_made_does_not_appear(client):
+    # The link is a record of what was handed over, so its contents must not drift.
+    _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
+    token, portal = _aug_link(client)
+    assert len(portal["conversations"]) == 1
+
+    _seed_for_link("aug-late", datetime(2026, 8, 6, tzinfo=timezone.utc))
+    after = client.get(f"/api/review/{token}").json()
+
+    assert {c["id"] for c in after["conversations"]} == {"aug-1"}
+
+
+def test_total_matches_the_rows_actually_returned(client):
+    _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
+    _seed_for_link("aug-2", datetime(2026, 8, 6, tzinfo=timezone.utc))
+
+    _, portal = _aug_link(client)
+    assert portal["total"] == len(portal["conversations"]) == 2
+
+
+def test_a_link_with_no_range_still_shows_everything(client):
+    # 35 links predate ranges and are already in agents' hands; none of them may change.
+    _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
+    _seed_for_link("sep-1", datetime(2026, 9, 1, tzinfo=timezone.utc))
+    from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+    ts = AgentTokensStore(settings.db_path)
+    ts.create("legacy", agent_name="Ada", label="Ada review", created_by="boss")
+    ts.close()
+
+    portal = client.get("/api/review/legacy").json()
+    ids = {c["id"] for c in portal["conversations"]}
+
+    assert {"aug-1", "sep-1"} <= ids
+    assert portal["since"] is None and portal["until"] is None
+
+
+def test_the_detail_endpoint_refuses_a_conversation_outside_the_link(client):
+    # Without a membership check, an agent could read straight through the link's date range
+    # by asking for an id — every conversation of theirs is one guess away.
+    _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
+    _seed_for_link("sep-1", datetime(2026, 9, 1, tzinfo=timezone.utc))
+
+    token, _ = _aug_link(client)
+
+    assert client.get(f"/api/review/{token}/conversations/aug-1").status_code == 200
+    assert client.get(f"/api/review/{token}/conversations/sep-1").status_code == 403
+
+
+def test_a_legacy_link_still_serves_any_of_its_agents_conversations(client):
+    _seed_for_link("sep-1", datetime(2026, 9, 1, tzinfo=timezone.utc))
+    _seed_for_link("other", datetime(2026, 9, 1, tzinfo=timezone.utc), agent="Bob")
+    from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+    ts = AgentTokensStore(settings.db_path)
+    ts.create("legacy", agent_name="Ada", label="Ada review", created_by="boss")
+    ts.close()
+
+    assert client.get("/api/review/legacy/conversations/sep-1").status_code == 200
+    assert client.get("/api/review/legacy/conversations/other").status_code == 403
