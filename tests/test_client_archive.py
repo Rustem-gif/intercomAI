@@ -64,7 +64,7 @@ def test_build_excludes_tickets_already_sitting_in_the_cache(cache, tmp_path):
     zip_path = out / next(iter(counts))
     assert {n.split("_")[-1] for n in _transcripts(zip_path)} == {"chat-1.md", "chat-2.md"}
     with zipfile.ZipFile(zip_path) as zf:
-        assert "Chats only" in zf.read("README.txt").decode()
+        assert "Messenger chats only" in zf.read("README.txt").decode()
 
 
 def test_include_tickets_restores_the_old_behaviour(cache, tmp_path):
@@ -75,7 +75,7 @@ def test_include_tickets_restores_the_old_behaviour(cache, tmp_path):
 
     assert sum(counts.values()) == 3
     with zipfile.ZipFile(out / next(iter(counts))) as zf:
-        assert "Includes both chats and Intercom tickets" in zf.read("README.txt").decode()
+        assert "Includes chats alongside" in zf.read("README.txt").decode()
 
 
 async def test_stub_sweep_drops_ticket_ids():
@@ -98,3 +98,46 @@ async def test_stub_sweep_drops_ticket_ids():
             per_agent=False, limit=None, window_days=window_days,
         )
         assert sorted(ids) == ["chat-1", "chat-2"], window_days
+
+
+def _email_raw(cid: str) -> dict:
+    raw = _raw(cid)
+    raw["source"]["type"] = "email"
+    return raw
+
+
+def test_build_excludes_emails_already_sitting_in_the_cache(tmp_path):
+    # Emails are excluded by the search query, so a fresh run never caches one — but a raw/
+    # cache captured before that existed is full of them, and --only-build must not put them
+    # back into the deliverable.
+    import gzip, json as _json
+    cache = archive.RawCache(tmp_path / "raw")
+    with gzip.open(cache.payloads, "wt", encoding="utf-8") as fh:
+        for raw in (_raw("chat-1"), _email_raw("mail-1"), _raw("chat-2")):
+            fh.write(_json.dumps(raw) + "\n")
+    cache.save_admins([{"id": "1", "name": "Ada", "email": "ada@co.com"}])
+
+    out = tmp_path / "out"
+    out.mkdir()
+    counts = archive.phase_build(cache, out, "2026-07-01", "2026-07-31",
+                                 split_months=False, redact=False)
+
+    assert sum(counts.values()) == 2
+    assert {n.split("_")[-1] for n in _transcripts(out / next(iter(counts)))} == {
+        "chat-1.md", "chat-2.md"
+    }
+
+
+def test_include_emails_restores_them(tmp_path):
+    import gzip, json as _json
+    cache = archive.RawCache(tmp_path / "raw")
+    with gzip.open(cache.payloads, "wt", encoding="utf-8") as fh:
+        for raw in (_raw("chat-1"), _email_raw("mail-1")):
+            fh.write(_json.dumps(raw) + "\n")
+    cache.save_admins([{"id": "1", "name": "Ada", "email": "ada@co.com"}])
+
+    out = tmp_path / "out"
+    out.mkdir()
+    counts = archive.phase_build(cache, out, "2026-07-01", "2026-07-31",
+                                 split_months=False, redact=False, include_emails=True)
+    assert sum(counts.values()) == 2

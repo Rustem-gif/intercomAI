@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from intercom_summary.intercom.brands import brand_filter_value
+from intercom_summary.intercom.fetch import CHAT_CHANNEL
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import settings
@@ -94,14 +95,22 @@ class ConversationsStore:
 
     def save(self, convo: Conversation) -> bool:
         """Store (or refresh) a conversation. Returns False if it was skipped because an
-        analyst blacklisted it or because it is a ticket — callers must report that, or a
-        fetch looks like it worked while importing nothing."""
+        analyst blacklisted it, because it is a ticket, or because it is not a chat — callers
+        must report that, or a fetch looks like it worked while importing nothing."""
         # The cache holds chats only: the client asked for tickets out of both the exports
         # and the QA population, and every screen, export and grade run reads this table.
         # `fetch_conversations_for_agents` already drops ticket stubs before the full-thread
         # GET; this is the backstop for any other path into the store.
         if convo.is_ticket:
             log.debug("Not caching %s — it is a ticket, not a chat.", convo.id)
+            return False
+
+        # Same rule, other axis: the team grades and exports chats only, and an email is not a
+        # ticket — `ticket` is null on every one, so the check above never sees them. The search
+        # query already excludes the email channel; this is the backstop for any other path in.
+        # An empty channel means "cached before we recorded one" and is left alone.
+        if convo.channel and convo.channel != CHAT_CHANNEL:
+            log.debug("Not caching %s — channel is %r, not a chat.", convo.id, convo.channel)
             return False
 
         # Never re-import a conversation an analyst deliberately deleted: it lives in the

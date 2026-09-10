@@ -657,3 +657,22 @@ def test_is_ticket_survives_the_payload_roundtrip(tmp_path):
     store.save(_convo("chat-1"))
     assert store.get("chat-1").is_ticket is False
     store.close()
+
+
+def test_store_refuses_emails_so_only_chats_are_listed_and_graded(tmp_path):
+    # An email is not a ticket — `ticket` is null on every one — so the ticket guard above never
+    # sees them. They are excluded by the search query; this is the backstop for any other path.
+    store = ConversationsStore(tmp_path / "t.db")
+    chat = _convo("chat-1")
+    chat.channel = "conversation"
+    email = _convo("email-1")
+    email.channel = "email"
+    unknown = _convo("legacy-1")          # cached before the channel was recorded
+
+    assert store.save(chat) is True
+    assert store.save(email) is False
+    assert store.save(unknown) is True     # an empty channel is not assumed to be email
+
+    rows, total = store.query()
+    assert total == 2 and {r["id"] for r in rows} == {"chat-1", "legacy-1"}
+    store.close()

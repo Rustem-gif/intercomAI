@@ -59,18 +59,45 @@ async def resolve_admin_ids(
     return resolved, unresolved
 
 
+# Intercom's `source.type` for a Messenger chat. This workspace has exactly two channels —
+# `conversation` and `email` — and over three months they account for all 31,205 conversations
+# between them, with nothing else ever appearing.
+CHAT_CHANNEL = "conversation"
+
+
+def is_email(raw: dict[str, Any]) -> bool:
+    """True when a conversation arrived by email rather than as a Messenger chat.
+
+    An email is NOT a ticket: `raw["ticket"]` is null on every one of them, so `is_ticket`
+    cannot catch a single email — the two categories do not intersect. The channel lives in
+    `source.type`, which the search stub does not carry, which is why the filter below goes into
+    the query rather than being applied to stubs the way the ticket filter is.
+    """
+    source_type = (raw.get("source") or {}).get("type") or ""
+    return bool(source_type) and source_type != CHAT_CHANNEL
+
+
 def build_search_query(
     admin_ids: list[str],
     since: str | datetime | None = None,
     until: str | datetime | None = None,
     state: str | None = None,
+    chats_only: bool = True,
 ) -> dict[str, Any]:
     """Build an Intercom conversation-search query.
 
     Filters by assigned admin (OR across multiple), optional created_at window, and
     optional state. See: https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/searchconversations
+
+    `chats_only` (the default) restricts the search to the Messenger channel. Unlike the ticket
+    filter, which has to inspect every stub, `source.type` is a *searchable* field — so emails
+    are never returned at all, rather than being fetched and thrown away. That matters: they are
+    46% of this workspace.
     """
     clauses: list[dict[str, Any]] = []
+
+    if chats_only:
+        clauses.append({"field": "source.type", "operator": "=", "value": CHAT_CHANNEL})
 
     if len(admin_ids) == 1:
         clauses.append({"field": "admin_assignee_id", "operator": "=", "value": admin_ids[0]})
@@ -236,6 +263,7 @@ def normalise_conversation(
     return Conversation(
         id=str(raw.get("id", "")),
         is_ticket=is_ticket(raw),
+        channel=(raw.get("source") or {}).get("type") or "",
         created_at=ts_to_dt(raw.get("created_at")),
         updated_at=ts_to_dt(raw.get("updated_at")),
         state=raw.get("state", ""),
@@ -280,9 +308,10 @@ async def fetch_conversations_for_agents(
     `concurrency` controls how many full-thread GETs run in parallel.
     `on_conversation` is called with (conv, fetched_so_far, total) after each conversation
     is fetched — useful for incremental saves and progress reporting.
-    `stats`, when given, is filled with {"matched", "tickets_skipped"} so callers can report
-    the gap between what Intercom matched and what we imported instead of leaving it
-    looking like a short fetch.
+    `stats`, when given, is filled with {"matched", "tickets_skipped", "emails_excluded"} so
+    callers can report the gap between what Intercom holds and what we imported instead of
+    leaving it looking like a short fetch. Emails are excluded by the search query itself, so
+    that count comes from a separate request rather than from the loop.
     """
     import asyncio
 
@@ -298,7 +327,27 @@ async def fetch_conversations_for_agents(
             )
 
         query = build_search_query(list(admins.keys()), since, until, state)
-        log.info("Searching conversations for %d agent(s)…", len(admins))
+        log.info("Searching chats for %d agent(s)…", len(admins))
+
+        # Emails never come back from the search above, so there is nothing to count while
+        # iterating. One extra request buys the number, which matters: without it a fetch looks
+        # inexplicably short against what Intercom's own inbox shows for the same filters.
+        emails_excluded = 0
+        try:
+            unfiltered = build_search_query(
+                list(admins.keys()), since, until, state, chats_only=False
+            )
+            both = await client._request(
+                "POST", "/conversations/search",
+                json={"query": unfiltered, "pagination": {"per_page": 1}},
+            )
+            chats = await client._request(
+                "POST", "/conversations/search",
+                json={"query": query, "pagination": {"per_page": 1}},
+            )
+            emails_excluded = max(0, (both.get("total_count") or 0) - (chats.get("total_count") or 0))
+        except Exception as exc:  # noqa: BLE001 - an informational count must never fail a fetch
+            log.debug("Could not count excluded emails: %s", exc)
 
         # Collect all stubs first (pagination is sequential but fast — no body data).
         stubs: list[dict] = []
@@ -316,6 +365,9 @@ async def fetch_conversations_for_agents(
         if stats is not None:
             stats["matched"] = matched
             stats["tickets_skipped"] = tickets_skipped
+            stats["emails_excluded"] = emails_excluded
+        if emails_excluded:
+            log.info("Excluded %d email(s) at the search — chats only.", emails_excluded)
         if tickets_skipped:
             log.info("Skipping %d ticket(s) of %d matched — chats only.", tickets_skipped, matched)
 

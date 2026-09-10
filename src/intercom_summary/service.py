@@ -48,7 +48,7 @@ async def fetch_and_store(
 ) -> dict[str, Any]:
     """Fetch chats from Intercom and cache them locally.
 
-    Tickets are not chats and are excluded end to end — they never reach the cache, so they
+    Tickets and emails are not chats and are excluded end to end — they never reach the cache, so they
     are never listed, exported or graded. `skipped_tickets` in the result reports how many
     the search matched, so a window that looks short against Intercom's own count explains
     itself.
@@ -99,6 +99,7 @@ async def fetch_and_store(
         "saved": saved,
         "skipped_deleted": skipped,
         "skipped_tickets": fetch_stats.get("tickets_skipped", 0),
+        "skipped_emails": fetch_stats.get("emails_excluded", 0),
         "agents": agents,
         "conversation_ids": [c.id for c in convos],
     }
