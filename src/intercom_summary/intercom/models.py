@@ -80,6 +80,11 @@ class Conversation:
     # everything that reaches the cache — it exists so the filter is visible in the data
     # rather than only in the code that applies it.
     is_ticket: bool = False
+    # Intercom's `source.type`: "conversation" for a Messenger chat, "email" for an email.
+    # Emails are excluded in the search query itself (see intercom/fetch.build_search_query), so
+    # anything reaching the cache is a chat — this records the fact in the data rather than
+    # leaving it only in the code that applied it. "" on payloads cached before it existed.
+    channel: str = ""
     subject: str = ""
     assignee: Admin | None = None
     contact: Contact = field(default_factory=Contact)
@@ -311,6 +316,7 @@ class Conversation:
             "updated_at": _iso(self.updated_at),
             "state": self.state,
             "is_ticket": self.is_ticket,
+            "channel": self.channel,
             "subject": self.display_subject,
             "assignee": vars(self.assignee) if self.assignee else None,
             "contact": vars(self.contact),
@@ -359,6 +365,7 @@ class Conversation:
             state=d.get("state", ""),
             # Absent from payloads cached before tickets were split out from chats.
             is_ticket=bool(d.get("is_ticket", False)),
+            channel=d.get("channel", ""),
             subject=d.get("subject", ""),
             assignee=assignee,
             contact=contact,

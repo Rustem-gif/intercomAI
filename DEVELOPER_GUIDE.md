@@ -257,9 +257,22 @@ foldered by month and agent.
 - `--redact-emails` masks addresses if the archive leaves the workspace;
   `--include-system-events` keeps the empty bot/automation entries that are hidden by default.
 
-### Tickets vs chats (why the numbers are smaller than Intercom's)
-**We handle chats only.** Intercom tickets are excluded from every export, every listing and
-every grade — the client asked for chats only, so a ticket never enters the system at all.
+### Tickets, emails and chats (why the numbers are smaller than Intercom's)
+**We handle Messenger chats only.** Emails and Intercom tickets are excluded from every export,
+every listing and every grade. These are two *different* exclusions and both are needed — they do
+not overlap at all:
+
+- **Email is a channel.** `source.type` is `"conversation"` for a Messenger chat and `"email"` for
+  an email; those are the only two values this workspace has ever produced, and email is **46%** of
+  it. `source.type` is a **searchable** field, so `build_search_query` asks Intercom for chats and
+  emails never come back — no stub to filter, no wasted full-thread GET. `--include-emails` on the
+  archive script restores them.
+- **A ticket is not a channel.** Every ticket is `source.type == "conversation"`, and **no email is
+  ever a ticket** (`ticket` is null on all 12,498 of them). So `is_ticket` cannot catch an email,
+  which is exactly how emails kept arriving after tickets were excluded. Tickets still have to be
+  recognised on the stub and dropped.
+
+Because the two are independent, adding one filter never removes the need for the other.
 
 - **How they're told apart.** Both come back from `/conversations/search` and both say
   `"type": "conversation"`, so neither the endpoint nor the type field separates them. The
@@ -274,6 +287,10 @@ every grade — the client asked for chats only, so a ticket never enters the sy
 - **The counts won't match Intercom's.** A window Intercom reports as 3,833 conversations is
   ~3,780 chats. The fetch result carries `skipped_tickets`, and the run dialog, the Slack
   reply and `--dry-run` all state it — otherwise a correct run looks like a short one.
+- **Emails fetched before this rule existed.** `scripts/purge_emails.py --dry-run`. Same shape as
+  the ticket purge: a cached row carries no channel (`normalise_conversation` read `source.type`
+  only as a non-emptiness test and never stored it), so it asks Intercom which ids are emails and
+  soft-deletes the matches to the Trash with their grades.
 - **Tickets fetched before this rule existed.** `scripts/purge_tickets.py --dry-run` reports
   which cached conversations Intercom calls tickets (it asks `/tickets/search`, because a
   cached row carries no marker); without `--dry-run` it moves them to the **Trash**, which

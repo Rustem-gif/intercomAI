@@ -3,6 +3,7 @@ import pytest
 from intercom_summary.intercom.fetch import (
     build_search_query,
     fetch_conversations_for_agents,
+    is_email,
     is_ticket,
     normalise_conversation,
     resolve_admin_ids,
@@ -36,8 +37,10 @@ def test_build_query_single_agent_with_window():
 
 def test_build_query_multiple_agents_uses_or():
     q = build_search_query(["1", "2"])
-    assert q["operator"] == "OR"
-    assert {c["value"] for c in q["value"]} == {"1", "2"}
+    # The channel clause now sits alongside, so the agent OR is nested inside the AND.
+    assert q["operator"] == "AND"
+    agent_or = next(c for c in q["value"] if c.get("operator") == "OR")
+    assert {c["value"] for c in agent_or["value"]} == {"1", "2"}
 
 
 def test_normalise_extracts_thread_and_metadata():
@@ -167,7 +170,9 @@ async def test_fetch_skips_tickets_before_spending_a_full_thread_fetch():
     assert {c.id for c in convos} == {"chat-1", "chat-2"}
     # The point of filtering on the stub: the ticket costs no GET at all.
     assert sorted(client.fetched) == ["chat-1", "chat-2"]
-    assert stats == {"matched": 3, "tickets_skipped": 1}
+    # emails_excluded is 0 here: the double doesn't implement the count request, and an
+    # informational number must never fail a fetch.
+    assert stats == {"matched": 3, "tickets_skipped": 1, "emails_excluded": 0}
 
 
 async def test_fetch_limit_counts_chats_not_matched_stubs():
@@ -232,3 +237,54 @@ def test_contact_recovery_ignores_agents_and_bots():
     # A lead is a customer; the bot and the agent are not.
     assert convo.contact.name == "Sanna Rokka"
     assert convo.contact.email == ""
+
+
+# ── chats only: the email channel ────────────────────────────────────────────────
+def test_the_search_asks_intercom_for_chats_only():
+    # `source.type` is a searchable field, so emails never come back at all — unlike tickets,
+    # which have to be recognised on the stub and discarded after the fact. Emails are 46% of
+    # this workspace, so not fetching them is the whole point.
+    clauses = build_search_query(["1"], since="2026-08-01")["value"]
+
+    assert {"field": "source.type", "operator": "=", "value": "conversation"} in clauses
+
+
+def test_the_channel_filter_can_be_opted_out_of():
+    # One agent and no channel clause collapses to a single clause, not an AND wrapper.
+    assert build_search_query(["1"], chats_only=False) == {
+        "field": "admin_assignee_id", "operator": "=", "value": "1"
+    }
+    clauses = build_search_query(["1"], since="2026-08-01", chats_only=False)["value"]
+    assert all(c["field"] != "source.type" for c in clauses)
+
+
+def test_is_email_separates_the_channel_not_the_ticket_flag():
+    # The reported conversations were emails with ticket=null: is_ticket returns False for every
+    # one of them, which is exactly why they kept arriving after tickets were excluded.
+    email = {"id": "1", "ticket": None, "source": {"type": "email"}}
+    chat = {"id": "2", "ticket": None, "source": {"type": "conversation"}}
+
+    assert is_email(email) is True and is_ticket(email) is False
+    assert is_email(chat) is False
+    # An unknown channel is not assumed to be email — payloads cached before this existed.
+    assert is_email({"id": "3"}) is False
+
+
+def test_normalise_records_the_channel():
+    raw = {
+        "id": "42", "state": "closed",
+        "source": {"type": "email", "body": "<p>hi</p>", "author": {"type": "user"}},
+    }
+    convo = normalise_conversation(raw)
+    assert convo.channel == "email"
+
+    from intercom_summary.intercom.models import Conversation
+    assert Conversation.from_dict(convo.to_dict()).channel == "email"
+
+
+def test_a_ticket_on_the_chat_channel_is_still_dropped():
+    # The two filters compose: every ticket in this workspace is source.type "conversation",
+    # so the channel clause cannot replace the ticket check.
+    ticket = {"id": "1", "ticket": {"type": "ticket"}, "source": {"type": "conversation"}}
+    assert is_email(ticket) is False
+    assert is_ticket(ticket) is True

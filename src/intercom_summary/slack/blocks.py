@@ -146,9 +146,13 @@ def result_message(action: str, summary: dict, params: dict) -> list[dict]:
             text = f":white_check_mark: Fetched *{fetched}* chat(s)."
         # Not a warning: tickets are deliberately out of scope, but saying so stops the count
         # looking short against what Intercom reports for the same window.
-        tickets = summary.get("skipped_tickets", 0)
-        if tickets:
-            text += f" (Skipped *{tickets}* ticket(s) — chats only.)"
+        skipped_kinds = [
+            f"*{summary[key]}* {noun}"
+            for key, noun in (("skipped_emails", "email(s)"), ("skipped_tickets", "ticket(s)"))
+            if summary.get(key)
+        ]
+        if skipped_kinds:
+            text += f" (Excluded {' and '.join(skipped_kinds)} — chats only.)"
     elif action == "review":
         text = (
             f":clipboard: Graded *{summary.get('graded', 0)}* "

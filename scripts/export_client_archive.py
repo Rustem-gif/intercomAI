@@ -11,7 +11,7 @@ Output is one ZIP per brand (`intercom/brands.py` maps "Betncare" -> "King Billy
 holding an `index.xlsx` plus one Markdown transcript per conversation, foldered by month and
 agent.
 
-Four things worth knowing before changing this:
+Five things worth knowing before changing this:
 
 1. **The search is date-only, not per-agent.** `build_search_query([], since, until)` omits the
    `admin_assignee_id` clause entirely, which returns every conversation in the window —
@@ -23,12 +23,15 @@ Four things worth knowing before changing this:
    `fetch_conversations_for_agents` does) means 27k live coroutines and total loss on a crash at
    90%. Raw payloads are cached to `raw/` as they land; `--resume` picks up where it stopped,
    and `--only-build` re-cuts the ZIPs from that cache without touching the network.
-3. **Chats only — tickets are excluded.** Intercom's conversation search returns tickets
+3. **Chats only — emails and tickets are excluded.** Email is a whole separate channel and 46%
+   of this workspace; `build_search_query` asks Intercom for `source.type = "conversation"`, so
+   emails never come back from the search at all. `--include-emails` restores them.
+4. **Tickets are excluded too.** Intercom's conversation search returns tickets
    alongside chats (same id namespace, same `"type": "conversation"`), and the client asked for
    chats only. `is_ticket` filters them out of the stub sweep, so a ticket never costs a
    full-thread GET, and again at build time so a cache captured before this rule is re-cut
    correctly. `--include-tickets` restores the old behaviour.
-4. **The search is swept in parallel sub-windows.** Intercom's search pages get slower the
+5. **The search is swept in parallel sub-windows.** Intercom's search pages get slower the
    deeper you page, so one sweep of a 3-month range is ~180 pages at roughly ten seconds each —
    half an hour before a single thread is fetched. Chopping the range into overlapping weekly
    windows searched concurrently keeps every sweep shallow. Verified against `total_count`:
@@ -68,6 +71,7 @@ from intercom_summary.intercom.fetch import (
     _to_unix,
     build_search_query,
     contact_from_payload,
+    is_email,
     is_ticket,
     normalise_conversation,
 )
@@ -248,6 +252,7 @@ def _log_tickets(n: int) -> None:
 async def _collect_stub_ids(
     client: IntercomClient, since: str, until: str, per_agent: bool, limit: int | None,
     window_days: int = 7, sweeps: int = 5, include_tickets: bool = False,
+    include_emails: bool = False,
 ) -> list[str]:
     """Every *chat* id in the window, de-duplicated.
 
@@ -279,13 +284,15 @@ async def _collect_stub_ids(
     if per_agent:
         # Fallback path only. Note it cannot see unassigned/Fin-only conversations.
         admins = (await client.list_admins()) or []
-        queries = [build_search_query([str(a["id"])], since, until) for a in admins if a.get("id")]
+        queries = [build_search_query([str(a["id"])], since, until, chats_only=not include_emails)
+                   for a in admins if a.get("id")]
         log.info("Per-agent mode: sweeping %d teammate(s).", len(queries))
     elif limit:
-        queries = [build_search_query([], since, until)]
+        queries = [build_search_query([], since, until, chats_only=not include_emails)]
     else:
         windows = _split_window(since, until, window_days)
-        queries = [build_search_query([], lo, hi) for lo, hi in windows]
+        queries = [build_search_query([], lo, hi, chats_only=not include_emails)
+                   for lo, hi in windows]
         log.info("Sweeping %d sub-window(s) of ~%d day(s), %d at a time…",
                  len(queries), window_days, sweeps)
 
@@ -348,6 +355,7 @@ async def _fetch_chunk(
 async def phase_fetch(
     cache: RawCache, since: str, until: str, concurrency: int,
     per_agent: bool, limit: int | None, resume: bool, include_tickets: bool = False,
+    include_emails: bool = False,
 ) -> None:
     settings.require_intercom()
     client = IntercomClient()
@@ -365,7 +373,8 @@ async def phase_fetch(
         else:
             log.info("Searching conversations created %s … %s", since, until)
             stub_ids = await _collect_stub_ids(
-                client, since, until, per_agent, limit, include_tickets=include_tickets
+                client, since, until, per_agent, limit,
+                include_tickets=include_tickets, include_emails=include_emails,
             )
             cache.save_stub_ids(stub_ids)
         total = len(stub_ids)
@@ -598,9 +607,10 @@ class BrandArchive:
             "  order. Attachments are listed under the message they belong to.",
             "",
             "NOTES",
-            ("  Chats only. Intercom tickets are a separate object type and are not included."
+            ("  Messenger chats only. Emails and Intercom tickets are separate kinds of "
+             "conversation\n  and are not included."
              if self.chats_only else
-             "  Includes both chats and Intercom tickets."),
+             "  Includes chats alongside emails and/or Intercom tickets."),
             "  All timestamps are UTC.",
             "  'First Response' is Intercom's own first-admin-reply metric, in seconds.",
             "  Internal agent notes are included and labelled, so the record is the full",
@@ -613,7 +623,7 @@ class BrandArchive:
 def phase_build(
     cache: RawCache, out_dir: Path, since: str, until: str,
     split_months: bool, redact: bool, include_system: bool = False,
-    include_tickets: bool = False,
+    include_tickets: bool = False, include_emails: bool = False,
 ) -> dict[str, int]:
     window = f"{since} .. {until}"
     archives: dict[str, BrandArchive] = {}
@@ -629,12 +639,13 @@ def phase_build(
             name = f"{stem}_{month}.zip" if split_months else f"{stem}_{since}_{until}.zip"
             archives[key] = BrandArchive(out_dir / name, label,
                                          month if split_months else window,
-                                         chats_only=not include_tickets)
+                                         chats_only=not (include_tickets or include_emails))
             log.info("Opening %s", name)
         return archives[key]
 
     seen = 0
     tickets = 0
+    emails = 0
     try:
         for raw in cache.iter_payloads():
             # Re-checked here, not only in the sweep: a cache filled by an earlier run (or by
@@ -642,6 +653,11 @@ def phase_build(
             # back into the deliverable.
             if not include_tickets and is_ticket(raw):
                 tickets += 1
+                continue
+            # Same reason as the ticket check above: a raw/ cache captured before the channel
+            # filter existed is full of emails, and --only-build must not put them back.
+            if not include_emails and is_email(raw):
+                emails += 1
                 continue
             convo = normalise_conversation(raw, known_admins=admins)
             label = brand_label(convo.brand)
@@ -673,6 +689,8 @@ def phase_build(
 
     if tickets:
         log.info("Excluded %d cached ticket(s) from the archive — chats only.", tickets)
+    if emails:
+        log.info("Excluded %d cached email(s) from the archive — chats only.", emails)
     if not seen:
         log.warning("No cached payloads found — run the fetch phase first.")
     return {arc.path.name: arc.count for arc in archives.values()}
@@ -680,31 +698,41 @@ def phase_build(
 
 # ── entry point ───────────────────────────────────────────────────────────────────
 async def _dry_run(
-    since: str, until: str, per_agent: bool, out_dir: Path, include_tickets: bool = False
+    since: str, until: str, per_agent: bool, out_dir: Path, include_tickets: bool = False,
+    include_emails: bool = False,
 ) -> None:
     settings.require_intercom()
     client = IntercomClient()
     try:
-        query = build_search_query([], since, until)
-        data = await client._request(
-            "POST", "/conversations/search",
-            json={"query": query, "pagination": {"per_page": 1}},
-        )
-        total = data.get("total_count")
-        log.info("Window %s … %s matches %s conversation(s).", since, until, total)
-        # `/conversations/search` counts tickets in that total and offers no way to exclude
-        # them (there is no searchable ticket field), so the ticket count comes from the
-        # tickets endpoint and the chat estimate is the difference. Without this the dry run
-        # promises thousands more transcripts than the real run produces.
-        if not include_tickets:
-            tdata = await client._request(
-                "POST", "/tickets/search",
-                json={"query": query, "pagination": {"per_page": 1}},
+        async def count(path: str, query: dict) -> int | None:
+            data = await client._request(
+                "POST", path, json={"query": query, "pagination": {"per_page": 1}}
             )
-            tickets = tdata.get("total_count")
-            log.info("  of which %s are ticket(s) and will be excluded.", tickets)
-            if isinstance(total, int) and isinstance(tickets, int):
-                log.info("  ≈ %d chat(s) would be archived.", total - tickets)
+            return data.get("total_count")
+
+        # Everything in the window, then the two exclusions, so the estimate matches what the
+        # real run will actually write. Without this the dry run promises thousands more
+        # transcripts than the run produces.
+        unfiltered = build_search_query([], since, until, chats_only=False)
+        total = await count("/conversations/search", unfiltered)
+        log.info("Window %s … %s matches %s conversation(s).", since, until, total)
+
+        estimate = total
+        if not include_emails:
+            # `source.type` is searchable, so this is the real chat count, not a subtraction.
+            chats = await count("/conversations/search", build_search_query([], since, until))
+            log.info("  %s are Messenger chat(s); the rest are emails and are excluded.", chats)
+            estimate = chats
+        if not include_tickets:
+            # No searchable ticket field on /conversations/search, so the ticket count has to
+            # come from the tickets endpoint — and that endpoint rejects `source.type`, hence
+            # the unfiltered query here.
+            tickets = await count("/tickets/search", unfiltered)
+            log.info("  %s are ticket(s) and are excluded.", tickets)
+            if isinstance(estimate, int) and isinstance(tickets, int):
+                estimate -= tickets
+        if isinstance(estimate, int):
+            log.info("  ≈ %d conversation(s) would be archived.", max(estimate, 0))
         if per_agent:
             admins = await client.list_admins()
             log.info("--per-agent would sweep %d teammate(s) and miss anything unassigned.",
@@ -742,6 +770,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "and cannot see unassigned or Fin-AI-only conversations.")
     p.add_argument("--include-tickets", action="store_true",
                    help="Keep Intercom tickets. Off by default: the archive is chats only.")
+    p.add_argument("--include-emails", action="store_true",
+                   help="Keep email conversations. Off by default: the archive is chats only. "
+                        "Email is 46%% of this workspace, so this roughly doubles the output.")
     p.add_argument("--include-system-events", action="store_true",
                    help="Keep empty bot/automation entries in the transcripts (noisier, but a "
                         "complete record of every conversation part).")
@@ -762,7 +793,8 @@ def main(argv: list[str] | None = None) -> None:
                else settings.export_dir / f"client-archive-{since}_{until}")
 
     if args.dry_run:
-        asyncio.run(_dry_run(since, until, args.per_agent, out_dir, args.include_tickets))
+        asyncio.run(_dry_run(since, until, args.per_agent, out_dir,
+                             args.include_tickets, args.include_emails))
         return
 
     cache = RawCache(out_dir / "raw")
@@ -770,7 +802,7 @@ def main(argv: list[str] | None = None) -> None:
     if not args.only_build:
         asyncio.run(phase_fetch(
             cache, since, until, args.concurrency, args.per_agent, args.limit, args.resume,
-            args.include_tickets,
+            args.include_tickets, args.include_emails,
         ))
 
     if args.only_fetch:
@@ -779,7 +811,7 @@ def main(argv: list[str] | None = None) -> None:
 
     counts = phase_build(cache, out_dir, since, until, args.split_months,
                          args.redact_emails, args.include_system_events,
-                         args.include_tickets)
+                         args.include_tickets, args.include_emails)
     if counts:
         log.info("Wrote %d archive(s) to %s:", len(counts), out_dir)
         for name, n in sorted(counts.items()):
