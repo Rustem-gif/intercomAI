@@ -59,6 +59,8 @@ PLAYER_EVIDENCED_CRITERIA: frozenset[str] = frozenset({
     "churn-detect-ack", "churn-retention-handling", "churn_signal",
     "churn_retention_handling", "pay-withdrawal-sensitivity",
     "pay_withdrawal_sensitivity", "crit-rg-care",
+    # v4.1 merges churn and RG into one criterion; its trigger is still a player statement.
+    "churn-rg-signal-ignored",
 })
 
 # How much of the cited evidence has to appear in the transcript. The model paraphrases tails
@@ -112,12 +114,21 @@ def _player_names(conversation: Conversation) -> list[str]:
 _PROMPT_HEADER_MARKERS: tuple[str, ...] = (
     "first response time:", "agent's first reply:", "time to close:",
     "follow-up sla target", "=== timing", "target ≤",
+    # The tags line is header too: it is the tag criterion's legitimate source and nobody
+    # else's, so citing it to justify any other deduction is the same mistake as citing the
+    # SLA header.
+    "chat tags:",
 )
 
 
 # The one criterion whose correct evidence IS the header line: first-reply speed is judged from
 # the stated SLA figure precisely so the model stops doing its own transcript arithmetic.
-HEADER_EVIDENCED_CRITERIA: frozenset[str] = frozenset({"resp-first-reply"})
+# (`resp-sla` is the v4.1 ruleset's name for the same judgement, with the same source.)
+HEADER_EVIDENCED_CRITERIA: frozenset[str] = frozenset({"resp-first-reply", "resp-sla",
+                                                       "tag-chat"})
+
+# Criteria with no honest n/a — see the loop in apply_guards.
+NEVER_NA_CRITERIA: frozenset[str] = frozenset({"tag-chat"})
 
 
 def _quotes_the_prompt(evidence: str) -> bool:
@@ -180,6 +191,20 @@ def apply_guards(conversation: Conversation, data: dict[str, Any]) -> list[str]:
     used_name = None
     checked_name = False
     flags: list[str] = []
+
+    # Criteria that cannot honestly be n/a: the thing they check always exists. A tag is
+    # either set on the chat or it is not; there is no case where tagging "does not apply".
+    # The model reached for n/a anyway — the same chat came back n/a on one run and pass on
+    # the next — and n/a is the one wrong answer here, because it silently closes the question
+    # instead of sending it to a QC manager. cannot_determine is score-neutral like n/a, so
+    # nothing moves except who is expected to look.
+    for c in criteria:
+        if isinstance(c, dict) and c.get("id") in NEVER_NA_CRITERIA and c.get("v") == "n/a":
+            c["v"] = "cannot_determine"
+            flags.append(f"guard:{c.get('id')} n/a re-read as cannot_determine — this "
+                         f"criterion always applies, so 'not applicable' cannot be right")
+            log.info("Guard re-read n/a as cannot_determine for %s on %s",
+                     c.get("id"), conversation.id)
 
     for c in criteria:
         if not isinstance(c, dict):

@@ -234,3 +234,42 @@ def test_the_first_reply_criterion_may_cite_the_header_because_that_is_its_sourc
                       "(target ≤ 2m 00s → BREACHED)", -5))
     assert apply_guards(_thread(), data) == []
     assert _verdicts(data) == {"resp-first-reply": "fail"}
+
+
+# ── QA Manual v4.1 ────────────────────────────────────────────────────────────────────
+def test_tag_chat_cannot_be_not_applicable():
+    """A chat either carries a tag or it does not, so "not applicable" is never the answer —
+    and it is the damaging one, because n/a closes the question while cannot_determine sends
+    it to a QC manager. The model returned n/a on one run and pass on the next for the same
+    chat, which is what a criterion judged from no source looks like."""
+    from intercom_summary.qa.verdict_guard import apply_guards
+
+    c = _convo()
+    data = {"criteria": [{"id": "tag-chat", "v": "n/a", "ev": "No chat tag to check"}]}
+    flags = apply_guards(c, data)
+    assert data["criteria"][0]["v"] == "cannot_determine"
+    assert any("tag-chat" in f for f in flags)
+
+
+def test_tag_chat_may_still_fail_from_the_header():
+    """The tags line is its legitimate source, so a fail citing it is not dropped —
+    the same exemption resp-first-reply has for the timing header."""
+    from intercom_summary.qa.verdict_guard import apply_guards
+
+    c = _convo()
+    data = {"criteria": [
+        {"id": "tag-chat", "v": "fail", "ev": "Chat tags: (none set on this conversation)"},
+    ]}
+    apply_guards(c, data)
+    assert data["criteria"][0]["v"] == "fail"
+
+
+def test_another_criterion_may_not_hide_behind_the_tags_line():
+    from intercom_summary.qa.verdict_guard import apply_guards
+
+    c = _convo()
+    data = {"criteria": [
+        {"id": "ownership-effort", "v": "fail", "ev": "Chat tags: Duplicate"},
+    ]}
+    apply_guards(c, data)
+    assert data["criteria"][0]["v"] == "n/a"

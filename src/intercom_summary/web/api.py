@@ -48,6 +48,7 @@ from intercom_summary.web.schemas import (
     LoginRequest,
     OverrideRequest,
     ReviewRequest,
+    ScorePreviewRequest,
     RulesIn,
     TagsUpdate,
     TrashActionRequest,
@@ -315,6 +316,7 @@ def create_app() -> FastAPI:
         max_csat: int | None = None,
         search: str | None = None,
         tag: str | None = None,
+        sample: str | None = None,
         ungraded: bool = False,
         sort: str = "created_at",
         descending: bool = True,
@@ -334,6 +336,7 @@ def create_app() -> FastAPI:
             rows, total = store.query(
                 agents=agents, since=since, until=until, state=state, brand=brand,
                 min_score=min_score, max_csat=max_csat, search=search, tag=tag,
+                sample=sample,
                 ungraded=ungraded, sort=sort, descending=descending,
                 limit=limit, offset=offset,
             )
@@ -466,7 +469,10 @@ def create_app() -> FastAPI:
                 ruleset_id = grade.get("ruleset_id") or "default"
                 manual_deduction_ids = get_ruleset(ruleset_id).manual_deduction_ids
                 ai_verdicts = {r["rule_id"]: r["verdict"] for r in grade.get("rule_results", [])}
-                valid = {"pass", "fail", "n/a"}
+                # A QC manager reviewing a v4.1 grade can leave a verdict at
+                # cannot_determine — the manual's whole point is that "I could not check
+                # this" is a legitimate answer, so the override form must be able to say it.
+                valid = {"pass", "fail", "n/a", "cannot_determine"}
                 for cid, v in (body.criteria or {}).items():
                     if cid not in ai_verdicts:
                         raise HTTPException(422, f"Unknown criterion '{cid}'")
@@ -587,6 +593,33 @@ def create_app() -> FastAPI:
         from intercom_summary.qa.rulesets import get_ruleset
 
         return {"items": get_ruleset(ruleset_id).manual_deductions}
+
+    @app.post("/api/qa/preview-score")
+    def preview_score(body: ScorePreviewRequest, user: dict = Depends(auth.current_user)):
+        """What a set of verdicts would score, without saving anything.
+
+        The grade panel used to recompute the score in TypeScript. That was tolerable while
+        every ruleset was "100 minus the deductions"; it is not tolerable for a model built on
+        caps, a floor and a group cap, where a second implementation would drift from this one
+        silently and show an analyst a number the server would never store. So the panel asks
+        the server instead, and there is exactly one copy of the formula.
+        """
+        from intercom_summary.qa.rulesets import get_ruleset
+        from intercom_summary.qa.schema import score_from_verdicts
+
+        rs = get_ruleset(body.ruleset_id)
+        extra = 0
+        for d in (body.manual_deductions or []):
+            if d.category not in rs.manual_deduction_ids:
+                raise HTTPException(422, f"Unknown deduction category '{d.category}'")
+            if not (1 <= d.points <= 100):
+                raise HTTPException(422, "Deduction points must be 1–100")
+            extra += d.points
+        score, band, result = score_from_verdicts(
+            body.criteria, extra_deduction=extra, ruleset_id=rs.id
+        )
+        return {"score": score, "band": band, "result": result,
+                "pass_threshold": rs.pass_threshold, "scoring_model": rs.scoring_model}
 
     @app.get("/api/accuracy")
     def accuracy(group: str | None = None, brand: str | None = None,
@@ -914,6 +947,13 @@ def create_app() -> FastAPI:
                user: dict = Depends(auth.require_write)):
         if body.backend and body.backend.lower() not in ("ollama", "api"):
             raise HTTPException(400, f"Unsupported grading backend '{body.backend}'. Use 'ollama' or 'api'.")
+        if body.ruleset_id:
+            # get_ruleset falls back to 'default' on an unknown id, which would silently grade
+            # a pilot run against the wrong model. Reject it here instead.
+            from intercom_summary.qa.rulesets import known_ruleset_ids
+
+            if body.ruleset_id not in known_ruleset_ids():
+                raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
         try:
             settings.require_qa()
         except RuntimeError as exc:
@@ -1142,10 +1182,39 @@ def create_app() -> FastAPI:
                 "version": rs.version,
                 "criteria": rs.criteria,
                 "manual_deductions": rs.manual_deductions,
+                # How this ruleset turns verdicts into a score. The UI needs it because a
+                # gated ruleset's deduction column no longer tells the whole story — a Gate 2
+                # Major caps the score rather than subtracting anything.
+                "scoring": {**rs.scoring, "model": rs.scoring_model,
+                            "pass_threshold": rs.pass_threshold},
                 "warnings": validate_ruleset(rs),
             }
             for rs in list_rulesets()
         ]}
+
+    @app.get("/api/calibration/samples")
+    def calibration_samples(user: dict = Depends(auth.current_user)):
+        """Frozen calibration samples, with how much of each is actually gradeable.
+
+        `missing` and `trashed` are reported rather than hidden: a sample that cannot be
+        graded in full is a finding, and a trashed conversation additionally blocks its own
+        re-import from Intercom, so a short sample stays short until someone restores it.
+        """
+        from intercom_summary.storage.calibration_store import CalibrationStore
+
+        store = CalibrationStore()
+        try:
+            out = []
+            for s in store.list_samples():
+                missing = store.missing_conversations(s["id"])
+                out.append({
+                    **s,
+                    "missing": len(missing),
+                    "trashed": len(store.trashed_conversations(s["id"])),
+                })
+            return {"items": out}
+        finally:
+            store.close()
 
     @app.get("/api/rulesets/{ruleset_id}/prompt")
     def get_ruleset_prompt(ruleset_id: str, user: dict = Depends(auth.current_user)):

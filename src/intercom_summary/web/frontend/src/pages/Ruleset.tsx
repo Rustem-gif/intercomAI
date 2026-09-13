@@ -62,6 +62,10 @@ function Editor({
     );
   }
 
+  // A gated ruleset's deduction column no longer tells the whole story — a Major caps the
+  // score rather than subtracting from it — so the table grows two columns for it.
+  const gated = ruleset?.scoring?.model === "gated";
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
@@ -124,13 +128,45 @@ function Editor({
           <h3 className="mb-2 text-sm font-medium">
             Criteria ({ruleset.criteria.length}) — used for manual re-scoring
           </h3>
+          {/* The thresholds the QA manual deliberately leaves to the QC manager. They are shown
+              here because a number nobody can see is a number nobody can calibrate. */}
+          {gated && (
+            <div className="mb-3 rounded-md border bg-muted/40 p-3 text-xs">
+              <div className="mb-1 font-medium">Gated scoring (QA Manual v4.1)</div>
+              <ul className="space-y-0.5 text-muted-foreground">
+                <li>PASS at <b>{ruleset.scoring.pass_threshold}</b> or above.</li>
+                <li>
+                  Any Gate 2 Major caps the chat at <b>{ruleset.scoring.major_cap}</b> — however
+                  many of them there are.
+                </li>
+                <li>
+                  Without a Major the score never falls below <b>{ruleset.scoring.no_major_floor}</b>,
+                  so a chat that served the player can never rank below one that did not.
+                </li>
+                <li>
+                  Outcome failure plus every process check failing at once scores{" "}
+                  <b>{ruleset.scoring.catastrophic_score}</b>, flagged separately from a
+                  compliance breach.
+                </li>
+                {ruleset.scoring.group_caps &&
+                  Object.entries(ruleset.scoring.group_caps).map(([g, cap]) => (
+                    <li key={g}>
+                      The <b>{g}</b> criteria are capped together at <b>−{cap}</b>.
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="text-left text-muted-foreground">
                 <tr>
                   <th className="py-1 pr-4 font-medium">ID</th>
                   <th className="py-1 pr-4 font-medium">Title</th>
-                  <th className="py-1 pr-4 font-medium">Deduction</th>
+                  {gated && <th className="py-1 pr-4 font-medium">Gate</th>}
+                  {gated && <th className="py-1 pr-4 font-medium">Severity</th>}
+                  <th className="py-1 pr-4 font-medium">Score impact</th>
                 </tr>
               </thead>
               <tbody>
@@ -138,9 +174,17 @@ function Editor({
                   <tr key={c.id} className="border-t">
                     <td className="py-1 pr-4 font-mono">{c.id}</td>
                     <td className="py-1 pr-4">{c.title}</td>
+                    {gated && <td className="py-1 pr-4">{c.gate ?? "—"}</td>}
+                    {gated && <td className="py-1 pr-4">{c.severity ?? "—"}</td>}
                     <td className="py-1 pr-4">
                       {c.critical ? (
                         <span className="font-medium text-destructive">critical → 0</span>
+                      ) : c.severity === "major" ? (
+                        <span className="font-medium text-orange-600 dark:text-orange-400">
+                          caps at {ruleset.scoring.major_cap}
+                        </span>
+                      ) : c.group ? (
+                        `−${c.deduction} (with ${c.group}, capped at −${ruleset.scoring.group_caps?.[c.group] ?? "?"})`
                       ) : (
                         `−${c.deduction}`
                       )}

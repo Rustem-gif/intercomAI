@@ -18,9 +18,8 @@ import httpx
 
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
-from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
-from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
+from intercom_summary.qa.rulesets import get_ruleset, output_schema_for, validate_ruleset
 from intercom_summary.qa.schema import ConversationGrade
 from intercom_summary.qa.verdict_guard import apply_guards
 from intercom_summary.settings import settings
@@ -53,6 +52,12 @@ _RETRYABLE_CONN_ERRORS = (
 _CONNECT_RETRY_BACKOFF = [2, 5, 10, 20, 30]
 
 
+# Verdicts that count as the model having actually looked at a criterion. "cannot_determine"
+# belongs here: it is a real, considered answer under the v4.1 evidence rules — "the data
+# cannot show me this" — not a refusal to evaluate.
+_EVALUATED = ("pass", "fail", "n/a", "cannot_determine")
+
+
 def _is_valid_grade(data: dict) -> bool:
     """A real grade has a non-empty criteria list with at least one evaluated item.
     An empty list or one where the model declined to evaluate everything is rejected
@@ -60,7 +65,7 @@ def _is_valid_grade(data: dict) -> bool:
     criteria = data.get("criteria")
     if not isinstance(criteria, list) or not criteria:
         return False
-    return any(c.get("v") in ("pass", "fail", "n/a") for c in criteria)
+    return any(c.get("v") in _EVALUATED for c in criteria)
 
 
 # Transcripts longer than this are split into head + tail so that opening
@@ -103,6 +108,7 @@ class OllamaGrader:
         # One grader is built per ruleset; service.py picks which one a conversation goes to.
         self._ruleset = get_ruleset(ruleset_id)
         self._system_prompt = self._ruleset.prompt_text
+        self._output_schema = output_schema_for(self._ruleset.id)
         self._prompt_version = self._ruleset.version
 
         for warning in validate_ruleset(self._ruleset):
@@ -140,7 +146,7 @@ class OllamaGrader:
             # guarantees a populated scorecard and a parseable object, and bounds output
             # (grammar must close the JSON), preventing the runaway timeouts seen with
             # a bare {"format": "json"}.
-            "format": CASINO_OUTPUT_SCHEMA,
+            "format": self._output_schema,
             # Keep the model resident across the batch (the server default may be
             # OLLAMA_KEEP_ALIVE=0, which reloads the model for every conversation).
             "keep_alive": settings.ollama_keep_alive,

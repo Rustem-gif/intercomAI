@@ -1,30 +1,36 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute } from "@/lib/api";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute, ScorePreview } from "@/lib/api";
 import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
-import { Check, X, Minus, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale } from "lucide-react";
+import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale } from "lucide-react";
 import { scoreColor, fmtDate } from "@/lib/utils";
 
-type Verdict = "pass" | "fail" | "n/a";
+/** "cannot_determine" is a real answer under QA Manual v4.1, not a missing one: the evidence a
+ * criterion needs (a chat tag, a CRM escalation record, a transaction status) often lives
+ * outside the transcript, and the model is required to say so rather than guess a fail. */
+type Verdict = "pass" | "fail" | "n/a" | "cannot_determine";
+
+const VERDICTS: Verdict[] = ["pass", "fail", "n/a", "cannot_determine"];
 
 const verdictIcon: Record<string, React.ReactNode> = {
   pass: <Check className="h-4 w-4 text-emerald-500" />,
   fail: <X className="h-4 w-4 text-destructive" />,
   "n/a": <Minus className="h-4 w-4 text-muted-foreground" />,
+  cannot_determine: <HelpCircle className="h-4 w-4 text-amber-500" />,
 };
 
-/** Recompute the score from criterion verdicts, mirroring the server formula
- * (qa/schema.py:score_from_verdicts): a fail on a critical criterion forces 0,
- * otherwise 100 minus the deductions of all failed criteria, floored at 0. */
-function computeScore(rules: RuleResult[], verdicts: Record<string, Verdict>): number {
-  let total = 0;
-  for (const r of rules) {
-    if (verdicts[r.rule_id] !== "fail") continue;
-    if (r.critical) return 0;
-    total += r.deduction ?? 0;
-  }
-  return Math.max(0, 100 - total);
+const verdictLabel: Record<string, string> = {
+  pass: "pass", fail: "fail", "n/a": "n/a", cannot_determine: "can't tell",
+};
+
+/** What a Gate 2 Major costs is not a number of points — it caps the whole chat. Saying "−0"
+ *  next to it, which is literally what the catalogue holds, would read as "free". */
+function costLabel(r: RuleResult): string | null {
+  if (r.critical) return null;
+  if (r.severity === "major") return "caps the score";
+  if (typeof r.deduction === "number" && r.deduction > 0) return `−${r.deduction}`;
+  return null;
 }
 
 interface Props {
@@ -60,14 +66,33 @@ export default function GradePanel({
   const [disputeBusy, setDisputeBusy] = useState(false);
   const [resolvingDispute, setResolvingDispute] = useState(false);
 
-  // Catalog of manual-deduction presets (things the AI can't verify). Only needed while editing.
+  // Catalog of manual-deduction presets (things the AI can't verify). Scoped to the ruleset
+  // that produced THIS grade, which is also what the override endpoint validates against —
+  // the rulesets do not offer the same presets.
+  const rulesetId = grade?.ruleset_id || "default";
   const { data: dedCatalog } = useQuery({
-    queryKey: ["manual-deductions"],
-    queryFn: () => api.get<{ items: ManualDeductionPreset[] }>("/api/qa/manual-deductions"),
+    queryKey: ["manual-deductions", rulesetId],
+    queryFn: () => api.get<{ items: ManualDeductionPreset[] }>(
+      `/api/qa/manual-deductions?ruleset_id=${encodeURIComponent(rulesetId)}`),
     enabled: !!canOverride,
   });
   const presets = dedCatalog?.items ?? [];
   const presetLabel = (id: string) => presets.find((p) => p.id === id)?.label ?? id;
+
+  // The score a save would produce, computed by the server. The panel used to mirror the
+  // formula in TypeScript; with caps, a floor and a capped block that second implementation
+  // would drift from the real one silently and show an analyst a number nothing would store.
+  const liveDeductions = deductions.filter((d) => Number(d.points) > 0);
+  const { data: preview } = useQuery({
+    queryKey: ["score-preview", rulesetId, JSON.stringify(verdicts), JSON.stringify(liveDeductions)],
+    queryFn: () => api.post<ScorePreview>("/api/qa/preview-score", {
+      ruleset_id: rulesetId,
+      criteria: verdicts,
+      manual_deductions: liveDeductions,
+    }),
+    enabled: editing && mode === "criteria" && Object.keys(verdicts).length > 0,
+    placeholderData: keepPreviousData,
+  });
 
   if (!grade) {
     return (
@@ -78,6 +103,10 @@ export default function GradePanel({
   }
 
   const effectiveScore = grade.human_score ?? grade.overall_score;
+  // While editing, the verdict shown is the one a save would produce, not the stored one.
+  const result = editing && mode === "criteria"
+    ? (preview?.result ?? grade.overall_result)
+    : grade.overall_result;
   const isOverridden = grade.human_score !== null && grade.human_score !== undefined;
   const delta = isOverridden ? grade.human_score! - grade.overall_score : 0;
 
@@ -103,11 +132,8 @@ export default function GradePanel({
     setEditing(true);
   };
 
-  const manualTotal = deductions.reduce((s, d) => s + (Number(d.points) || 0), 0);
   const previewScore =
-    mode === "criteria"
-      ? Math.max(0, computeScore(grade.rule_results, verdicts) - manualTotal)
-      : scoreInput;
+    mode === "criteria" ? (preview?.score ?? effectiveScore) : scoreInput;
   const previewDelta = previewScore - grade.overall_score;
 
   const addDeduction = () =>
@@ -227,6 +253,90 @@ export default function GradePanel({
             </button>
           )}
         </div>
+
+        {/* Verdict and case state. The score says how well the agent worked; outcome status
+            says what actually became of the player's issue, and the two legitimately
+            disagree — a flawless chat can sit at Pending-legitimate while Finance works. */}
+        {(result || grade.outcome_status || grade.severity) && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            {result && (
+              <span className={`rounded px-1.5 py-0.5 font-semibold ${
+                result === "PASS"
+                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                  : "bg-destructive/10 text-destructive"
+              }`}>{result}</span>
+            )}
+            {grade.outcome_status && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
+                    title="What became of the player's issue — reported separately from the score">
+                {grade.outcome_status}
+              </span>
+            )}
+            {grade.severity && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
+                {grade.severity}
+              </span>
+            )}
+            {grade.case_type && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
+                {grade.case_type}
+              </span>
+            )}
+            {grade.risk_flag && grade.risk_flag !== "None" && (
+              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium text-amber-600 dark:text-amber-400">
+                risk: {grade.risk_flag}
+              </span>
+            )}
+            {grade.confidence && grade.confidence !== "High" && (
+              <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground"
+                    title="The grader's own certainty about this evaluation">
+                {grade.confidence} confidence
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Catastrophic service failure is NOT a compliance breach, and the difference is the
+            reason it has its own score and its own flag. Labelling it "critical" here would
+            undo that. */}
+        {grade.catastrophic_service_failure && !editing && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            <span className="font-medium">Catastrophic service failure</span> — the outcome and
+            every process check failed at once. This is a service collapse, not a compliance or
+            RG breach.
+          </div>
+        )}
+
+        {grade.manual_review_needed && !editing && (
+          <div className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
+            <HelpCircle className="mt-0.5 h-3 w-3 shrink-0 text-amber-500" />
+            <span className="text-muted-foreground">
+              <span className="font-medium text-amber-600 dark:text-amber-400">Needs a QC check</span>
+              {grade.manual_review_reason ? ` — ${grade.manual_review_reason}` : ""}
+            </span>
+          </div>
+        )}
+
+        {/* Multi-intent coverage: what the player actually asked for, one row each. */}
+        {!editing && grade.requests && grade.requests.length > 0 && (
+          <div className="rounded-md border px-3 py-2">
+            <h4 className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">
+              What the player asked
+            </h4>
+            <ul className="space-y-1">
+              {grade.requests.map((rq, i) => (
+                <li key={i} className="flex items-start gap-1.5 text-xs">
+                  <span className={`mt-0.5 shrink-0 rounded px-1 text-[10px] ${
+                    rq.status === "unresolved"
+                      ? "bg-destructive/10 text-destructive"
+                      : "bg-muted text-muted-foreground"
+                  }`}>{rq.status}</span>
+                  <span className="text-muted-foreground">{rq.text}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Override attribution */}
         {isOverridden && !editing && (
@@ -467,11 +577,22 @@ export default function GradePanel({
                 <div className="flex items-center gap-2">
                   {verdictIcon[current] ?? verdictIcon["n/a"]}
                   <span className="text-sm font-medium">{r.title || r.rule_id}</span>
-                  {typeof r.deduction === "number" && r.deduction > 0 && (
-                    <span className="text-[10px] text-muted-foreground">−{r.deduction}</span>
+                  {costLabel(r) && (
+                    <span className="text-[10px] text-muted-foreground">{costLabel(r)}</span>
+                  )}
+                  {r.group && (
+                    <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground"
+                          title={`Capped as a block with the rest of ${r.group}`}>{r.group}</span>
+                  )}
+                  {r.gate && (
+                    <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground"
+                          title="Which gate of the v4.1 model this sits in">gate {r.gate}</span>
                   )}
                   {r.critical && (
                     <span className="rounded bg-destructive/10 px-1 text-[10px] font-medium text-destructive">critical</span>
+                  )}
+                  {r.severity === "major" && !r.critical && (
+                    <span className="rounded bg-orange-500/15 px-1 text-[10px] font-medium text-orange-600 dark:text-orange-400">major</span>
                   )}
                   {changed && (
                     <span className="rounded bg-amber-500/15 px-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">changed</span>
@@ -488,21 +609,26 @@ export default function GradePanel({
 
                 {editing && mode === "criteria" && (
                   <div className="mt-2 flex gap-1">
-                    {(["pass", "fail", "n/a"] as Verdict[]).map((v) => (
+                    {VERDICTS.map((v) => (
                       <button
                         key={v}
                         onClick={() => setVerdicts((prev) => ({ ...prev, [r.rule_id]: v }))}
-                        className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs capitalize ${
+                        title={v === "cannot_determine"
+                          ? "The evidence this criterion needs is not in the available data"
+                          : undefined}
+                        className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
                           verdicts[r.rule_id] === v
                             ? v === "fail"
                               ? "border-destructive bg-destructive/10 text-destructive"
                               : v === "pass"
                                 ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                : "border-border bg-muted"
+                                : v === "cannot_determine"
+                                  ? "border-amber-500 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                                  : "border-border bg-muted"
                             : "text-muted-foreground hover:bg-muted"
                         }`}
                       >
-                        {verdictIcon[v]} {v}
+                        {verdictIcon[v]} {verdictLabel[v]}
                       </button>
                     ))}
                   </div>

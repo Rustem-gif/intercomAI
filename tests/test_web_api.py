@@ -841,3 +841,134 @@ def test_a_legacy_link_still_serves_any_of_its_agents_conversations(client):
 
     assert client.get("/api/review/legacy/conversations/sep-1").status_code == 200
     assert client.get("/api/review/legacy/conversations/other").status_code == 403
+
+
+# ── QA Manual v4.1: the gated ruleset reaches the UI ─────────────────────────────────
+def _grade_with_v41(conversation_id="42"):
+    """Store a real v4.1 grade the way the grader would."""
+    from intercom_summary.qa.schema import ConversationGrade
+    from intercom_summary.storage.grades_store import GradesStore
+
+    g = ConversationGrade.from_ollama_output(conversation_id, "Ada", {
+        "case_type": "Withdrawal",
+        "risk_flag": "Financial",
+        "expected_handling": "Internal escalation",
+        "data_sufficiency": "Sufficient",
+        "requests": [{"text": "Where is my payout?", "status": "unresolved", "material": True}],
+        "criteria": [
+            {"id": "resp-no-ghost", "v": "fail", "ev": "AGENT: anything else?"},
+            {"id": "tag-chat", "v": "cannot_determine", "ev": "tags are CRM metadata"},
+        ],
+        "outcome_status": "Unresolved",
+        "summary": "Payout question never answered.",
+        "manual_review_needed": True,
+        "manual_review_reason": "tag not visible",
+    }, ruleset_id="kb-v41")
+    g.ruleset_id = "kb-v41"
+    g.rules_version = "test"
+    store = GradesStore(settings.db_path)
+    store.save(g)
+    store.close()
+    return g
+
+
+def test_preview_score_is_the_single_source_of_the_formula(client):
+    _login(client)
+    r = client.post("/api/qa/preview-score", json={
+        "ruleset_id": "kb-v41",
+        "criteria": {"resp-no-ghost": "fail", "tag-chat": "pass"},
+    })
+    assert r.status_code == 200
+    body = r.json()
+    # One Major caps at 75, which is below the 85 threshold, so it is a guaranteed FAIL.
+    assert body["score"] == 75 and body["result"] == "FAIL"
+    assert body["pass_threshold"] == 85 and body["scoring_model"] == "gated"
+
+
+def test_preview_score_uses_the_flat_formula_for_a_flat_ruleset(client):
+    _login(client)
+    r = client.post("/api/qa/preview-score", json={
+        "ruleset_id": "default", "criteria": {"open-greet": "fail"},
+    })
+    assert r.json()["score"] == 98
+
+
+def test_preview_score_rejects_an_unknown_deduction_category(client):
+    _login(client)
+    r = client.post("/api/qa/preview-score", json={
+        "ruleset_id": "kb-v41", "criteria": {"tag-chat": "pass"},
+        "manual_deductions": [{"category": "made-up", "points": 5, "note": ""}],
+    })
+    assert r.status_code == 422
+
+
+def test_rulesets_expose_their_scoring_model(client):
+    _login(client)
+    items = {r["id"]: r for r in client.get("/api/rulesets").json()["items"]}
+    assert items["kb-v41"]["scoring"]["model"] == "gated"
+    assert items["kb-v41"]["scoring"]["major_cap"] == 75
+    assert items["default"]["scoring"]["model"] == "flat"
+    # The new ruleset must not have introduced prompt↔catalogue drift anywhere.
+    assert all(not r["warnings"] for r in items.values())
+
+
+def test_a_v41_grade_reaches_the_api_with_its_case_state(client):
+    _login(client)
+    _grade_with_v41()
+    grade = client.get("/api/conversations/42").json()["grade"]
+    assert grade["overall_score"] == 75 and grade["overall_result"] == "FAIL"
+    assert grade["outcome_status"] == "Unresolved"
+    assert grade["severity"] == "Major"
+    assert grade["manual_review_needed"] is True
+    assert grade["requests"][0]["status"] == "unresolved"
+    # The criteria the model never reported are backfilled, carrying their gate and severity
+    # so the panel can show what a failure would actually cost.
+    by_id = {r["rule_id"]: r for r in grade["rule_results"]}
+    assert by_id["resp-no-ghost"]["severity"] == "major"
+    assert by_id["comm-tone"]["group"] == "communication"
+    assert by_id["tag-chat"]["verdict"] == "cannot_determine"
+
+
+def test_an_analyst_may_override_a_criterion_to_cannot_determine(client):
+    _login(client, "ana")
+    _grade_with_v41()
+    r = client.post("/api/conversations/42/override", json={
+        "reason": "No CRM access to confirm the escalation.",
+        "criteria": {"resp-no-ghost": "cannot_determine"},
+    })
+    assert r.status_code == 200
+    # Undoing the only Major lifts the 75 cap, and a cannot_determine costs nothing.
+    assert r.json()["human_score"] == 100
+
+
+def test_a_review_run_may_be_forced_onto_one_ruleset(client):
+    _login(client)
+    r = client.post("/api/review", json={"ruleset_id": "kb-v41", "conversation_ids": ["42"]})
+    assert r.status_code in (200, 503)     # 503 when no QA backend is configured in the test env
+
+
+def test_a_review_run_rejects_an_unknown_ruleset(client):
+    _login(client)
+    r = client.post("/api/review", json={"ruleset_id": "nope"})
+    assert r.status_code == 400
+
+
+def test_calibration_samples_report_what_cannot_be_graded(client):
+    _login(client)
+    from intercom_summary.storage.calibration_store import CalibrationStore
+
+    store = CalibrationStore(settings.db_path)
+    store.create("s1", "Sample", source="doc.docx")
+    store.replace_items("s1", [
+        {"conversation_id": "42", "seq": 1, "pilot": True},
+        {"conversation_id": "not-fetched", "seq": 2},
+    ])
+    store.close()
+
+    items = client.get("/api/calibration/samples").json()["items"]
+    assert items[0]["size"] == 2 and items[0]["pilot_size"] == 1
+    # A sample that cannot be graded in full is a finding, not something to quietly drop.
+    assert items[0]["missing"] == 1
+
+    listed = client.get("/api/conversations?sample=s1").json()
+    assert [c["id"] for c in listed["items"]] == ["42"]

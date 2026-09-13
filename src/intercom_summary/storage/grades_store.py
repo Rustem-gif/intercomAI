@@ -63,7 +63,10 @@ def _normalize_criteria(rule_results: list | None, ruleset_id: str | None = None
     Two jobs:
 
     1. Tag each recognised rule_result with its canonical `deduction` and `critical` flag so
-       the UI can render ScoreBuddy-style toggles and preview the recomputed score.
+       the UI can render ScoreBuddy-style toggles and preview the recomputed score. On a gated
+       ruleset it also carries the `gate`, `severity` and capped `group`, because there the
+       deduction alone no longer says what a failure costs — a Gate 2 Major caps the score
+       rather than subtracting anything.
     2. Fill in the criteria the model never reported, as `n/a`.
 
     (2) matters because the model returns only the criteria it chose to emit — typically 24 of
@@ -82,13 +85,23 @@ def _normalize_criteria(rule_results: list | None, ruleset_id: str | None = None
 
     rs = get_ruleset(ruleset_id)
     deductions, critical, titles = rs.deductions, rs.critical, rs.titles
+    gates, severities, groups = rs.gates, rs.severities, rs.groups
+
+    def _meta(cid: str) -> dict:
+        meta = {"deduction": deductions.get(cid, 0), "critical": cid in critical}
+        if gates.get(cid):
+            meta["gate"] = gates[cid]
+        if severities.get(cid):
+            meta["severity"] = severities[cid]
+        if groups.get(cid):
+            meta["group"] = groups[cid]
+        return meta
 
     reported: dict[str, dict] = {}
     for r in rule_results or []:
         cid = r.get("rule_id", "")
         if cid in deductions or cid in critical:
-            r["deduction"] = deductions.get(cid, 0)
-            r["critical"] = cid in critical
+            r.update(_meta(cid))
         reported.setdefault(cid, r)
 
     # Legacy Claude-backend grades use an entirely different criteria vocabulary
@@ -108,8 +121,7 @@ def _normalize_criteria(rule_results: list | None, ruleset_id: str | None = None
                 "verdict": "n/a",
                 "evidence": "",
                 "comment": "",
-                "deduction": deductions.get(cid, 0),
-                "critical": cid in critical,
+                **_meta(cid),
             }
         out.append(entry)
     # Anything the model emitted that the catalogue doesn't know about is kept rather than
@@ -183,8 +195,10 @@ class GradesStore:
         self._conn.execute(
             """INSERT INTO grades
                (conversation_id, agent_name, agent_email, overall_score, summary,
-                rules_version, ruleset_id, model, graded_at, payload_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
+                rules_version, ruleset_id, model, graded_at, payload_json,
+                outcome_status, case_type, risk_flag,
+                catastrophic_service_failure, manual_review_needed)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(conversation_id) DO UPDATE SET
                    agent_name    = excluded.agent_name,
                    agent_email   = excluded.agent_email,
@@ -194,7 +208,12 @@ class GradesStore:
                    ruleset_id    = excluded.ruleset_id,
                    model         = excluded.model,
                    graded_at     = excluded.graded_at,
-                   payload_json  = excluded.payload_json""",
+                   payload_json  = excluded.payload_json,
+                   outcome_status = excluded.outcome_status,
+                   case_type      = excluded.case_type,
+                   risk_flag      = excluded.risk_flag,
+                   catastrophic_service_failure = excluded.catastrophic_service_failure,
+                   manual_review_needed         = excluded.manual_review_needed""",
             (
                 grade.conversation_id,
                 grade.agent_name,
@@ -206,6 +225,13 @@ class GradesStore:
                 grade.model,
                 grade.graded_at,
                 json.dumps(grade.to_dict()),
+                # Mirrored out of the payload because these are what a QC manager filters on:
+                # "show me every unresolved chat", "every one needing a second pair of eyes".
+                grade.outcome_status,
+                grade.case_type,
+                grade.risk_flag,
+                int(bool(grade.catastrophic_service_failure)),
+                int(bool(grade.manual_review_needed)),
             ),
         )
         self._conn.commit()

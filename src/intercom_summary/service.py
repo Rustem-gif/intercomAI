@@ -197,6 +197,8 @@ def review_and_store(
     brand: str | None = None,
     regrade: bool = False,
     backend: str | None = None,
+    ruleset_id: str | None = None,
+    sample: str | None = None,
     on_progress: Callable[[int, int, int], None] | None = None,
     cancel_event: "threading.Event | None" = None,
 ) -> dict[str, Any]:
@@ -207,6 +209,14 @@ def review_and_store(
 
     Concurrency is capped per backend so we don't overwhelm a local GPU or hit
     API rate limits.
+
+    `ruleset_id` forces every conversation in this run onto one ruleset instead of the one
+    the assigned agent's group selects. That is how a new scoring model is piloted: grade a
+    known set against it, compare, and only then change what the group resolves to. Grades
+    are stored under the ruleset that produced them, so a pilot run cannot disturb the
+    staleness or the scores of anything graded by another ruleset.
+
+    `sample` restricts the run to a frozen calibration sample (see storage/calibration_store).
     """
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
@@ -219,6 +229,17 @@ def review_and_store(
     convos_store = ConversationsStore()
     grades_store = GradesStore()
     try:
+        if sample and not conversation_ids:
+            from intercom_summary.storage.calibration_store import CalibrationStore
+
+            cal = CalibrationStore()
+            try:
+                conversation_ids = cal.conversation_ids(sample)
+            finally:
+                cal.close()
+            log.info("Review scoped to calibration sample %r (%d chats)",
+                     sample, len(conversation_ids))
+
         if conversation_ids:
             convos = [c for cid in conversation_ids if (c := convos_store.get(cid))]
         else:
@@ -252,7 +273,9 @@ def review_and_store(
         # does not silently invalidate their standard-ruleset history (see is_current).
         # Group membership is read once for the whole run, not once per conversation — the
         # latter opens a DB connection each time and exhausts the process's file descriptors.
-        ruleset_for = agent_ruleset_resolver()
+        ruleset_for = (
+            (lambda _agent: ruleset_id) if ruleset_id else agent_ruleset_resolver()
+        )
 
         buckets: dict[str, list] = defaultdict(list)
         for c in convos:
