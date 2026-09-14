@@ -327,6 +327,8 @@ export interface ConversationDetail {
   sla?: Sla;
   iconic: { conversation_id: string; added_by: string; added_at: string; manager_comment: string } | null;
   grade_dispute?: GradeDispute | null;
+  /** Scores this chat used to carry, newest first. Empty until a re-grade replaces one. */
+  grade_history?: PastGrade[];
 }
 
 export interface Job {
@@ -474,12 +476,33 @@ export interface QaRuleset {
   warnings: string[];
 }
 
+/** What editing a ruleset's prompt would invalidate. Any edit bumps the version, which marks
+ *  that ruleset's grades stale and re-grades them with different scores on the next run. */
+export interface BlastRadius {
+  graded_at_current_version: number;
+  would_regrade: number;
+  protected_by_human_review: number;
+}
+
+/** A score this conversation used to carry, before a re-grade replaced it. */
+export interface PastGrade {
+  archived_at: string;
+  graded_at: string | null;
+  overall_score: number | null;
+  human_score: number | null;
+  rules_version: string | null;
+  ruleset_id: string | null;
+  model: string | null;
+}
+
 export interface EvalStats {
   total: number;
   graded: number;
   pending: number;
   /** Graded under an older version of their own ruleset (re-grading will refresh them). */
   stale?: number;
+  /** Re-graded by an analyst — never re-graded by an ordinary run, so never stale. */
+  human_reviewed?: number;
   /** Graded by a different ruleset than their agent's group uses today — e.g. an agent's
    *  history from before they joined VIP. Left alone on purpose; re-grade to convert. */
   wrong_ruleset?: number;

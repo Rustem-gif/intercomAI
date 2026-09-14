@@ -803,8 +803,11 @@ def test_total_matches_the_rows_actually_returned(client):
     assert portal["total"] == len(portal["conversations"]) == 2
 
 
-def test_a_link_with_no_range_still_shows_everything(client):
-    # 35 links predate ranges and are already in agents' hands; none of them may change.
+def test_a_link_with_no_membership_shows_nothing_rather_than_widening(client):
+    """An unfrozen link used to fall back to an unscoped, undated, 500-row query over the
+    agent's whole history. That is how an "August review" link came to list September chats,
+    and it was indistinguishable from a link whose freeze legitimately resolved to nothing.
+    Legacy links are frozen in place by scripts/backfill_token_items.py instead."""
     _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
     _seed_for_link("sep-1", datetime(2026, 9, 1, tzinfo=timezone.utc))
     from intercom_summary.storage.agent_tokens_store import AgentTokensStore
@@ -813,10 +816,35 @@ def test_a_link_with_no_range_still_shows_everything(client):
     ts.close()
 
     portal = client.get("/api/review/legacy").json()
-    ids = {c["id"] for c in portal["conversations"]}
 
-    assert {"aug-1", "sep-1"} <= ids
-    assert portal["since"] is None and portal["until"] is None
+    assert portal["conversations"] == [] and portal["total"] == 0
+
+
+def test_freezing_a_legacy_link_makes_it_show_exactly_what_was_frozen(client):
+    """The migration path for those links: resolve what they should have shown, write it down."""
+    _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
+    _seed_for_link("sep-1", datetime(2026, 9, 1, tzinfo=timezone.utc))
+    from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+    ts = AgentTokensStore(settings.db_path)
+    ts.create("legacy", agent_name="Ada", label="Ada review", created_by="boss",
+              conversation_ids=["aug-1"])
+    ts.close()
+
+    portal = client.get("/api/review/legacy").json()
+    assert {c["id"] for c in portal["conversations"]} == {"aug-1"}
+
+
+def test_an_unfrozen_link_cannot_reach_a_conversation_by_id(client):
+    """The access rule had the same hole as the listing: with no membership the detail endpoint
+    fell back to "does this chat belong to the agent?", so every chat they ever handled was one
+    guessed id away through any of their links."""
+    _seed_for_link("aug-1", datetime(2026, 8, 5, tzinfo=timezone.utc))
+    from intercom_summary.storage.agent_tokens_store import AgentTokensStore
+    ts = AgentTokensStore(settings.db_path)
+    ts.create("legacy", agent_name="Ada", label="Ada review", created_by="boss")
+    ts.close()
+
+    assert client.get("/api/review/legacy/conversations/aug-1").status_code == 403
 
 
 def test_the_detail_endpoint_refuses_a_conversation_outside_the_link(client):
@@ -831,16 +859,21 @@ def test_the_detail_endpoint_refuses_a_conversation_outside_the_link(client):
     assert client.get(f"/api/review/{token}/conversations/sep-1").status_code == 403
 
 
-def test_a_legacy_link_still_serves_any_of_its_agents_conversations(client):
+def test_a_link_serves_its_members_and_refuses_everything_else(client):
+    """Membership is the whole access rule — the agent's own other chats included."""
     _seed_for_link("sep-1", datetime(2026, 9, 1, tzinfo=timezone.utc))
+    _seed_for_link("sep-2", datetime(2026, 9, 2, tzinfo=timezone.utc))
     _seed_for_link("other", datetime(2026, 9, 1, tzinfo=timezone.utc), agent="Bob")
     from intercom_summary.storage.agent_tokens_store import AgentTokensStore
     ts = AgentTokensStore(settings.db_path)
-    ts.create("legacy", agent_name="Ada", label="Ada review", created_by="boss")
+    ts.create("scoped", agent_name="Ada", label="Ada review", created_by="boss",
+              conversation_ids=["sep-1"])
     ts.close()
 
-    assert client.get("/api/review/legacy/conversations/sep-1").status_code == 200
-    assert client.get("/api/review/legacy/conversations/other").status_code == 403
+    assert client.get("/api/review/scoped/conversations/sep-1").status_code == 200
+    # Ada's, but not part of this review.
+    assert client.get("/api/review/scoped/conversations/sep-2").status_code == 403
+    assert client.get("/api/review/scoped/conversations/other").status_code == 403
 
 
 # ── QA Manual v4.1: the gated ruleset reaches the UI ─────────────────────────────────

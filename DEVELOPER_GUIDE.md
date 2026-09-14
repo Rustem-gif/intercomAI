@@ -369,6 +369,52 @@ Because the two are independent, adding one filter never removes the need for th
   cached row carries no marker); without `--dry-run` it moves them to the **Trash**, which
   snapshots each conversation and its grade first, so it's one Restore away from undone.
 
+### A review link shows the wrong chats
+A review link is a record of what was handed to an agent, so its membership is **frozen** at
+creation into `agent_review_token_items` and never re-queried.
+
+There used to be a fallback: a link with no frozen membership fell back to an unscoped, undated
+live query capped at 500 rows over the agent's whole history. That is how an "August review" link
+came to list September chats, and how chats appeared in it as grading caught up — and it was
+indistinguishable from a link whose freeze legitimately resolved to nothing. The same fallback
+existed as an *access* rule on the detail endpoint, which made every conversation an agent ever
+handled reachable by id through any one of their links.
+
+Both are gone. An empty membership now honestly shows nothing. Links created before the freeze
+existed were frozen in place by `scripts/backfill_token_items.py` (re-runnable, `--dry-run`
+first); if a link ever needs widening, generate a new one.
+
+### A score changed after someone had already reviewed it
+This happened for real in September and it is worth understanding, because the mechanism is not
+obvious.
+
+`rules_version` is a hash of the **prompt text**. Any edit — one word — produces a new version,
+which marks every grade that ruleset produced stale, and the next review run re-grades them. The
+model does not return the same score twice for the same chat under different rules, so scores
+move. In September the rulebook was corrected on the 3rd and the 4th; QA had already manually
+re-graded the month's red/yellow chats, agents had disputed specific numbers, and those numbers
+then changed underneath everyone. Several grading runs had also crashed mid-batch (Ollama
+dropping out), so chats acquired scores in dribs over days — and an ungraded chat has no colour,
+so it cannot appear in a red/yellow worklist until it does.
+
+Three things now guard against it:
+
+- **A chat an analyst has re-graded is never re-graded by an ordinary run.** `is_current`
+  (`storage/grades_store.py`) treats `human_score IS NOT NULL` as current whatever the
+  rules_version says. Their verdict already wins via `COALESCE(human_score, overall_score)`; this
+  stops the AI score and the criteria checklist under it from moving too. `regrade=True` still
+  forces them. The Evaluation page reports them as *"kept as analyst-reviewed"*.
+- **Every overwritten grade is archived** into `grade_history` before the upsert, and shown in the
+  grade panel as *"Re-graded N times — see previous scores"*. This is what makes "why is this red
+  now when it was green last week?" answerable.
+- **The Ruleset page states the blast radius before you save**: how many conversations the edit
+  will re-grade, and how many are protected. `GradesStore.staleness_preview` computes it.
+
+To find what QA still owes a manual grade for a period:
+```bash
+python scripts/pending_manual_review.py --since 2026-08-01 --until 2026-08-31
+```
+
 ### A conversation scored 0
 Only two things zero a score, and the model's opinion is not one of them:
 
@@ -552,6 +598,11 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
 - Schema changes are hand-written and idempotent: new tables go in `_SCHEMA` (always
   `CREATE TABLE IF NOT EXISTS`), new columns in `_migrate()` (`PRAGMA table_info` → `ALTER TABLE`).
   There is no Alembic and no version table.
+- `conversations.fetched_at` is **last seen**, not first seen — the save is `INSERT OR REPLACE`,
+  so re-fetching a period restamps every row in it. Use `first_seen_at` (preserved across the
+  upsert) to ask when a conversation actually arrived. Confusing the two is what made the
+  September incident look like a late import when nothing had arrived late at all.
+- `grade_history` holds every superseded grade. Nothing deletes from it.
 - It's backed up automatically into `data/backups/`.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
 - **The Trash blocks re-import.** Deleting a conversation individually moves it to

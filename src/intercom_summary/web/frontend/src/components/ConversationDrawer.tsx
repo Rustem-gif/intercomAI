@@ -388,6 +388,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                       conversationId={id}
                       canOverride={writer}
                       dispute={data.grade_dispute ?? null}
+                      history={data.grade_history ?? []}
                       disputeUrl={disputeUrl}
                       readOnly={readOnly}
                       onDisputeChange={afterDisputeChange}

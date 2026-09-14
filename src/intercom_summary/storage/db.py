@@ -116,6 +116,28 @@ CREATE TABLE IF NOT EXISTS review_acknowledgments (
 );
 CREATE INDEX IF NOT EXISTS idx_ack_token ON review_acknowledgments(token);
 
+-- Every grade that gets overwritten is archived here first.
+--
+-- A grade behaves like a disposable computation — re-run it and the number changes — but it is
+-- used like a record: QA manually re-grades red/yellow chats, agents dispute specific scores,
+-- coaching sessions cite them. When the rulebook was corrected in September every grade went
+-- stale and was silently re-graded with a different score, and because the old value was gone
+-- nobody could answer "why is this chat red now when it was not last week?". That question has
+-- to stay answerable, so nothing is overwritten without a copy.
+CREATE TABLE IF NOT EXISTS grade_history (
+    conversation_id TEXT NOT NULL,
+    archived_at     TEXT NOT NULL,   -- when the overwrite happened
+    graded_at       TEXT,            -- when the superseded grade was produced
+    overall_score   INTEGER,
+    human_score     INTEGER,
+    rules_version   TEXT,
+    ruleset_id      TEXT,
+    model           TEXT,
+    payload_json    TEXT,
+    PRIMARY KEY (conversation_id, archived_at)
+);
+CREATE INDEX IF NOT EXISTS idx_grade_history_convo ON grade_history(conversation_id);
+
 -- A frozen calibration sample: a fixed list of conversations used to measure the AI against
 -- human graders. Frozen is the point — re-collecting or topping up the set would make two
 -- measurement runs incomparable, which is the one thing a calibration set must never be.
@@ -263,6 +285,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     # Frozen exemplar snapshot so knowledge-base cases stay viewable after the source
     # conversation/grade is deleted (added after initial release).
+    # When a conversation first appeared in the cache. `fetched_at` is rewritten by every
+    # re-fetch (the save is INSERT OR REPLACE), so it cannot answer "did this arrive late?" —
+    # a question that cost a morning during the September grading incident. Existing rows
+    # backfill to their current fetched_at, which is the best available estimate and never
+    # later than the truth.
+    convo_cols = {row[1] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+    if "first_seen_at" not in convo_cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN first_seen_at TEXT")
+        conn.execute("UPDATE conversations SET first_seen_at = fetched_at "
+                     "WHERE first_seen_at IS NULL")
+        conn.commit()
+
     iconic_cols = {row[1] for row in conn.execute("PRAGMA table_info(iconic_cases)").fetchall()}
     if "snapshot_json" not in iconic_cols:
         conn.execute("ALTER TABLE iconic_cases ADD COLUMN snapshot_json TEXT")

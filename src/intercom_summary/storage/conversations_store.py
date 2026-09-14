@@ -124,7 +124,7 @@ class ConversationsStore:
 
         # Preserve any custom_tags an analyst has already set on this conversation.
         existing = self._conn.execute(
-            "SELECT custom_tags, brand FROM conversations WHERE id=?", (convo.id,)
+            "SELECT custom_tags, brand, first_seen_at FROM conversations WHERE id=?", (convo.id,)
         ).fetchone()
         custom_tags = existing["custom_tags"] if existing else ""
 
@@ -136,12 +136,20 @@ class ConversationsStore:
         payload = convo.to_dict()
         payload["brand"] = brand
 
+        # This is INSERT OR REPLACE — the row is deleted and re-inserted — so `fetched_at`
+        # means LAST seen, not first. Re-fetching a period restamps everything in it, which is
+        # exactly what made the September incident look like a late import when nothing had
+        # arrived late at all. `first_seen_at` is carried forward so the question "when did
+        # this conversation first appear?" has an answer that a re-fetch cannot erase.
+        now = datetime.now(timezone.utc).isoformat()
+        first_seen = (existing["first_seen_at"] if existing else None) or now
+
         self._conn.execute(
             """INSERT OR REPLACE INTO conversations
                (id, agent_name, agent_email, customer_name, customer_email, state,
                 subject, created_at, updated_at, message_count, csat_rating, tags,
-                custom_tags, brand, payload_json, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                custom_tags, brand, payload_json, fetched_at, first_seen_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 convo.id,
                 convo.assignee_name,
@@ -158,7 +166,8 @@ class ConversationsStore:
                 custom_tags,
                 brand,
                 json.dumps(payload),
-                datetime.now(timezone.utc).isoformat(),
+                now,
+                first_seen,
             ),
         )
         self._conn.commit()
@@ -467,6 +476,11 @@ class ConversationsStore:
         NOT counted as stale (they were graded correctly at the time); they're reported
         separately so an analyst can choose to re-grade them.
 
+        `human_reviewed` counts grades an analyst has re-scored. Those are never re-graded by
+        an ordinary run — QA's verdict is a commitment, and re-running the model underneath it
+        is what made scores move after their September review pass — so they count as current
+        however old their rules_version is.
+
         `agents` scopes every count to a subset of agents (the UI's group switcher).
         """
         ign_sql, ign_args = _ignore_sql("c")
@@ -485,7 +499,7 @@ class ConversationsStore:
         if agents is not None:
             if not agents:  # an empty group matches nothing (rather than everything)
                 return {"total": 0, "graded": 0, "graded_current": 0,
-                        "wrong_ruleset": 0, "ignored": 0}
+                        "human_reviewed": 0, "wrong_ruleset": 0, "ignored": 0}
             agent_sql, agent_args = _agent_sql(agents)
             where.append(agent_sql)
             args.extend(agent_args)
@@ -502,12 +516,20 @@ class ConversationsStore:
         ).fetchone()["n"]
         graded = self._conn.execute(f"SELECT COUNT(*) AS n {graded_base}", args).fetchone()["n"]
 
+        # A chat an analyst has re-graded is never re-graded by an ordinary run, so it is
+        # current whatever the rulebook says. Keep this in step with GradesStore.is_current —
+        # if the two disagree, the page reports work that no run will ever do.
+        human_reviewed = self._conn.execute(
+            f"SELECT COUNT(*) AS n {graded_base} AND g.human_score IS NOT NULL", args
+        ).fetchone()["n"]
+
         if versions:
             # A grade is current if it matches the live version of its OWN ruleset.
             clauses = " OR ".join(["(g.ruleset_id = ? AND g.rules_version = ?)"] * len(versions))
             vargs = [v for rid, ver in versions.items() for v in (rid, ver)]
             graded_current = self._conn.execute(
-                f"SELECT COUNT(*) AS n {graded_base} AND ({clauses})", [*args, *vargs]
+                f"SELECT COUNT(*) AS n {graded_base} AND (g.human_score IS NOT NULL OR ({clauses}))",
+                [*args, *vargs],
             ).fetchone()["n"]
         else:
             graded_current = graded
@@ -532,6 +554,7 @@ class ConversationsStore:
             "total": total,
             "graded": graded,
             "graded_current": graded_current,
+            "human_reviewed": human_reviewed,
             "wrong_ruleset": wrong_ruleset,
             "ignored": ignored,
         }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute, ScorePreview } from "@/lib/api";
+import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute, PastGrade, ScorePreview } from "@/lib/api";
 import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
 import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale } from "lucide-react";
@@ -40,6 +40,8 @@ interface Props {
   onOverridden?: () => void;
   /** Current grade dispute on this conversation, if any. */
   dispute?: GradeDispute | null;
+  /** Scores this chat carried before a re-grade replaced them, newest first. */
+  history?: PastGrade[];
   /** When set (portal context), enables the agent "Dispute this grade" action posting here. */
   disputeUrl?: string;
   readOnly?: boolean;
@@ -48,7 +50,7 @@ interface Props {
 
 export default function GradePanel({
   grade, conversationId, canOverride, onOverridden,
-  dispute, disputeUrl, readOnly, onDisputeChange,
+  dispute, history, disputeUrl, readOnly, onDisputeChange,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"criteria" | "manual">("criteria");
@@ -315,6 +317,34 @@ export default function GradePanel({
               {grade.manual_review_reason ? ` — ${grade.manual_review_reason}` : ""}
             </span>
           </div>
+        )}
+
+        {/* Scores this chat used to carry. A grade is re-run whenever the rulebook changes, so
+            "it was green last week" is a question people genuinely ask — in September it was
+            asked about a whole month of chats and had no answer at all. */}
+        {!editing && history && history.length > 0 && (
+          <details className="rounded-md border px-3 py-2 text-xs">
+            <summary className="cursor-pointer text-muted-foreground">
+              Re-graded {history.length === 1 ? "once" : `${history.length} times`} — see
+              previous {history.length === 1 ? "score" : "scores"}
+            </summary>
+            <ul className="mt-2 space-y-1">
+              {history.map((h, i) => (
+                <li key={i} className="flex flex-wrap items-center gap-2 text-muted-foreground">
+                  <span className={`font-medium ${scoreColor(h.human_score ?? h.overall_score)}`}>
+                    {h.human_score ?? h.overall_score}
+                  </span>
+                  <span>until {fmtDate(h.archived_at)}</span>
+                  {h.rules_version && (
+                    <code className="rounded bg-muted px-1 text-[10px]">{h.rules_version}</code>
+                  )}
+                  {h.human_score != null && (
+                    <span className="text-[10px] italic">analyst score</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
 
         {/* Multi-intent coverage: what the player actually asked for, one row each. */}

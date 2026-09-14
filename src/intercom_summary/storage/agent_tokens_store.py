@@ -56,22 +56,20 @@ class AgentTokensStore:
         self._conn.commit()
 
     def item_ids(self, token: str) -> list[str]:
-        """The conversation ids frozen into this link, or [] for an unscoped legacy link."""
+        """The conversation ids frozen into this link. Empty means the link covers nothing."""
         rows = self._conn.execute(
             "SELECT conversation_id FROM agent_review_token_items WHERE token=?", (token,)
         ).fetchall()
         return [r["conversation_id"] for r in rows]
 
-    def covers(self, token: str, conversation_id: str) -> bool | None:
-        """Whether the link includes this conversation. None when the link is unscoped.
+    def covers(self, token: str, conversation_id: str) -> bool:
+        """Whether the link includes this conversation.
 
-        The caller must fall back to its own check on None: legacy links have no membership to
-        test against, and refusing everything would break links already shared with agents.
+        A link with no membership covers nothing. It used to return None for that case and the
+        caller fell back to "does this conversation belong to the agent?", which made an
+        agent's entire history reachable through any one of their links.
         """
-        ids = self.item_ids(token)
-        if not ids:
-            return None
-        return conversation_id in ids
+        return conversation_id in set(self.item_ids(token))
 
     def get(self, token: str) -> dict | None:
         row = self._conn.execute(
