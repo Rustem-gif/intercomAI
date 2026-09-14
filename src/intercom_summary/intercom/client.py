@@ -90,9 +90,26 @@ class IntercomClient:
 
     # ── high-level endpoints ─────────────────────────────────────────────────
     async def list_admins(self) -> list[dict[str, Any]]:
-        """All teammates (admins) in the workspace."""
-        data = await self._request("GET", "/admins")
-        return data.get("admins", [])
+        """All teammates (admins) in the workspace.
+
+        Paginated, like every other Intercom list endpoint. It used to read page one and stop,
+        which is silent and nasty: agents past the first page never resolve to an admin id, so
+        `resolve_admin_ids` drops them, the fetch runs for whoever did resolve, and the job
+        still reports "done". You get a month of data with several agents quietly missing and
+        nothing anywhere saying so.
+        """
+        admins: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            data = await self._request("GET", "/admins", params={"page": page, "per_page": 50})
+            batch = data.get("admins", [])
+            admins.extend(batch)
+            pages = data.get("pages") or {}
+            total = pages.get("total_pages")
+            if not batch or not total or page >= int(total):
+                break
+            page += 1
+        return admins
 
     async def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         """Full conversation including all conversation_parts."""

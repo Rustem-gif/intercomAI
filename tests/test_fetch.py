@@ -172,7 +172,13 @@ async def test_fetch_skips_tickets_before_spending_a_full_thread_fetch():
     assert sorted(client.fetched) == ["chat-1", "chat-2"]
     # emails_excluded is 0 here: the double doesn't implement the count request, and an
     # informational number must never fail a fetch.
-    assert stats == {"matched": 3, "tickets_skipped": 1, "emails_excluded": 0}
+    assert stats["matched"] == 3
+    assert stats["tickets_skipped"] == 1
+    assert stats["emails_excluded"] == 0
+    # Who the fetch actually covered, so a run missing an agent is visible rather than implied
+    # by a total that looks healthy.
+    assert stats["resolved_agents"] == ["Ada"]
+    assert "unresolved_agents" not in stats
 
 
 async def test_fetch_limit_counts_chats_not_matched_stubs():

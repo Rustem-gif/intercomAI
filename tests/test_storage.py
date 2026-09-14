@@ -726,3 +726,117 @@ def test_a_gated_grade_fills_the_v41_columns(tmp_path):
         "SELECT outcome_status, case_type, risk_flag FROM grades WHERE conversation_id='c2'"
     ).fetchone()
     assert row == ("Unresolved", "Withdrawal", "Financial")
+
+
+# ── a grade a human signed off on must not move under them ───────────────────────────
+def _graded(conversation_id="c1", score=60, version="v1"):
+    from intercom_summary.qa.schema import ConversationGrade
+
+    g = ConversationGrade.from_ollama_output(conversation_id, "Ada", {
+        "criteria": [{"id": "open-greet", "v": "fail", "ev": "AGENT: what"}],
+        "critical_fail": False, "summary": "no greeting",
+    }, ruleset_id="default")
+    g.overall_score = score
+    g.rules_version = version
+    g.ruleset_id = "default"
+    return g
+
+
+def test_a_stale_grade_is_regraded(tmp_path):
+    from intercom_summary.storage.grades_store import GradesStore
+
+    store = GradesStore(tmp_path / "g.db")
+    store.save(_graded(version="v1"))
+    assert store.is_current("c1", "default", "v1") is True
+    assert store.is_current("c1", "default", "v2") is False   # prompt changed
+    store.close()
+
+
+def test_a_human_reviewed_grade_is_never_stale(tmp_path):
+    """The September incident: the rulebook was corrected, every grade went stale, and chats
+    QA had already re-graded came back days later with different scores. Their verdict is a
+    commitment — agents dispute it — so an ordinary run must not touch it again."""
+    from intercom_summary.storage.grades_store import GradesStore
+
+    store = GradesStore(tmp_path / "g.db")
+    store.save(_graded(version="v1"))
+    store.save_override("c1", 90, "checked by hand", "ana")
+
+    assert store.is_current("c1", "default", "v2") is True
+    store.close()
+
+
+def test_a_human_reviewed_grade_is_still_reachable_by_an_explicit_regrade(tmp_path):
+    """Protection, not a lock: `regrade=True` bypasses is_current entirely in
+    service.review_and_store, so a deliberate re-grade after a rules change still works."""
+    import inspect
+
+    from intercom_summary import service
+
+    src = inspect.getsource(service.review_and_store)
+    assert "if regrade or not grades_store.is_current(" in src
+
+
+# ── grade history ─────────────────────────────────────────────────────────────────────
+def test_a_first_grade_archives_nothing(tmp_path):
+    from intercom_summary.storage.grades_store import GradesStore
+
+    store = GradesStore(tmp_path / "g.db")
+    store.save(_graded(score=60))
+    assert store.history("c1") == []
+    store.close()
+
+
+def test_an_overwritten_grade_is_kept(tmp_path):
+    """Without this, "why is this chat red now when it was green last week?" has no answer —
+    which is exactly the position the September re-grade left everyone in."""
+    from intercom_summary.storage.grades_store import GradesStore
+
+    store = GradesStore(tmp_path / "g.db")
+    store.save(_graded(score=92, version="v1"))
+    store.save(_graded(score=78, version="v2"))
+
+    hist = store.history("c1")
+    assert len(hist) == 1
+    assert hist[0]["overall_score"] == 92 and hist[0]["rules_version"] == "v1"
+    # and the live grade is the new one
+    assert store.get("c1")["overall_score"] == 78
+    store.close()
+
+
+def test_an_override_is_archived_too(tmp_path):
+    from intercom_summary.storage.grades_store import GradesStore
+
+    store = GradesStore(tmp_path / "g.db")
+    store.save(_graded(score=60))
+    store.save_override("c1", 90, "first pass", "ana")
+    store.save_override("c1", 75, "second look", "boss")
+
+    hist = store.history("c1")
+    assert [h["human_score"] for h in hist] == [90, None]   # newest first
+    store.close()
+
+
+def test_evaluation_counts_agree_with_is_current_about_human_review(tmp_path):
+    """If the page and the grader disagree, the page reports work no run will ever do."""
+    from datetime import datetime, timezone
+
+    from intercom_summary.intercom.models import Admin, Conversation
+    from intercom_summary.storage.conversations_store import ConversationsStore
+    from intercom_summary.storage.grades_store import GradesStore
+
+    db = tmp_path / "g.db"
+    cstore = ConversationsStore(db)
+    cstore.save(Conversation(
+        id="c1", created_at=datetime(2026, 8, 1, tzinfo=timezone.utc), updated_at=None,
+        state="closed", subject="s", assignee=Admin(id="1", name="Ada", email="a@b.c"),
+    ))
+    gstore = GradesStore(db)
+    gstore.save(_graded(version="old"))
+    gstore.save_override("c1", 90, "checked", "ana")
+    gstore.close()
+
+    counts = cstore.evaluation_counts(versions={"default": "new"})
+    cstore.close()
+    assert counts["human_reviewed"] == 1
+    assert counts["graded_current"] == 1        # not stale, despite the old version

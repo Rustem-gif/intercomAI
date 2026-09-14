@@ -321,6 +321,11 @@ async def fetch_conversations_for_agents(
         admins, unresolved = await resolve_admin_ids(client, agents)
         if unresolved:
             log.warning("Could not resolve agent(s): %s", ", ".join(unresolved))
+            # A log line is not a report. An agent who fails to resolve contributes nothing and
+            # the fetch still finishes "done", so the gap is invisible unless it is carried out
+            # to the caller and shown on the job.
+            if stats is not None:
+                stats["unresolved_agents"] = list(unresolved)
         if not admins:
             raise ValueError(
                 "No agents resolved to Intercom admins. Check names/emails against your workspace."
@@ -366,6 +371,7 @@ async def fetch_conversations_for_agents(
             stats["matched"] = matched
             stats["tickets_skipped"] = tickets_skipped
             stats["emails_excluded"] = emails_excluded
+            stats["resolved_agents"] = sorted(a.name or a.id for a in admins.values())
         if emails_excluded:
             log.info("Excluded %d email(s) at the search — chats only.", emails_excluded)
         if tickets_skipped:

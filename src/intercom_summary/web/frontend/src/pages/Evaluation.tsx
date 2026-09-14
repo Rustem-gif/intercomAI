@@ -465,6 +465,7 @@ export default function Evaluation() {
   const graded = stats?.graded ?? 0;
   const pending = stats?.pending ?? 0;
   const stale = stats?.stale ?? 0;
+  const humanReviewed = stats?.human_reviewed ?? 0;
   const wrongRuleset = stats?.wrong_ruleset ?? 0;
   const ignored = stats?.ignored ?? 0;
   const coverage = pct(graded, total);
@@ -513,9 +514,15 @@ export default function Evaluation() {
           value={graded.toLocaleString()}
           accent="text-emerald-500"
           sub={
-            stale > 0
-              ? `${coverage}% coverage · ${stale.toLocaleString()} on an older ruleset`
-              : `${coverage}% coverage`
+            [
+              `${coverage}% coverage`,
+              stale > 0 ? `${stale.toLocaleString()} on an older ruleset` : "",
+              // Said out loud because it is the reason those grades are not counted stale:
+              // an analyst has re-graded them and a run will never overwrite that again.
+              humanReviewed > 0
+                ? `${humanReviewed.toLocaleString()} kept as analyst-reviewed`
+                : "",
+            ].filter(Boolean).join(" · ")
           }
         />
         <StatCard

@@ -94,6 +94,21 @@ async def fetch_and_store(
             "Trash and cannot be re-imported until restored or purged.", skipped, len(convos),
         )
 
+    # Per-agent counts, because the totals hide the failure that matters. `agents` below is the
+    # list that was *requested*, echoed back verbatim — on its own it says a fetch covered 11
+    # agents even when several never resolved and contributed nothing.
+    per_agent: dict[str, int] = defaultdict(int)
+    for c in convos:
+        per_agent[c.assignee_name or "(unassigned)"] += 1
+
+    unresolved = fetch_stats.get("unresolved_agents") or []
+    if unresolved:
+        log.warning(
+            "Fetch completed WITHOUT %d requested agent(s): %s — they did not resolve to an "
+            "Intercom admin, so none of their conversations are in this result.",
+            len(unresolved), ", ".join(unresolved),
+        )
+
     return {
         "fetched": len(convos),
         "saved": saved,
@@ -101,6 +116,8 @@ async def fetch_and_store(
         "skipped_tickets": fetch_stats.get("tickets_skipped", 0),
         "skipped_emails": fetch_stats.get("emails_excluded", 0),
         "agents": agents,
+        "unresolved_agents": unresolved,
+        "per_agent": dict(sorted(per_agent.items(), key=lambda kv: -kv[1])),
         "conversation_ids": [c.id for c in convos],
     }
 

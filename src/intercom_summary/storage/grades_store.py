@@ -156,7 +156,16 @@ class GradesStore:
         now, taken from the live grader (not from the ruleset file directly — the Anthropic
         backend grades against support_rules.md and stamps that hash instead).
 
-        Two cases count as current:
+        Three cases count as current:
+        - **a human has already re-graded it** → never touched again by an ordinary run. QA's
+          process is to manually re-grade every red/yellow chat in a period, and agents dispute
+          individual scores; both are commitments made against a specific number. Re-grading
+          underneath them is what caused the September incident: the rulebook was corrected on
+          the 3rd and 4th, every grade went stale, and chats QA had already signed off on came
+          back with different scores days later. The analyst's verdict already wins downstream
+          via COALESCE(human_score, overall_score), so re-running the model here changes nothing
+          anyone sees — except the criteria checklist under a verdict someone already defended.
+          `regrade=True` still forces them, so a deliberate re-grade after a rules change works.
         - the grade was produced by the same ruleset, at its current version → nothing changed;
         - the grade was produced by a *different* ruleset → it was graded correctly at the
           time, so leave it alone. This is what stops a VIP agent's entire back catalogue from
@@ -164,14 +173,16 @@ class GradesStore:
           grades are surfaced separately as `wrong_ruleset` on the Evaluation page, where an
           analyst can choose to re-grade them.
 
-        Editing a ruleset's prompt still marks that ruleset's own grades stale, as before.
+        Editing a ruleset's prompt still marks that ruleset's own un-reviewed grades stale.
         """
         row = self._conn.execute(
-            "SELECT rules_version, ruleset_id FROM grades WHERE conversation_id=?",
+            "SELECT rules_version, ruleset_id, human_score FROM grades WHERE conversation_id=?",
             (conversation_id,),
         ).fetchone()
         if row is None:
             return False
+        if row["human_score"] is not None:
+            return True
         if (row["ruleset_id"] or "default") != ruleset_id:
             return True
         return row["rules_version"] == rules_version
@@ -187,7 +198,62 @@ class GradesStore:
             "SELECT COUNT(DISTINCT conversation_id) AS n FROM grades"
         ).fetchone()["n"]
 
+    def _archive(self, conversation_id: str) -> None:
+        """Copy the grade about to be overwritten into grade_history.
+
+        Called before every save. A first grade archives nothing (there is no row yet), so the
+        table holds exactly the superseded versions. INSERT OR REPLACE on the primary key makes
+        a double-save within the same second idempotent rather than an error.
+        """
+        self._conn.execute(
+            """INSERT OR REPLACE INTO grade_history
+               (conversation_id, archived_at, graded_at, overall_score, human_score,
+                rules_version, ruleset_id, model, payload_json)
+               SELECT conversation_id, ?, graded_at, overall_score, human_score,
+                      rules_version, ruleset_id, model, payload_json
+                 FROM grades WHERE conversation_id=?""",
+            (datetime.now(timezone.utc).isoformat(), conversation_id),
+        )
+
+    def history(self, conversation_id: str) -> list[dict]:
+        """Superseded grades for a conversation, newest first.
+
+        This is what answers "why did this chat turn red?" — the score it used to carry and the
+        rules_version that produced it.
+        """
+        rows = self._conn.execute(
+            """SELECT archived_at, graded_at, overall_score, human_score,
+                      rules_version, ruleset_id, model
+                 FROM grade_history WHERE conversation_id=?
+                ORDER BY archived_at DESC""",
+            (conversation_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def staleness_preview(self, ruleset_id: str, current_version: str) -> dict:
+        """What editing this ruleset's prompt would invalidate.
+
+        `would_regrade` is the number of grades a single edit sends back through the model with
+        a different score. `protected` are the ones an analyst has already re-graded, which
+        `is_current` now refuses to touch — they are reported separately because they are the
+        ones people have argued about and would notice moving.
+        """
+        row = self._conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN human_score IS NOT NULL THEN 1 ELSE 0 END) AS protected
+                 FROM grades
+                WHERE ruleset_id = ? AND rules_version = ?""",
+            (ruleset_id, current_version),
+        ).fetchone()
+        total = row["total"] or 0
+        protected = row["protected"] or 0
+        return {"graded_at_current_version": total,
+                "would_regrade": total - protected,
+                "protected_by_human_review": protected}
+
     def save(self, grade: ConversationGrade) -> None:
+        # Keep the version we are about to replace — see grade_history in storage/db.py.
+        self._archive(grade.conversation_id)
         # Use upsert (INSERT … ON CONFLICT DO UPDATE) so that human overrides
         # (human_score, override_reason, overridden_by, overridden_at) are never
         # clobbered when the AI re-grades a conversation. INSERT OR REPLACE would
@@ -351,6 +417,9 @@ class GradesStore:
         AI's verdicts) records ScoreBuddy-style per-criterion changes; `human_deductions` is
         a list of analyst manual deductions ([{category, points, note}]). Pass None for both
         on a plain score override, which clears any prior criterion changes/deductions."""
+        # A re-score supersedes whatever verdict stood before it — including an earlier human
+        # one. Archive first so a chat's full grading history is one table, not two.
+        self._archive(conversation_id)
         cur = self._conn.execute(
             """UPDATE grades
                SET human_score=?, override_reason=?, overridden_by=?, overridden_at=?,

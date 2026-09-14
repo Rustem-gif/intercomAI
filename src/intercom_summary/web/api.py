@@ -370,6 +370,10 @@ def create_app() -> FastAPI:
                 "conversation": convo_dict,
                 "transcript": convo.transcript_text(),
                 "grade": gstore.get(conversation_id),
+                # Scores this chat used to carry. A grade gets re-run whenever the rulebook
+                # changes, so "it was green last week" is a question people genuinely ask —
+                # and before this it had no answer.
+                "grade_history": gstore.history(conversation_id),
                 "sla": convo.sla_summary(
                     settings.sla_first_response_sec, settings.sla_followup_sec
                 ),
@@ -1042,6 +1046,7 @@ def create_app() -> FastAPI:
             graded = counts["graded"]
             graded_current = counts["graded_current"]
             wrong_ruleset = counts["wrong_ruleset"]
+            human_reviewed = counts["human_reviewed"]
             ignored = counts["ignored"]
         finally:
             cstore.close()
@@ -1072,6 +1077,9 @@ def create_app() -> FastAPI:
             # Graded by a different ruleset than its agent's group uses today (e.g. an agent's
             # back catalogue after they joined VIP). Left alone on purpose; re-grade to convert.
             "wrong_ruleset": wrong_ruleset,
+            # Re-graded by an analyst. An ordinary run never touches these again — their
+            # verdict is a commitment people argue about — so they are never counted stale.
+            "human_reviewed": human_reviewed,
             "ignored": ignored,
             "active_job": active_job,
         }
@@ -1221,8 +1229,18 @@ def create_app() -> FastAPI:
         from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
 
         rs = get_ruleset(ruleset_id)
+        # What editing this prompt would cost. The version hashes the prompt text, so any edit
+        # — a single word — marks every grade this ruleset produced stale and the next run
+        # re-grades them with different scores. That is the whole September incident, and
+        # nothing in the UI said so at the moment the decision was being made.
+        gstore = GradesStore()
+        try:
+            blast = gstore.staleness_preview(rs.id, rs.version)
+        finally:
+            gstore.close()
         return {"id": rs.id, "name": rs.name, "text": rs.prompt_text,
-                "version": rs.version, "warnings": validate_ruleset(rs)}
+                "version": rs.version, "warnings": validate_ruleset(rs),
+                "blast_radius": blast}
 
     @app.put("/api/rulesets/{ruleset_id}/prompt")
     def put_ruleset_prompt(ruleset_id: str, body: RulesIn,
@@ -1469,9 +1487,13 @@ def create_app() -> FastAPI:
                 "conversations": [],
             }
 
-        # Plain review mode. A link created since the date-range fix carries its own frozen list
-        # of conversations; anything older has none and keeps the original agent-wide query, so
-        # links already shared with agents behave exactly as they did.
+        # Plain review mode. Every link carries its own frozen list of conversations — what the
+        # agent was actually handed. There is deliberately NO live-query fallback: an empty
+        # membership used to widen into an unscoped, undated, 500-row query over the agent's
+        # whole history, so an "August review" link grew September chats and grew again as
+        # grading caught up. Worse, that was indistinguishable from a link whose freeze
+        # legitimately resolved to nothing. Legacy links were frozen in place by
+        # scripts/backfill_token_items.py; an empty one now honestly shows nothing.
         tstore = AgentTokensStore()
         try:
             frozen = tstore.item_ids(token)
@@ -1480,16 +1502,7 @@ def create_app() -> FastAPI:
 
         cstore = ConversationsStore()
         try:
-            if frozen:
-                rows = cstore.rows_by_ids(frozen)
-            else:
-                rows, _ = cstore.query(
-                    agents=[link["agent_name"]],
-                    tag=link["tag"] or None,
-                    sort="created_at",
-                    descending=True,
-                    limit=500,
-                )
+            rows = cstore.rows_by_ids(frozen) if frozen else []
         finally:
             cstore.close()
         return {
@@ -1607,18 +1620,15 @@ def create_app() -> FastAPI:
             db_row = cstore._conn.execute(
                 "SELECT agent_name, custom_tags FROM conversations WHERE id=?", (conversation_id,)
             ).fetchone()
-            # A scoped link authorises by membership; without that, any conversation belonging
-            # to the agent would be reachable by id straight through the link's date range.
-            # Legacy links have no membership to test, so they keep the agent-name check.
+            # A link authorises by membership, nothing else. Falling back to an agent-name
+            # check made every conversation that agent ever handled reachable by id through any
+            # of their links — the same widening as the listing above, but as an access rule.
             tstore = AgentTokensStore()
             try:
                 covered = tstore.covers(token, conversation_id)
             finally:
                 tstore.close()
-            in_review = (
-                covered if covered is not None
-                else bool(db_row and db_row["agent_name"] == link["agent_name"])
-            )
+            in_review = bool(covered)
             if not db_row or not in_review:
                 raise HTTPException(403, "This conversation is not part of your review.")
             convo_dict = convo.to_dict()
