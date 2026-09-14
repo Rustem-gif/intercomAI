@@ -249,6 +249,7 @@ class ConversationsStore:
         search: str | None = None,
         tag: str | None = None,
         brand: str | None = None,
+        sample: str | None = None,
         ungraded: bool = False,
         graded_only: bool = False,
         sort: str = "created_at",
@@ -288,6 +289,14 @@ class ConversationsStore:
         if max_csat is not None:
             where.append("c.csat_rating IS NOT NULL AND c.csat_rating <= ?")
             args.append(max_csat)
+        if sample:
+            # Membership of a frozen calibration sample. A semi-join rather than a stored tag,
+            # so a chat's sample membership can never be edited away from the Conversations UI.
+            where.append(
+                "c.id IN (SELECT conversation_id FROM calibration_sample_items "
+                "WHERE sample_id = ?)"
+            )
+            args.append(sample)
         if ungraded:
             where.append("g.conversation_id IS NULL")
         # The mirror of `ungraded`, for callers that want only conversations QA has scored — a

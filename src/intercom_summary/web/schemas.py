@@ -31,6 +31,11 @@ class ReviewRequest(BaseModel):
     brand: str | None = None    # grade only one brand of the workspace
     regrade: bool = False
     backend: str | None = None  # override QA_BACKEND setting: "ollama" | "api"
+    # Force one ruleset for this run instead of the one each agent's group selects. This is
+    # how a new scoring model is piloted without moving anyone between groups.
+    ruleset_id: str | None = None
+    # Restrict the run to a frozen calibration sample.
+    sample: str | None = None
 
 
 class JobOut(BaseModel):
@@ -95,10 +100,18 @@ class OverrideRequest(BaseModel):
     reason: str
     # Manual score override (the slider). Optional when `criteria`/`manual_deductions` given.
     score: int | None = None
-    # ScoreBuddy-style per-criterion override: {criterion_id: "pass"|"fail"|"n/a"}.
+    # ScoreBuddy-style per-criterion override:
+    # {criterion_id: "pass"|"fail"|"n/a"|"cannot_determine"}.
     # When present (or with manual_deductions), the server recomputes the score and ignores `score`.
     criteria: dict[str, str] | None = None
     # Analyst manual deductions for things the AI can't verify (e.g. information correctness).
+    manual_deductions: list[ManualDeduction] | None = None
+
+
+class ScorePreviewRequest(BaseModel):
+    """Ask the server what a set of verdicts would score, before saving an override."""
+    ruleset_id: str | None = None
+    criteria: dict[str, str]
     manual_deductions: list[ManualDeduction] | None = None
 
 

@@ -116,6 +116,31 @@ CREATE TABLE IF NOT EXISTS review_acknowledgments (
 );
 CREATE INDEX IF NOT EXISTS idx_ack_token ON review_acknowledgments(token);
 
+-- A frozen calibration sample: a fixed list of conversations used to measure the AI against
+-- human graders. Frozen is the point — re-collecting or topping up the set would make two
+-- measurement runs incomparable, which is the one thing a calibration set must never be.
+-- Membership is stored explicitly rather than as a query, for the same reason.
+CREATE TABLE IF NOT EXISTS calibration_samples (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',   -- where the list came from (a document, a script)
+    created_at  TEXT NOT NULL,
+    created_by  TEXT NOT NULL DEFAULT '',
+    frozen      INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS calibration_sample_items (
+    sample_id       TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    seq             INTEGER NOT NULL DEFAULT 0,  -- position in the source list
+    chat_date       TEXT,                        -- as stated by the source, for reconciliation
+    agent_name      TEXT,
+    category        TEXT,                        -- why the chat is in the sample
+    pilot           INTEGER NOT NULL DEFAULT 0,  -- part of the smaller first-pass subset
+    PRIMARY KEY (sample_id, conversation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cal_items_sample ON calibration_sample_items(sample_id);
+
 -- Coaching sessions: manager groups conversations for an agent with notes + due date.
 CREATE TABLE IF NOT EXISTS coaching_sessions (
     id          TEXT PRIMARY KEY,
@@ -214,6 +239,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # Which ruleset scored this grade. Existing rows backfill to 'default', which is
         # accurate — they predate the VIP ruleset, so 'default' is what graded them.
         ("ruleset_id", "TEXT NOT NULL DEFAULT 'default'"),
+        # QA Manual v4.1 fields, mirrored out of payload_json because they are what a QC
+        # manager filters and counts on. Every one is NULL/0 on a flat-ruleset grade, which
+        # is correct: the v4.1 model is the only thing that produces them.
+        #
+        # outcome_status is deliberately separate from the score. The score says how well the
+        # agent worked; this says what actually became of the player's case, and the two
+        # legitimately disagree — a flawless chat can end "Pending-legitimate" while Finance
+        # processes a withdrawal, and that is not a failure.
+        ("outcome_status", "TEXT"),
+        ("case_type", "TEXT"),
+        ("risk_flag", "TEXT"),
+        # NOT the same thing as a critical fail, and never merged with it: one is a compliance
+        # or RG breach (score 0), the other is service that collapsed on every axis at once
+        # (score 25). They look equally bad in a report and mean entirely different things,
+        # so they stay separately filterable.
+        ("catastrophic_service_failure", "INTEGER NOT NULL DEFAULT 0"),
+        ("manual_review_needed", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         if col not in grade_cols:
             conn.execute(f"ALTER TABLE grades ADD COLUMN {col} {definition}")

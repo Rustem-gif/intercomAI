@@ -97,6 +97,19 @@ def _closed_by_line(conversation: Conversation) -> str:
     }.get(conversation.closed_by, "Chat closed by: nobody — the chat is still open")
 
 
+def _tags_line(conversation: Conversation) -> str:
+    """The chat's tags, which the transcript cannot show.
+
+    Without this the grader had no source at all for the tag criterion and answered it from
+    nothing — the same chat came back `n/a`, then `pass`, on two runs of the same prompt. The
+    manual is explicit that a tag is CRM metadata and must never be inferred from the
+    transcript, so either it is stated here or the verdict is cannot_determine.
+    """
+    if conversation.tags:
+        return f"Chat tags: {', '.join(conversation.tags)}"
+    return "Chat tags: (none set on this conversation)"
+
+
 def transcript_block(conversation: Conversation) -> str:
     customer_name = conversation.contact.name or conversation.contact.email or "unknown"
     return (
@@ -105,7 +118,8 @@ def transcript_block(conversation: Conversation) -> str:
         f"Customer name: {customer_name}\n"
         f"Subject: {conversation.subject}\n"
         f"State: {conversation.state}\n"
-        f"{_closed_by_line(conversation)}\n\n"
+        f"{_closed_by_line(conversation)}\n"
+        f"{_tags_line(conversation)}\n\n"
         f"{_timing_block(conversation)}\n\n"
         f"{_csat_block(conversation)}"
         "=== TRANSCRIPT (agent and player only — automation removed) ===\n"

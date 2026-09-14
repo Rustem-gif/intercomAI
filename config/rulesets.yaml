@@ -2,6 +2,8 @@ rulesets:
   default:
     name: Standard Support
     prompt_path: rules/qa_system_prompt.txt
+    scoring:
+      model: flat
     criteria:
     - id: crit-data-care
       title: Data Security
@@ -97,6 +99,8 @@ rulesets:
   vip:
     name: VIP
     prompt_path: rules/qa_system_prompt_vip.txt
+    scoring:
+      model: flat
     criteria:
     - id: crit-data-care
       title: Data Security
@@ -175,3 +179,133 @@ rulesets:
       label: VIP policy breach
       description: Agent breached an internal VIP policy (comp limits, host protocol,
         tier benefits) that is not visible to the AI from the transcript alone.
+  kb-v41:
+    name: QA Manual v4.1
+    prompt_path: rules/qa_system_prompt_kb_v41.txt
+    scoring:
+      model: gated
+      pass_threshold: 85
+      major_cap: 75
+      no_major_floor: 76
+      catastrophic_score: 25
+      group_caps:
+        communication: 5
+    criteria:
+    - id: crit-data-care
+      title: Prohibited Data Requested
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+    - id: crit-rg-care
+      title: Responsible Gaming
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+    - id: crit-pii-leak
+      title: Another Player's Data Disclosed
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+    - id: crit-nda-security
+      title: Internal / NDA Breach
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+    - id: crit-policy-violation
+      title: Prohibited Action Performed
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+    - id: resp-no-ghost
+      title: Request Coverage
+      deduction: 0
+      gate: 2
+      severity: major
+    - id: res-no-fake-close
+      title: No Fake Closure
+      deduction: 0
+      gate: 2
+      severity: major
+    - id: action-escalation-missed
+      title: Required Action or Escalation Missed
+      deduction: 0
+      gate: 2
+      severity: major
+    - id: financial-case-abandoned
+      title: Financial Case Abandoned
+      deduction: 0
+      gate: 2
+      severity: major
+    - id: accuracy-material
+      title: Material Accuracy
+      deduction: 0
+      gate: 2
+      severity: major
+    - id: severe-business-trust
+      title: Business Trust Breach
+      deduction: 0
+      gate: 2
+      severity: major
+    - id: churn-rg-signal-ignored
+      title: Churn or RG Signal Ignored
+      deduction: 0
+      gate: 2
+      severity: major
+    - id: info-completeness
+      title: Answer Completeness
+      deduction: 5
+      gate: 2
+      severity: minor
+    - id: accuracy-minor
+      title: Minor Accuracy
+      deduction: 5
+      gate: 2
+      severity: minor
+    - id: resp-sla
+      title: Response SLA
+      deduction: 5
+      gate: 3
+      severity: minor
+    - id: tag-chat
+      title: Chat Tag
+      deduction: 3
+      gate: 3
+      severity: minor
+    - id: ownership-effort
+      title: Ownership & Effort
+      deduction: 6
+      gate: 3
+      severity: minor
+    - id: comm-tone
+      title: Tone
+      deduction: 3
+      gate: 3
+      severity: minor
+      group: communication
+    - id: comm-etiquette
+      title: Service Etiquette
+      deduction: 2
+      gate: 3
+      severity: minor
+      group: communication
+    - id: comm-language
+      title: Player's Language
+      deduction: 2
+      gate: 3
+      severity: minor
+      group: communication
+    manual_deductions:
+    - id: info-correctness
+      label: Information correctness
+      description: Agent gave factually wrong information or applied the wrong bonus
+        / action — the AI cannot verify this against external facts.
+    - id: policy-evidence
+      label: Policy / system evidence
+      description: The QC manager checked a source the AI could not see (CRM, action
+        log, backend transaction status) and it changes the verdict — see section
+        13 of the manual.

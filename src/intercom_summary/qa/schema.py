@@ -108,9 +108,25 @@ def score_from_verdicts(
 
     A FAIL on any critical criterion forces 0 (matches the grader's CRITICAL FAIL rule).
     """
-    from intercom_summary.qa.rulesets import get_ruleset
+    from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset
 
     rs = get_ruleset(ruleset_id)
+
+    if rs.scoring_model == SCORING_GATED:
+        # The gated model cannot be expressed as a sum, so it is computed on the verdicts
+        # themselves. The analyst's extra deduction comes off the finished score: it is an
+        # explicit human judgement about something the AI could not see, so it is allowed to
+        # take a chat below the model's own no-Major floor.
+        from intercom_summary.qa.gated_scoring import score_gated
+
+        criteria = [{"id": cid, "v": v} for cid, v in verdicts.items()]
+        r = score_gated(criteria, rs)
+        if extra_deduction and not r.critical_fail:
+            score = max(0, r.score - abs(extra_deduction))
+            result = "PASS" if score >= rs.pass_threshold else "FAIL"
+            return score, r.band, result
+        return r.score, r.band, r.result
+
     deductions, critical = rs.deductions, rs.critical
 
     critical_fail = any(v == "fail" and cid in critical for cid, v in verdicts.items())
@@ -177,6 +193,19 @@ class ConversationGrade:
     band: str = ""                           # Excellent/Good/Acceptable/Poor/Critical
     signal_flags: list = field(default_factory=list)     # active signal flags from the grade
     business_risk: str = ""                  # low/medium/high/critical
+    # QA Manual v4.1 (gated rulesets only; empty on flat-ruleset grades):
+    case_type: str = ""                      # Step 0 — Deposit/Withdrawal/Bonus/KYC/...
+    risk_flag: str = ""                      # Step 0 — None/Financial/RG/Security/Churn
+    expected_handling: str = ""              # Step 0 — Answer/Agent action/Internal escalation
+    data_sufficiency: str = ""               # Step 0 — Sufficient/Insufficient
+    requests: list = field(default_factory=list)   # multi-intent coverage [{text,status,material}]
+    outcome_status: str = ""                 # what became of the case, separate from the score
+    severity: str = ""                       # Critical / Major / Minor — the worst thing that failed
+    catastrophic_service_failure: bool = False   # NOT critical_fail; see qa/gated_scoring.py
+    critical_fail: bool = False
+    manual_review_needed: bool = False
+    manual_review_reason: str = ""
+    confidence: str = ""                     # High/Medium/Low — the model's own certainty
 
     @property
     def effective_score(self) -> int:
@@ -221,7 +250,7 @@ class ConversationGrade:
         ruleset_id: str | None = None,
     ) -> "ConversationGrade":
         """Build a ConversationGrade from the deduction-based QA JSON produced by the Ollama grader."""
-        from intercom_summary.qa.rulesets import get_ruleset
+        from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset
 
         ruleset = get_ruleset(ruleset_id)
         titles = ruleset.titles
@@ -240,11 +269,20 @@ class ConversationGrade:
             for c in criteria
         ]
 
-        # Recompute score from deductions — the model's arithmetic, its criterion ids and its
-        # point values are all unreliable; the ruleset is the authority.
-        score, band, result = _compute_score(
-            criteria, critical_fail, ruleset.deductions, ruleset.critical
-        )
+        # Recompute score from the verdicts — the model's arithmetic, its criterion ids and
+        # its point values are all unreliable; the ruleset is the authority. Which formula
+        # applies is the ruleset's own declaration: the two original rulesets are flat, the
+        # v4.1 ruleset is gated (caps and floors, which no sum can express).
+        gated = None
+        if ruleset.scoring_model == SCORING_GATED:
+            from intercom_summary.qa.gated_scoring import score_gated
+
+            gated = score_gated(criteria, ruleset)
+            score, band, result = gated.score, gated.band, gated.result
+        else:
+            score, band, result = _compute_score(
+                criteria, critical_fail, ruleset.deductions, ruleset.critical
+            )
 
         grade = cls(
             conversation_id=conversation_id,
@@ -261,6 +299,38 @@ class ConversationGrade:
         grade.band = band
         grade.signal_flags = data.get("flags") or []
         grade.business_risk = data.get("risk", "")
+        grade.confidence = _as_text(data.get("confidence", ""))
+
+        if gated is not None:
+            grade.severity = gated.severity
+            grade.critical_fail = gated.critical_fail
+            grade.catastrophic_service_failure = gated.catastrophic_service_failure
+            grade.case_type = _as_text(data.get("case_type", ""))
+            grade.risk_flag = _as_text(data.get("risk_flag", ""))
+            grade.expected_handling = _as_text(data.get("expected_handling", ""))
+            grade.data_sufficiency = _as_text(data.get("data_sufficiency", ""))
+            grade.requests = [r for r in (data.get("requests") or []) if isinstance(r, dict)]
+            # The model reports the outcome it saw, but a Gate 1 breach overrides it: the
+            # manual pairs that score with exactly one status.
+            grade.outcome_status = (
+                "Critical Fail" if gated.critical_fail
+                else _as_text(data.get("outcome_status", ""))
+            )
+            # Any verdict the model could not determine is a question for the QC manager,
+            # whether or not the model thought to ask for one.
+            undetermined = [
+                c.get("id", "") for c in criteria if c.get("v") == "cannot_determine"
+            ]
+            grade.manual_review_needed = bool(
+                data.get("manual_review_needed") or undetermined
+                or _as_text(data.get("data_sufficiency", "")) == "Insufficient"
+            )
+            reason = _as_text(data.get("manual_review_reason", ""))
+            if not reason and undetermined:
+                reason = "Cannot determine: " + ", ".join(sorted(undetermined))
+            grade.manual_review_reason = reason
+        else:
+            grade.critical_fail = bool(critical_fail and score == 0)
         return grade
 
     @classmethod
@@ -282,6 +352,18 @@ class ConversationGrade:
         g.band = d.get("band", "")
         g.signal_flags = d.get("signal_flags", [])
         g.business_risk = d.get("business_risk", "")
+        g.case_type = d.get("case_type", "")
+        g.risk_flag = d.get("risk_flag", "")
+        g.expected_handling = d.get("expected_handling", "")
+        g.data_sufficiency = d.get("data_sufficiency", "")
+        g.requests = d.get("requests", []) or []
+        g.outcome_status = d.get("outcome_status", "")
+        g.severity = d.get("severity", "")
+        g.catastrophic_service_failure = bool(d.get("catastrophic_service_failure"))
+        g.critical_fail = bool(d.get("critical_fail"))
+        g.manual_review_needed = bool(d.get("manual_review_needed"))
+        g.manual_review_reason = d.get("manual_review_reason", "")
+        g.confidence = d.get("confidence", "")
         return g
 
 
@@ -309,7 +391,7 @@ GRADE_TOOL_SCHEMA: dict[str, Any] = {
                     "properties": {
                         "rule_id": {"type": "string"},
                         "title": {"type": "string"},
-                        "verdict": {"type": "string", "enum": ["pass", "fail", "n/a"]},
+                        "verdict": {"type": "string", "enum": ["pass", "fail", "n/a", "cannot_determine"]},
                         "evidence": {"type": "string", "description": "Short quote or reference."},
                         "comment": {"type": "string"},
                     },

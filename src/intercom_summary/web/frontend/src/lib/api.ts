@@ -216,6 +216,12 @@ export interface RuleResult {
   deduction?: number;
   /** True for critical criteria — a fail forces the overall score to 0. */
   critical?: boolean;
+  /** Gated rulesets only (QA Manual v4.1): which of the three gates this criterion sits in. */
+  gate?: number;
+  /** Gated rulesets only: "critical" | "major" | "minor". A Major caps the score, not deducts. */
+  severity?: string;
+  /** Gated rulesets only: the capped block this criterion shares (e.g. "communication"). */
+  group?: string;
 }
 
 export interface Grade {
@@ -235,6 +241,37 @@ export interface Grade {
   human_criteria: Record<string, string> | null;
   /** Analyst manual deductions for things the AI can't verify (e.g. information correctness). */
   human_deductions: ManualDeduction[] | null;
+  /** Which ruleset produced this grade — decides how a re-score is computed. */
+  ruleset_id?: string;
+  overall_result?: string;          // "PASS" | "FAIL"
+  band?: string;
+
+  // ── QA Manual v4.1 (gated rulesets only; absent on flat-ruleset grades) ──
+  /** What became of the player's case, reported separately from how well the agent worked. */
+  outcome_status?: string;
+  severity?: string;                // Critical | Major | Minor
+  /** Service that collapsed on every axis at once. NOT the same as a compliance breach. */
+  catastrophic_service_failure?: boolean;
+  critical_fail?: boolean;
+  manual_review_needed?: boolean;
+  manual_review_reason?: string;
+  case_type?: string;
+  risk_flag?: string;
+  expected_handling?: string;
+  data_sufficiency?: string;
+  confidence?: string;
+  /** Each thing the player asked for, and what became of it. */
+  requests?: { text: string; status: string; material?: boolean }[];
+}
+
+/** What a set of verdicts would score. Computed server-side so there is only one copy of the
+ *  formula — see POST /api/qa/preview-score. */
+export interface ScorePreview {
+  score: number;
+  band: string;
+  result: string;                   // "PASS" | "FAIL"
+  pass_threshold: number;
+  scoring_model: string;
 }
 
 export interface ManualDeduction {
@@ -410,13 +447,28 @@ export interface RulesetCriterion {
   title: string;
   deduction: number;
   critical?: boolean;
+  gate?: number;
+  severity?: string;
+  group?: string;
+}
+
+/** How a ruleset turns verdicts into a score. "flat" is 100 minus the deductions; "gated" is
+ *  the v4.1 three-gate model, where a Major Outcome Failure caps the score instead. */
+export interface RulesetScoring {
+  model: string;                    // "flat" | "gated"
+  pass_threshold: number;
+  major_cap?: number;
+  no_major_floor?: number;
+  catastrophic_score?: number;
+  group_caps?: Record<string, number>;
 }
 
 export interface QaRuleset {
-  id: string;                       // "default" | "vip"
+  id: string;                       // "default" | "vip" | "kb-v41"
   name: string;
   version: string;
   criteria: RulesetCriterion[];
+  scoring: RulesetScoring;
   manual_deductions: ManualDeductionPreset[];
   /** Places where the prompt text and the criteria catalogue disagree on the points. */
   warnings: string[];

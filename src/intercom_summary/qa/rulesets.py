@@ -27,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -39,6 +39,14 @@ log = get_logger(__name__)
 
 DEFAULT_RULESET_ID = "default"
 VIP_RULESET_ID = "vip"
+KBV41_RULESET_ID = "kb-v41"
+
+# Scoring models a ruleset can declare. "flat" is the original deduction model
+# (score = 100 − Σ deductions); "gated" is the v4.1 three-gate model with caps and floors
+# (see qa/gated_scoring.py). A ruleset that declares neither is flat, so the two original
+# rulesets keep behaving exactly as before.
+SCORING_FLAT = "flat"
+SCORING_GATED = "gated"
 
 # Agent groups. An agent with no row in `agent_groups` is standard.
 GROUP_STANDARD = "standard"
@@ -58,8 +66,43 @@ class QaRuleset:
     prompt_path: Path
     prompt_text: str
     version: str                 # short SHA-256 of prompt_text — stored as rules_version
-    criteria: list[dict]         # ordered [{id, title, deduction, critical}]
+    criteria: list[dict]         # ordered [{id, title, deduction, critical, gate, severity, group}]
     manual_deductions: list[dict]
+    scoring: dict = field(default_factory=dict)   # {model, pass_threshold, major_cap, …}
+
+    @property
+    def scoring_model(self) -> str:
+        return str(self.scoring.get("model") or SCORING_FLAT)
+
+    @property
+    def pass_threshold(self) -> int:
+        """Score at or above which a chat PASSes. The flat model has never had an explicit
+        one — its bands (qa/schema.py) put the boundary at 60 — so that stays the default."""
+        return int(self.scoring.get("pass_threshold", 60))
+
+    @property
+    def gates(self) -> dict[str, int]:
+        return {c["id"]: int(c.get("gate", 0)) for c in self.criteria}
+
+    @property
+    def severities(self) -> dict[str, str]:
+        return {c["id"]: str(c.get("severity", "")) for c in self.criteria}
+
+    @property
+    def groups(self) -> dict[str, str]:
+        """criterion id → the capped group it belongs to, for criteria that have one."""
+        return {c["id"]: c["group"] for c in self.criteria if c.get("group")}
+
+    @property
+    def group_caps(self) -> dict[str, int]:
+        return {k: int(v) for k, v in (self.scoring.get("group_caps") or {}).items()}
+
+    def ids_in_gate(self, gate: int, severity: str | None = None) -> list[str]:
+        return [
+            c["id"] for c in self.criteria
+            if int(c.get("gate", 0)) == gate
+            and (severity is None or str(c.get("severity", "")).lower() == severity)
+        ]
 
     @property
     def titles(self) -> dict[str, str]:
@@ -85,6 +128,11 @@ def _seed_config() -> dict:
         CRITERION_TITLES,
         CRITICAL_CRITERIA,
         MANUAL_DEDUCTION_CATALOG,
+    )
+    from intercom_summary.qa.kbv41_prompt import (
+        KBV41_CRITERIA,
+        KBV41_MANUAL_DEDUCTION_CATALOG,
+        KBV41_SCORING,
     )
     from intercom_summary.qa.vip_prompt import (
         VIP_CRITERION_DEDUCTIONS,
@@ -119,11 +167,22 @@ def _seed_config() -> dict:
                 ),
                 "manual_deductions": VIP_MANUAL_DEDUCTION_CATALOG,
             },
+            KBV41_RULESET_ID: {
+                "name": "QA Manual v4.1",
+                "prompt_path": str(settings.kbv41_prompt_path),
+                "scoring": KBV41_SCORING,
+                "criteria": [dict(c) for c in KBV41_CRITERIA],
+                "manual_deductions": KBV41_MANUAL_DEDUCTION_CATALOG,
+            },
         }
     }
 
 
 def _seed_prompt_text(ruleset_id: str) -> str:
+    if ruleset_id == KBV41_RULESET_ID:
+        from intercom_summary.qa.kbv41_prompt import KBV41_QA_SYSTEM_PROMPT
+
+        return KBV41_QA_SYSTEM_PROMPT
     if ruleset_id == VIP_RULESET_ID:
         from intercom_summary.qa.vip_prompt import VIP_QA_SYSTEM_PROMPT
 
@@ -131,6 +190,22 @@ def _seed_prompt_text(ruleset_id: str) -> str:
     from intercom_summary.qa.casino_prompt import CASINO_QA_SYSTEM_PROMPT
 
     return CASINO_QA_SYSTEM_PROMPT
+
+
+def output_schema_for(ruleset_id: str | None) -> dict:
+    """The JSON grammar Ollama constrains generation to for this ruleset.
+
+    This is code, not config: a field the grammar does not declare is never generated, and a
+    field qa/schema.py cannot read is wasted output. The two must be changed together, which
+    is why this does not live in rulesets.yaml alongside the editable criteria.
+    """
+    if ruleset_id == KBV41_RULESET_ID:
+        from intercom_summary.qa.kbv41_prompt import KBV41_OUTPUT_SCHEMA
+
+        return KBV41_OUTPUT_SCHEMA
+    from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA
+
+    return CASINO_OUTPUT_SCHEMA
 
 
 def _load_config() -> dict:
@@ -163,6 +238,12 @@ def _mtime(p: Path) -> float:
         return 0.0
 
 
+def known_ruleset_ids() -> list[str]:
+    """Every ruleset the catalogue defines. get_ruleset() falls back to 'default' for an
+    unknown id, so anything that must not silently mis-grade checks against this first."""
+    return list(_load_config())
+
+
 def get_ruleset(ruleset_id: str | None = None) -> QaRuleset:
     rid = ruleset_id or DEFAULT_RULESET_ID
     cfg = _load_config()
@@ -193,6 +274,7 @@ def get_ruleset(ruleset_id: str | None = None) -> QaRuleset:
         version=hashlib.sha256(text.encode("utf-8")).hexdigest()[:12],
         criteria=list(entry.get("criteria") or []),
         manual_deductions=list(entry.get("manual_deductions") or []),
+        scoring=dict(entry.get("scoring") or {}),
     )
     _cache[rid] = (stamps[0], stamps[1], rs)
     return rs

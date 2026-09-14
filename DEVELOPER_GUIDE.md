@@ -136,7 +136,15 @@ You almost never edit the running server directly. The loop is:
 > **Two rules that bite people here:**
 > - Frontend changes do **nothing** until you run `npm run build` — the server serves the
 >   pre-built files in `frontend/dist/`, not your raw edits.
-> - Backend (Python) changes do **nothing** until you run `./restart.sh`.
+> - Backend (Python) changes do **nothing** until you run `./restart.sh` — and it is worse than
+>   "nothing". Imports here are lazy (inside the function that needs them), so a running server
+>   keeps the old version of every module it has already imported, while reading *new* code off
+>   disk for any module it hasn't. That mix can fail in ways neither version would: after the
+>   v4.1 change, a four-day-old server had the old `qa/rulesets.py` cached from ordinary page
+>   hits but loaded the new `qa/ollama_grader.py` on the first review, and every review died on
+>   `cannot import name 'output_schema_for'` until it was restarted. If something fails in a way
+>   that makes no sense against the code in front of you, check the server's start time first:
+>   `ps -eo pid,lstart,command | grep intercom-web`.
 
 ### Faster while developing (live reload, no rebuild needed)
 
@@ -185,11 +193,76 @@ A **ruleset** = a system prompt (what Qwen follows) + a criteria catalogue (ids,
 - ⚠️ The points live in **both** places: the `Ded` column inside the prompt (what the AI applies
   while grading) and `config/rulesets.yaml` (what a manual re-score applies). They must agree — the
   Ruleset page shows an amber warning if they drift.
-- To add a third ruleset: add an entry to `config/rulesets.yaml` (name, `prompt_path`, criteria),
-  add the group in `qa/rulesets.py` (`GROUP_RULESETS`), and write the prompt file. Everything else
-  — grading, staleness, the UI tabs — picks it up automatically.
+- To add a ruleset: add an entry to `config/rulesets.yaml` (name, `prompt_path`, `scoring`,
+  criteria), write the prompt file, and — only if a whole agent *group* should use it —
+  add the group in `qa/rulesets.py` (`GROUP_RULESETS`). Everything else — grading, staleness,
+  the UI tabs — picks it up automatically.
 - ⚠️ Editing a ruleset's prompt marks **that ruleset's** grades outdated (a re-run re-grades them).
   Editing the VIP prompt does *not* affect standard grades, and vice versa.
+
+### The `kb-v41` ruleset and gated scoring (QA Manual v4.1)
+The third ruleset does not score like the other two, and the difference is structural rather than
+a matter of different numbers.
+
+`default` and `vip` are **flat**: every criterion is a subtraction, `score = 100 − Σ deductions`.
+`kb-v41` is **gated**, because the manual's whole point is an ordering a sum cannot express — a
+failed outcome must always cost more than any amount of process untidiness, and a compliance
+incident must always cost more than a failed outcome.
+
+| Gate | What it asks | What a failure does |
+|---|---|---|
+| 1 (`crit-*`) | Did something genuinely dangerous happen? | score **0**, evaluation stops |
+| 2, severity `major` | Did the player get the outcome they needed? | caps the score at **75**, flat — one Major costs exactly what three do |
+| 2, severity `minor` | Was the answer complete and accurate? | ordinary deduction, no cap |
+| 3, no group | SLA, tag, ownership | ordinary deduction |
+| 3, `group: communication` | Tone, etiquette, language | deducted, but the three together are capped at −5 |
+
+Two consequences that surprise people:
+- **Without a Major the score never drops below 76.** Otherwise a chat that served the player but
+  collected every small penalty could score below a chat that failed the player outright.
+- **A score of 25 is not a score of 0.** Failing the outcome *and* every process check *and*
+  maxing the communication penalty is `catastrophic_service_failure` — a service collapse.
+  A compliance/RG breach is `critical_fail` — score 0. They look equally bad and mean completely
+  different things, so they are separate fields and stay separately filterable. A *partial*
+  combination scores normally: Major + two of three process fails + max style = `75−3−6−5 = 61`.
+
+Where things live:
+- Formula: `qa/gated_scoring.py`. Tests that pin every branch: `tests/test_gated_score.py`.
+  Which formula a ruleset uses is its own `scoring.model` declaration, dispatched in `qa/schema.py`.
+- The numbers the manual leaves to the QC manager (`pass_threshold` 85, `major_cap` 75,
+  `no_major_floor` 76, `catastrophic_score` 25, the communication `group_caps`) are in the
+  `scoring:` block of `config/rulesets.yaml` and are rendered on the **Ruleset** page, so they can
+  be recalibrated without a code change.
+- Prompt: `rules/qa_system_prompt_kb_v41.txt` (editable), seeded from `qa/kbv41_prompt.py`.
+
+**Four verdicts, not three.** `pass` / `fail` / `n/a` / `cannot_determine`. The last one is a real
+answer, not a missing one: `n/a` means there was nothing to check, `cannot_determine` means there
+was something to check and the evidence for it (a chat tag, a CRM escalation record, a transaction
+status) is not in the data. Only `cannot_determine` sets `manual_review_needed` and sends the chat
+to a QC manager, so collapsing the two buries the question instead of asking it. Both cost zero
+points. `verdict_guard` enforces this for `tag-chat`, which has no honest `n/a`.
+
+**Piloting a scoring model before adopting it.** Ruleset selection is normally by agent group, but
+a review run can be forced onto one ruleset: `POST /api/review {"ruleset_id": "kb-v41", "sample":
+"kb-v41-180"}`. Grades are stored under the ruleset that produced them, so a pilot cannot disturb
+the scores or staleness of anything graded by another ruleset. The eventual cutover is one line —
+`GROUP_RULESETS[GROUP_STANDARD]` in `qa/rulesets.py` — and old grades keep `ruleset_id='default'`
+rather than being re-graded, exactly as the VIP rollout behaved.
+
+### Calibration samples (measuring the AI against human graders)
+A **calibration sample** is a frozen list of conversations. Frozen is the point: two measurement
+runs are only comparable if they graded the same chats, so membership is written down once
+(`calibration_samples` / `calibration_sample_items`) and `replace_items` refuses to change a
+sample that already has members.
+
+- Import one from the QA department's document:
+  `python scripts/import_calibration_sample.py <file.docx> --id kb-v41-180 --name "…"`
+  (add `--dry-run` to parse and report without writing).
+- The importer **reports** members it cannot grade rather than dropping them: a chat absent from
+  the cache, or one sitting in the trash. ⚠️ A trashed conversation silently blocks its own
+  re-import from Intercom, so a short sample stays short until someone restores it.
+- Browse one: `/api/conversations?sample=<id>`. List them with their gradeable counts:
+  `/api/calibration/samples`.
 
 ### Switch which AI model does the grading
 - In `.env`: `OLLAMA_MODEL=qwen2.5:14b` (current). This Mac only comfortably runs the 14b model;
@@ -316,6 +389,10 @@ the AI score mean the same thing by "critical".
   `time_to_admin_reply`) is still stored, but it runs from conversation *creation* — a bot is assigned
   instantly, answers in ~1s and holds the chat, so that window is the player's total wait, not the
   agent's latency. Judging on it marked **26.6%** of chats BREACHED; on the agent's clock it is 5.8%.
+- **The grader is shown the chat's tags** (`Chat tags:` in the header, `qa/prompt.py:_tags_line`).
+  Without it the tag criterion had no source at all and answered from nothing — the same chat came
+  back `n/a` on one run and `pass` on the next. Like the TIMING header it is prompt text, so a fail
+  that cites it is dropped for every criterion except `tag-chat`, whose source it is.
 - **Only `resp-first-reply` records a slow first reply**, from the figure in the TIMING header.
   Everything else must be evidenced from the transcript — `verdict_guard` drops a fail that quotes the
   header instead, which 46 stored verdicts did. `resp-first-reply` is the one criterion exempt from
@@ -325,7 +402,10 @@ the AI score mean the same thing by "critical".
   real hole: the model invented a `first-response-time` criterion with its own −20 and the score was
   reduced by it. If a new criterion is genuinely needed, add it to **all** of `qa/casino_prompt.py`
   (row, title, `CRITERION_DEDUCTIONS`), `rules/qa_system_prompt.txt`, `rules/support_rules.md` and
-  `config/rulesets.yaml` — `validate_ruleset` catches a copy left behind.
+  `config/rulesets.yaml` — `validate_ruleset` catches a copy left behind. For the VIP ruleset the
+  pair is `qa/vip_prompt.py` + `rules/qa_system_prompt_vip.txt`; for `kb-v41` it is
+  `qa/kbv41_prompt.py` + `rules/qa_system_prompt_kb_v41.txt`, and a criterion there also needs a
+  `gate` and a `severity` or the gated formula will not know what a failure costs.
 - **Targets** live in `SLA_FIRST_RESPONSE_SEC` / `SLA_FOLLOWUP_SEC` (`.env`, defaults 120s/300s).
   They were absent from `.env.example` for a long time, so the hard-coded defaults had never been
   reviewed by anyone.
@@ -464,6 +544,14 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
 - You rarely touch it directly. Code reads/writes it through the files in `storage/` (one per table).
 - Every grade records **which ruleset scored it** (`grades.ruleset_id`) alongside the rules version.
   That's how a VIP agent's older, standard-ruleset grades survive untouched when they join the group.
+- A grade's detail lives in `grades.payload_json`, so adding a field needs no migration. Five v4.1
+  fields are *also* mirrored into columns because they are what a QC manager filters on:
+  `outcome_status`, `case_type`, `risk_flag`, `catastrophic_service_failure`,
+  `manual_review_needed`. They are NULL/0 on flat-ruleset grades, which is correct — only the
+  gated model produces them.
+- Schema changes are hand-written and idempotent: new tables go in `_SCHEMA` (always
+  `CREATE TABLE IF NOT EXISTS`), new columns in `_migrate()` (`PRAGMA table_info` → `ALTER TABLE`).
+  There is no Alembic and no version table.
 - It's backed up automatically into `data/backups/`.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
 - **The Trash blocks re-import.** Deleting a conversation individually moves it to

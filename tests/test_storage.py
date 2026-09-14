@@ -676,3 +676,53 @@ def test_store_refuses_emails_so_only_chats_are_listed_and_graded(tmp_path):
     rows, total = store.query()
     assert total == 2 and {r["id"] for r in rows} == {"chat-1", "legacy-1"}
     store.close()
+
+
+def test_a_flat_grade_leaves_the_v41_columns_null(tmp_path):
+    """Only the gated model produces these. An empty string is a value: it would form its own
+    bucket in any GROUP BY and make "was this ever classified?" unanswerable."""
+    import sqlite3
+
+    from intercom_summary.qa.schema import ConversationGrade
+    from intercom_summary.storage.grades_store import GradesStore
+
+    db = tmp_path / "g.db"
+    store = GradesStore(db)
+    g = ConversationGrade.from_ollama_output("c1", "Ada", {
+        "criteria": [{"id": "open-greet", "v": "fail", "ev": "AGENT: what"}],
+        "critical_fail": False, "summary": "no greeting",
+    }, ruleset_id="default")
+    g.rules_version = "v1"
+    store.save(g)
+    store.close()
+
+    row = sqlite3.connect(db).execute(
+        "SELECT outcome_status, case_type, risk_flag, catastrophic_service_failure, "
+        "manual_review_needed FROM grades WHERE conversation_id='c1'"
+    ).fetchone()
+    assert row == (None, None, None, 0, 0)
+
+
+def test_a_gated_grade_fills_the_v41_columns(tmp_path):
+    import sqlite3
+
+    from intercom_summary.qa.schema import ConversationGrade
+    from intercom_summary.storage.grades_store import GradesStore
+
+    db = tmp_path / "g.db"
+    store = GradesStore(db)
+    g = ConversationGrade.from_ollama_output("c2", "Ada", {
+        "case_type": "Withdrawal", "risk_flag": "Financial",
+        "expected_handling": "Answer", "data_sufficiency": "Sufficient",
+        "requests": [], "outcome_status": "Unresolved", "summary": "s",
+        "criteria": [{"id": "resp-no-ghost", "v": "fail", "ev": "AGENT: bye"}],
+        "manual_review_needed": False,
+    }, ruleset_id="kb-v41")
+    g.rules_version = "v1"
+    store.save(g)
+    store.close()
+
+    row = sqlite3.connect(db).execute(
+        "SELECT outcome_status, case_type, risk_flag FROM grades WHERE conversation_id='c2'"
+    ).fetchone()
+    assert row == ("Unresolved", "Withdrawal", "Financial")
