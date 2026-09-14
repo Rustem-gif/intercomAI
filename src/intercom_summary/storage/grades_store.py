@@ -227,9 +227,12 @@ class GradesStore:
                 json.dumps(grade.to_dict()),
                 # Mirrored out of the payload because these are what a QC manager filters on:
                 # "show me every unresolved chat", "every one needing a second pair of eyes".
-                grade.outcome_status,
-                grade.case_type,
-                grade.risk_flag,
+                # NULL rather than "" on a flat-ruleset grade: only the gated model produces
+                # these, and an empty string is a value — it would show up as its own bucket in
+                # any GROUP BY and make "was this ever classified?" unanswerable.
+                grade.outcome_status or None,
+                grade.case_type or None,
+                grade.risk_flag or None,
                 int(bool(grade.catastrophic_service_failure)),
                 int(bool(grade.manual_review_needed)),
             ),

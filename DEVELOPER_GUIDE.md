@@ -136,7 +136,15 @@ You almost never edit the running server directly. The loop is:
 > **Two rules that bite people here:**
 > - Frontend changes do **nothing** until you run `npm run build` — the server serves the
 >   pre-built files in `frontend/dist/`, not your raw edits.
-> - Backend (Python) changes do **nothing** until you run `./restart.sh`.
+> - Backend (Python) changes do **nothing** until you run `./restart.sh` — and it is worse than
+>   "nothing". Imports here are lazy (inside the function that needs them), so a running server
+>   keeps the old version of every module it has already imported, while reading *new* code off
+>   disk for any module it hasn't. That mix can fail in ways neither version would: after the
+>   v4.1 change, a four-day-old server had the old `qa/rulesets.py` cached from ordinary page
+>   hits but loaded the new `qa/ollama_grader.py` on the first review, and every review died on
+>   `cannot import name 'output_schema_for'` until it was restarted. If something fails in a way
+>   that makes no sense against the code in front of you, check the server's start time first:
+>   `ps -eo pid,lstart,command | grep intercom-web`.
 
 ### Faster while developing (live reload, no rebuild needed)
 
