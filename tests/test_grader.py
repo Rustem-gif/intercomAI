@@ -62,3 +62,30 @@ def test_aggregate_and_report():
     assert agg["Ada"]["avg_score"] == 70.0
     md = report_markdown([grade])
     assert "Ada" in md and "70/100" in md
+
+
+def test_report_xlsx_prints_display_names_for_overrides(tmp_path):
+    """The export is for humans: "Overridden By" should read the name, not the login."""
+    from openpyxl import load_workbook
+
+    from intercom_summary.qa.report import report_xlsx
+
+    rs = Ruleset(text="r", version="v", path=None)  # type: ignore[arg-type]
+    fake = FakeAnthropic({"overall_score": 70, "summary": "ok",
+                          "rule_results": [], "violations": [], "suggestions": []})
+    grade = Grader(ruleset=rs, client=fake).grade(_convo())
+    grade.human_score = 90
+    grade.overridden_by = "analyst"
+
+    header_and_row = lambda path: load_workbook(path)["Conversations"]
+
+    # Mapped → the name.
+    ws = header_and_row(report_xlsx([grade], tmp_path / "named.xlsx", {"analyst": "Daria"}))
+    assert ws.cell(row=1, column=5).value == "Overridden By"
+    assert ws.cell(row=2, column=5).value == "Daria"
+
+    # Unmapped, and no map at all → the raw username, exactly as before.
+    ws = header_and_row(report_xlsx([grade], tmp_path / "other.xlsx", {"kate": "Kate"}))
+    assert ws.cell(row=2, column=5).value == "analyst"
+    ws = header_and_row(report_xlsx([grade], tmp_path / "bare.xlsx"))
+    assert ws.cell(row=2, column=5).value == "analyst"

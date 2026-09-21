@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, CoachingSession, CoachingItem } from "@/lib/api";
-import { useAuth, canWrite } from "@/lib/auth";
+import { useAuth, useDisplayName, canWrite } from "@/lib/auth";
 import { Button, Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import { scoreColor, fmtDate } from "@/lib/utils";
@@ -183,6 +183,7 @@ function SessionGroup({
   onOpenConv: (id: string) => void;
   onRemoveItem: (sessionId: string, convId: string) => void;
 }) {
+  const displayName = useDisplayName();
   return (
     <div className="space-y-2">
       <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</h2>
@@ -208,7 +209,7 @@ function SessionGroup({
                 )}
               </div>
               <div className="mt-0.5 text-xs text-muted-foreground">
-                {session.item_count ?? 0} conversation{session.item_count !== 1 ? "s" : ""} · created by {session.created_by} · {fmtDate(session.created_at)}
+                {session.item_count ?? 0} conversation{session.item_count !== 1 ? "s" : ""} · created by {displayName(session.created_by)} · {fmtDate(session.created_at)}
               </div>
             </div>
             {writer && (

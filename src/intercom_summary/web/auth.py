@@ -6,10 +6,15 @@ Users live in `config/web_users.yaml`:
       alice:
         password_hash: "$2b$12$...."   # bcrypt
         role: admin                     # admin | analyst | viewer
+        display_name: Alice             # optional, defaults to the username
 
 Roles:
   • admin / analyst → full access (fetch, review, edit rules)
   • viewer          → read-only (browse, overview, export)
+
+`display_name` is presentation only. The username stays the identity written into the
+database (grade overrides, comments, disputes, trash, KB, coaching), so renaming what a
+person is *called* never orphans what they have already done.
 """
 from __future__ import annotations
 
@@ -60,7 +65,20 @@ class UserStore:
             ok = _verify(password, u.get("password_hash", ""))
         if not ok:
             return None
-        return {"username": username, "role": u.get("role", "viewer")}
+        return {
+            "username": username,
+            "role": u.get("role", "viewer"),
+            "display_name": self.display_name(username),
+        }
+
+    def display_name(self, username: str) -> str:
+        """What this user is called in the UI — their `display_name`, else the username."""
+        u = self._users.get(username) or {}
+        return str(u.get("display_name") or username)
+
+    def display_names(self) -> dict[str, str]:
+        """{username: display name} for every configured user. Names only, no secrets."""
+        return {name: self.display_name(name) for name in self._users}
 
 
 users = UserStore()

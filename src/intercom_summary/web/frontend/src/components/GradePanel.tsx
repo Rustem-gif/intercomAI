@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
 import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale } from "lucide-react";
 import { scoreColor, fmtDate } from "@/lib/utils";
+import { useDisplayName } from "@/lib/auth";
 
 /** "cannot_determine" is a real answer under QA Manual v4.1, not a missing one: the evidence a
  * criterion needs (a chat tag, a CRM escalation record, a transaction status) often lives
@@ -52,6 +53,7 @@ export default function GradePanel({
   grade, conversationId, canOverride, onOverridden,
   dispute, history, disputeUrl, readOnly, onDisputeChange,
 }: Props) {
+  const displayName = useDisplayName();
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<"criteria" | "manual">("criteria");
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
@@ -373,7 +375,7 @@ export default function GradePanel({
           <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
             <div className="flex items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400">
               <Pencil className="h-3 w-3" />
-              Overridden by {grade.overridden_by} · {fmtDate(grade.overridden_at)}
+              Overridden by {displayName(grade.overridden_by)} · {fmtDate(grade.overridden_at)}
               {grade.human_criteria && Object.keys(grade.human_criteria).length > 0 && (
                 <span className="font-normal text-muted-foreground">
                   · {Object.keys(grade.human_criteria).length} criteria changed
@@ -401,7 +403,7 @@ export default function GradePanel({
             {dispute?.status === "open" && (
               <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs">
                 <div className="flex items-center gap-1.5 font-medium text-amber-600 dark:text-amber-400">
-                  <Scale className="h-3 w-3" /> Grade disputed by {dispute.created_by}
+                  <Scale className="h-3 w-3" /> Grade disputed by {displayName(dispute.created_by)}
                 </div>
                 <p className="mt-1 italic text-muted-foreground">"{dispute.reason}"</p>
                 {canResolveDispute && (
@@ -418,12 +420,12 @@ export default function GradePanel({
             )}
             {dispute?.status === "accepted" && (
               <div className="text-xs text-muted-foreground">
-                Grade dispute accepted{dispute.resolved_by ? ` by ${dispute.resolved_by}` : ""} — score was revised.
+                Grade dispute accepted{dispute.resolved_by ? ` by ${displayName(dispute.resolved_by)}` : ""} — score was revised.
               </div>
             )}
             {dispute?.status === "rejected" && (
               <div className="text-xs text-muted-foreground">
-                Grade dispute rejected{dispute.resolved_by ? ` by ${dispute.resolved_by}` : ""} — score stands.
+                Grade dispute rejected{dispute.resolved_by ? ` by ${displayName(dispute.resolved_by)}` : ""} — score stands.
               </div>
             )}
 

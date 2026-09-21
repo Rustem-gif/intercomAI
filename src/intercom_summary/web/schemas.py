@@ -12,6 +12,9 @@ class LoginRequest(BaseModel):
 class UserOut(BaseModel):
     username: str
     role: str
+    # What the UI calls this person. Falls back to the username server-side, so it is
+    # never empty in practice; optional here so old clients/sessions stay valid.
+    display_name: str | None = None
 
 
 class FetchRequest(BaseModel):

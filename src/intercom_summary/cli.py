@@ -112,7 +112,8 @@ async def _review(args: argparse.Namespace):
         store.close()
 
     out = Path(args.out) if args.out else settings.export_dir / "qa_report.xlsx"
-    report_xlsx(grades, out)
+    from intercom_summary.web.auth import users as web_users
+    report_xlsx(grades, out, web_users.display_names())
     md = out.with_suffix(".md")
     md.write_text(report_markdown(grades), encoding="utf-8")
     log.info("Wrote QA report to %s and %s", out, md)

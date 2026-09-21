@@ -5,8 +5,10 @@ import { api, GradeDispute } from "@/lib/api";
 import { Card, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import { fmtDate, scoreColor } from "@/lib/utils";
+import { useDisplayName } from "@/lib/auth";
 
 export default function Disputes() {
+  const displayName = useDisplayName();
   const [openId, setOpenId] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
@@ -67,7 +69,7 @@ export default function Disputes() {
                   </td>
                   <td className="px-4 py-3 leading-relaxed">{d.reason}</td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">
-                    {d.created_by} · {d.created_via}
+                    {displayName(d.created_by)} · {d.created_via}
                     <div>{fmtDate(d.created_at)}</div>
                   </td>
                 </tr>

@@ -24,6 +24,7 @@ def client(tmp_path, monkeypatch):
           boss:
             password_hash: "{hash_password('pw')}"
             role: admin
+            display_name: The Boss
           ana:
             password_hash: "{hash_password('pw')}"
             role: analyst
@@ -63,6 +64,36 @@ def test_requires_auth(client):
 def test_login_and_read(client):
     _login(client)
     assert client.get("/api/auth/me").json()["role"] == "admin"
+
+
+def test_display_name_is_returned_by_login_and_me(client):
+    assert _login(client).json()["display_name"] == "The Boss"
+    assert client.get("/api/auth/me").json()["display_name"] == "The Boss"
+
+
+def test_display_name_falls_back_to_username(client):
+    # `ana` has no display_name in the users file — she is still called something.
+    assert _login(client, "ana").json()["display_name"] == "ana"
+    assert client.get("/api/auth/me").json()["display_name"] == "ana"
+
+
+def test_me_resolves_display_name_from_the_user_file_not_the_session(client):
+    """A session signed before a name was set (or changed) must not pin the old name."""
+    _login(client, "ana")
+    from intercom_summary.web import auth as auth_mod
+    auth_mod.users._users["ana"]["display_name"] = "Anastasia"
+    assert client.get("/api/auth/me").json()["display_name"] == "Anastasia"
+
+
+def test_display_names_map(client):
+    # Logged out it is not readable at all.
+    assert client.get("/api/users/display-names").status_code == 401
+
+    _login(client, "looker")  # read-only role is enough: these are names, not secrets
+    r = client.get("/api/users/display-names")
+    assert r.status_code == 200
+    assert r.json() == {"boss": "The Boss", "ana": "ana", "looker": "looker"}
+    assert "password_hash" not in r.text and "$2b$" not in r.text
 
     ov = client.get("/api/overview")
     assert ov.status_code == 200
