@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Search, Trash2, ChevronDown, Sparkles, RotateCcw, Archive, X } from "lucide-react";
 import { api, ConversationList, TrashItem, activeBrandParam } from "@/lib/api";
-import { useAuth, canWrite } from "@/lib/auth";
+import { useAuth, useDisplayName, canWrite } from "@/lib/auth";
 import { Badge, Button, Card, Input, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import RunDialog from "@/components/RunDialog";
@@ -623,6 +623,7 @@ function TrashModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const displayName = useDisplayName();
   const [busy, setBusy] = useState(false);
 
   const act = async (path: string, body: Record<string, unknown>, confirmMsg?: string) => {
@@ -678,7 +679,7 @@ function TrashModal({
                     <div className="truncate font-medium">{it.subject || `#${it.conversation_id}`}</div>
                     <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                       {it.agent_name && <span>{it.agent_name}</span>}
-                      <span>· deleted {fmtDate(it.deleted_at)} by {it.deleted_by}</span>
+                      <span>· deleted {fmtDate(it.deleted_at)} by {displayName(it.deleted_by)}</span>
                       {it.blacklist === 1 && (
                         <span
                           className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-600 dark:text-amber-400"

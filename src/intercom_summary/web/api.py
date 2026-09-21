@@ -1342,7 +1342,7 @@ def create_app() -> FastAPI:
             gstore.close()
         tmpdir = tempfile.mkdtemp()
         out = Path(tmpdir) / "qa_report.xlsx"
-        report_xlsx(grades, out)
+        report_xlsx(grades, out, auth.users.display_names())
         return FileResponse(out, filename="qa_report.xlsx",
                             background=BackgroundTask(shutil.rmtree, tmpdir, True))
 

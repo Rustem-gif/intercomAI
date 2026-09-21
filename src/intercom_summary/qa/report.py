@@ -69,7 +69,17 @@ def report_markdown(grades: list[ConversationGrade]) -> str:
     return "\n".join(lines)
 
 
-def report_xlsx(grades: list[ConversationGrade], out_path: str | Path) -> Path:
+def report_xlsx(
+    grades: list[ConversationGrade],
+    out_path: str | Path,
+    display_names: dict[str, str] | None = None,
+) -> Path:
+    """`display_names` maps a login username to the name to print in "Overridden By".
+
+    Grades store the username (that is the stable identity); the export is for humans, so
+    it prints the name where one is configured. Unmapped or omitted → the username, as before.
+    """
+    names = display_names or {}
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
@@ -92,7 +102,7 @@ def report_xlsx(grades: list[ConversationGrade], out_path: str | Path) -> Path:
     for g in grades:
         detail.append([
             g.conversation_id, g.agent_name, g.effective_score, g.overall_score,
-            g.overridden_by if g.is_overridden else "", g.summary,
+            names.get(g.overridden_by, g.overridden_by) if g.is_overridden else "", g.summary,
             " | ".join(g.violations), " | ".join(g.suggestions),
         ])
 
