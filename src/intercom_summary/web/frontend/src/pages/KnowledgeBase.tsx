@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookOpen, Trash2, ChevronDown, ChevronUp, Pencil, Check, X } from "lucide-react";
 import { api, IconicCase } from "@/lib/api";
-import { useAuth, canWrite } from "@/lib/auth";
+import { useAuth, useDisplayName, canWrite } from "@/lib/auth";
 import { Button, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import { fmtDate } from "@/lib/utils";
@@ -93,6 +93,7 @@ function CaseCard({
   onOpen: () => void;
   canEdit: boolean;
 }) {
+  const displayName = useDisplayName();
   const qc = useQueryClient();
   const [expanded, setExpanded] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -130,7 +131,7 @@ function CaseCard({
             {c?.score != null && (
               <span className={`font-semibold ${scoreColor(c.score)}`}>Score: {c.score}</span>
             )}
-            <span className="text-muted-foreground/60">Added by {item.added_by} on {fmtDate(item.added_at)}</span>
+            <span className="text-muted-foreground/60">Added by {displayName(item.added_by)} on {fmtDate(item.added_at)}</span>
           </div>
         </div>
 

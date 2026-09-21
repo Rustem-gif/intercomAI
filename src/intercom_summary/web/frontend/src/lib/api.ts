@@ -104,6 +104,8 @@ export const api = {
 export interface User {
   username: string;
   role: string;
+  /** What to call this person in the UI. Falls back to `username` when unset. */
+  display_name?: string | null;
 }
 
 export interface Admin {

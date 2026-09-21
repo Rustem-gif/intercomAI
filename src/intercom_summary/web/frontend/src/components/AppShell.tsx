@@ -75,7 +75,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="border-t p-3 text-xs text-muted-foreground">
           <div className="px-2 py-1">
             Signed in as{" "}
-            <span className="font-medium text-foreground">{user?.username}</span>
+            <span className="font-medium text-foreground">
+              {user?.display_name || user?.username}
+            </span>
             <span className="ml-1 rounded bg-muted px-1.5 py-0.5">{user?.role}</span>
           </div>
         </div>

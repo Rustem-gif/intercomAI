@@ -6,6 +6,7 @@ import {
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle, Spinner } from "@/components/ui/primitives";
 import { scoreColor, fmtDate } from "@/lib/utils";
+import { useDisplayName } from "@/lib/auth";
 import { Lightbulb, TrendingUp, TrendingDown, Minus } from "lucide-react";
 
 function deltaColor(d: number) {
@@ -46,6 +47,7 @@ function BiasIndicator({ avgDelta }: { avgDelta: number }) {
 }
 
 export default function Accuracy() {
+  const displayName = useDisplayName();
   const { data, isLoading } = useQuery({
     queryKey: ["accuracy"],
     queryFn: () => api.get<any>("/api/accuracy"),
@@ -238,7 +240,7 @@ export default function Accuracy() {
                         <td className={`py-2 text-right font-semibold ${scoreColor(r.human_score)}`}>{r.human_score}</td>
                         <td className="py-2 text-right"><DeltaBadge delta={delta} /></td>
                         <td className="max-w-xs py-2 text-xs text-muted-foreground italic">"{r.override_reason}"</td>
-                        <td className="py-2 text-right text-muted-foreground">{r.overridden_by}</td>
+                        <td className="py-2 text-right text-muted-foreground">{displayName(r.overridden_by)}</td>
                         <td className="py-2 text-right text-muted-foreground">{fmtDate(r.overridden_at)}</td>
                       </tr>
                     );

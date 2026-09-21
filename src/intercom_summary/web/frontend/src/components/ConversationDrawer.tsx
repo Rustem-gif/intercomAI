@@ -23,7 +23,7 @@ interface DrawerProps {
 }
 
 export default function ConversationDrawer({ id, onClose, readOnly = false, detailUrl, disputeUrl }: DrawerProps) {
-  const { user } = useAuth();
+  const { user, displayName } = useAuth();
   const qc = useQueryClient();
   const { brands } = useBrand();
   const writer = !readOnly && canWrite(user?.role);
@@ -298,7 +298,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                     {commentsData?.comments.map((c) => (
                       <div key={c.id} className="group relative rounded-md border bg-card px-3 py-2 text-sm">
                         <div className="mb-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                          <span className="font-medium text-foreground">{c.author}</span>
+                          <span className="font-medium text-foreground">{displayName(c.author)}</span>
                           <span>{fmtDate(c.created_at)}</span>
                         </div>
                         <p className="whitespace-pre-wrap">{c.text}</p>

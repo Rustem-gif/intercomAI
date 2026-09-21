@@ -140,6 +140,8 @@ cd src/intercom_summary/web/frontend && npm run dev   # Vite on :5173, proxies /
 4. **Web users** → edit **`config/web_users.yaml`**: change the default `admin/admin`,
    add teammates with `analyst` (full) or `viewer` (read-only). Hash a password with
    `python -c "from intercom_summary.web.auth import hash_password; print(hash_password('pw'))"`.
+   Add an optional `display_name:` to show a person's name instead of their login
+   everywhere in the dashboard (the username is still what gets stored).
 5. **Edit `rules/support_rules.md`** to your real policy (changing it re-grades).
 
 ## Suggested next steps (optional, not built)

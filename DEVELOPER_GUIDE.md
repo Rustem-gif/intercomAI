@@ -296,6 +296,25 @@ sample that already has members.
   ```
   Then `./restart.sh`.
 
+### Change the name shown for a login
+- Add an optional `display_name:` next to the user's `role:` in `config/web_users.yaml`:
+  ```yaml
+  users:
+    analyst:
+      password_hash: "$2b$12$..."
+      role: analyst
+      display_name: Daria
+  ```
+  Then `./restart.sh` (the user file is read once at import).
+- It is **presentation only**. The dashboard shows it in "Signed in as …", "Overridden by …",
+  comment authors, disputes, Knowledge Base and Coaching; the **username** is still what gets
+  written to the database, so renaming what someone is called never detaches them from grades
+  they have already overridden. Unset → the username is shown, exactly as before.
+- Mechanics: `UserStore.display_name()` / `.display_names()` in `web/auth.py`, served by
+  `GET /api/users/display-names`, consumed by `useDisplayName()` in `frontend/src/lib/auth.tsx`.
+  Any new UI that renders a username should call that hook. **Frontend changes need
+  `npm run build`** in `src/intercom_summary/web/frontend` — the app is served from `dist/`.
+
 ### Change a setting (tokens, ports, model, timeouts)
 - Everything configurable is an environment variable in **`.env`** (see `.env.example` for the full
   annotated list). `settings.py` just reads them. After editing `.env`, run `./restart.sh`.

@@ -180,7 +180,20 @@ def create_app() -> FastAPI:
 
     @app.get("/api/auth/me", response_model=UserOut)
     def me(user: dict = Depends(auth.current_user)):
-        return user
+        # Re-resolve the display name instead of trusting the session: cookies signed
+        # before display names existed (or before a name was edited in web_users.yaml)
+        # survive restarts, and would otherwise pin a stale name.
+        return {**user, "display_name": auth.users.display_name(user["username"])}
+
+    @app.get("/api/users/display-names", response_model=dict[str, str])
+    def user_display_names(user: dict = Depends(auth.current_user)):
+        """{username: display name} — lets the UI label rows that store a username.
+
+        Historical attribution (overridden_by, comment authors, disputes, …) is keyed by
+        username, so the map is what turns `kate` into `Kate` on rows written long ago.
+        Names only: no hashes, no roles.
+        """
+        return auth.users.display_names()
 
     # ── Overview / data (read) ──────────────────────────────────────────────────
     def _group_agents(group: str | None) -> list[str] | None:

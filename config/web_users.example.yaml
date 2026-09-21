@@ -9,6 +9,11 @@
 #   analyst  → full access (fetch, run QA, edit rules)
 #   viewer   → read-only (browse, overview, export)
 #
+# `display_name` is optional and presentation only: it is what the dashboard shows in
+# "Signed in as …", "Overridden by …", comment authors, disputes, KB and coaching. The
+# username stays the identity stored in the database, so renaming what someone is called
+# never detaches them from work they have already done. Unset → the username is shown.
+#
 # Passwords are bcrypt-hashed (rounds=12). To generate a hash:
 #   .venv/bin/python -c "from intercom_summary.web.auth import hash_password; print(hash_password('your-password'))"
 #
@@ -18,3 +23,4 @@ users:
   admin:
     password_hash: "$2b$12$REPLACE_ME_WITH_A_REAL_BCRYPT_HASH......................"
     role: admin
+    display_name: Admin        # optional — defaults to the username ("admin")
