@@ -393,20 +393,37 @@ def review_and_store(
             def live(convo, grader):
                 return lambda: grader.grade(convo)
 
+            def first_per_prefix(bucket, grader) -> list:
+                # One chat per distinct cached prefix (prompt + that brand's knowledge base).
+                if not hasattr(grader, "knowledge_for"):
+                    return bucket[:1]
+                from intercom_summary.qa.batch import warm_up_set
+
+                return warm_up_set(grader, bucket)
+
             async def run_live(bucket, grader) -> None:
                 if not bucket:
                     return
-                # One chat first: a cache entry is readable only once the first response has
-                # started, so N requests fired together would each pay to write the system
-                # prompt. After this one, the rest read it at a tenth of the price.
-                await grade_one(bucket[0], live(bucket[0], grader))
-                await asyncio.gather(*[grade_one(c, live(c, grader)) for c in bucket[1:]])
+                # One chat per prefix first: a cache entry is readable only once the first
+                # response has started, so N requests fired together would each pay to write
+                # the system prompt and knowledge base. After these, the rest read it at a
+                # tenth of the price.
+                first = first_per_prefix(bucket, grader)
+                for c in first:
+                    await grade_one(c, live(c, grader))
+                await asyncio.gather(*[grade_one(c, live(c, grader))
+                                       for c in bucket if c not in first])
 
             async def run_batch(bucket, grader) -> None:
                 from intercom_summary.qa import batch as batch_mod
 
                 queued = [c for c in bucket if batch_mod.batchable(c.id)]
                 odd = [c for c in bucket if not batch_mod.batchable(c.id)]
+                # Warm the 1-hour cache entries the batch will read: one chat per prefix,
+                # graded live in the batch's request shape, then left out of the batch.
+                for c in batch_mod.warm_up_set(grader, queued) if len(queued) > 1 else []:
+                    await grade_one(c, lambda c=c: grader.grade(c, batch_shape=True))
+                    queued.remove(c)
                 by_id = {c.id: c for c in queued}
                 status: dict = {"batch_ids": list(batch_ids)}
 

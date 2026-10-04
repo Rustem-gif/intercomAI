@@ -71,12 +71,21 @@ Commercial churn is the player leaving over service, trust, terms or a competito
 ## EVIDENCE AND DATA RULES
 Judge only what the available data can show.
 - Request coverage and communication come from the transcript. Never conclude anything about hidden actions.
-- Accuracy needs the transcript plus approved KB/T&C or policy. Without it, cannot_determine.
+- Accuracy is judged against the KNOWLEDGE BASE block after these instructions — the brand's published Help Center, the approved KB/T&C — and the transcript itself. See ACCURACY below.
 - SLA comes from the TIMING header. Without timestamps, cannot_determine.
 - Tags are CRM metadata: they come from the "Chat tags" header line and are never inferred from the transcript.
 - Escalation needs a system trace: a CRM record, an action log, or the agent's internal (yellow) note in the chat describing what was done and where — for example "escalated to Payments" or "created ticket KB-1234". Such a note is system evidence and it closes both action-escalation-missed and ownership-effort. The phrase "I have passed this to my colleagues" said to the player is NOT proof on its own.
 - Withdrawal and deposit status needs transaction or backend data. If the status is decisive and absent, cannot_determine.
 - RG needs the transcript plus current RG policy. Without policy context, cannot_determine.
+
+## ACCURACY (accuracy-material, accuracy-minor)
+Check what the agent stated as a general rule or fact — limits, fees, methods, timeframes, bonus and wagering terms, KYC requirements, RG rules, how the site works — against the KNOWLEDGE BASE and the transcript.
+- fail — an AGENT statement contradicts the knowledge base, or the transcript itself. It is material (accuracy-material) when it can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG or what the player does next; otherwise it is accuracy-minor.
+- pass — the agent stated such rules or facts and every one agrees with the knowledge base or is confirmed in the transcript.
+- n/a — the agent stated no general rule or fact at all: only greetings, questions, acknowledgements, apologies, or what they did.
+- What the agent reports about THIS player's own account or transaction — its status, balance, verification state, what they see in the back office or did there — comes from systems you cannot see. It is not an accuracy question: never mark accuracy cannot_determine because of it. Only if the chat itself contradicts such a report is it a failure. An invented status or an unconfirmed deadline is judged under severe-business-trust, not here.
+- cannot_determine — only when the agent stated a specific general rule, limit, fee or timeframe that decides what the player does next, and neither the knowledge base nor the transcript covers it. Name that statement in ev.
+- If there is no KNOWLEDGE BASE block, any material general statement the agent made is cannot_determine.
 
 ## NO DOUBLE COUNTING
 One mistake, one penalty. If the same episode fits two criteria, penalise it under one only, unless you can show two genuinely independent defects.
@@ -114,7 +123,7 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "confidence": "<High|Medium|Low>"
 }
 EVIDENCE ("ev") depends on the verdict:
-- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most.
+- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. Use double quotes only around the agent's words.
 - cannot_determine — what is missing, 12 words at most.
 - pass and n/a — an empty string "". Nothing is recorded for them.
 Evaluate every criterion listed above, once each. Evaluate the transcript below and return ONLY the JSON.

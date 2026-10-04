@@ -26,6 +26,7 @@ from anthropic import Anthropic
 
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
+from intercom_summary.qa import knowledge_base
 from intercom_summary.qa.grading_common import GradeParseError, is_valid_grade, trim_transcript
 from intercom_summary.qa.jev_verifier import (
     JevVerifier,
@@ -59,6 +60,7 @@ class Grader:
         model: str | None = None,
         client: Anthropic | None = None,
         jev=None,
+        knowledge: dict | None = None,
     ) -> None:
         self._model = model or settings.qa_model
         self._client = client or Anthropic(
@@ -85,6 +87,13 @@ class Grader:
                             settings.jev_mode)
                 jev = None
         self._jev = jev or None
+        # The brand's Help Center — the approved KB/T&C v4.1 judges accuracy against. Loaded
+        # once per batch (refreshed if stale); a brand without one gets no KB block. Pass
+        # knowledge={} to grade without it, or a {brand: KnowledgeBase} map to inject one.
+        if knowledge is None:
+            use = self._ruleset.scoring_model == SCORING_GATED and settings.kb_enabled
+            knowledge = knowledge_base.load_all() if use else {}
+        self._kb: dict = knowledge
 
     @property
     def client(self) -> Anthropic:
@@ -103,35 +112,44 @@ class Grader:
     def messages_for(self, conversation: Conversation) -> list[dict]:
         return [{"role": "user", "content": trim_transcript(transcript_block(conversation))}]
 
-    def request_params(self, messages: list[dict], effort: str | None = None,
-                       batch: bool = False) -> dict:
+    def knowledge_for(self, conversation: Conversation):
+        return self._kb.get(conversation.brand or "")
+
+    def request_params(self, conversation: Conversation, messages: list[dict] | None = None,
+                       effort: str | None = None, batch: bool = False) -> dict:
         """The Messages API body for one grading call. Everything above `messages` is
-        identical for every conversation of a ruleset — that is the cached prefix, and
-        tests/test_token_optimisation.py fails if anything per-conversation leaks into it."""
+        identical for every conversation of a ruleset and brand — that is the cached prefix,
+        and tests/test_token_optimisation.py fails if anything per-conversation leaks into it.
+
+        Two cached blocks: the ruleset prompt (shared by every brand) and then the brand's
+        knowledge base, so a run mixing brands still reads the prompt from one cache entry."""
+        # A batch can take longer than 5 minutes to work through, so its entries get the
+        # 1-hour TTL; a live run's requests are seconds apart and keep 5 minutes warm.
+        cache = {"type": "ephemeral", "ttl": "1h"} if batch else {"type": "ephemeral"}
+        system = [{"type": "text", "text": self._ruleset.prompt_text, "cache_control": cache}]
+        if kb := self.knowledge_for(conversation):
+            system.append({"type": "text", "text": kb.text, "cache_control": dict(cache)})
         return {
             "model": self._model,
             "max_tokens": _MAX_TOKENS,
-            "system": [{
-                "type": "text",
-                "text": self._ruleset.prompt_text,
-                # A batch can take longer than 5 minutes to work through, so its entry gets
-                # the 1-hour TTL; a live run's requests are seconds apart and keep 5 minutes warm.
-                "cache_control": {"type": "ephemeral", "ttl": "1h"} if batch
-                                 else {"type": "ephemeral"},
-            }],
-            "messages": messages,
+            "system": system,
+            "messages": messages if messages is not None else self.messages_for(conversation),
             "output_config": {
                 "effort": effort or settings.qa_effort,
                 "format": {"type": "json_schema", "schema": self._schema},
             },
         }
 
-    def _request(self, messages: list[dict], effort: str | None = None):
+    def _request(self, conversation: Conversation, messages: list[dict],
+                 effort: str | None = None, batch_shape: bool = False):
+        """One live call. `batch_shape` sends exactly what a batch request would (1-hour cache
+        TTL, no fallback beta), so the cache entry it writes is the one a batch then reads."""
         kwargs: dict = {}
-        if settings.qa_refusal_fallback:
+        if settings.qa_refusal_fallback and not batch_shape:
             kwargs["betas"] = [_FALLBACK_BETA]
             kwargs["extra_body"] = {"fallbacks": "default"}
-        return self._client.beta.messages.create(**self.request_params(messages, effort), **kwargs)
+        return self._client.beta.messages.create(
+            **self.request_params(conversation, messages, effort, batch=batch_shape), **kwargs)
 
     @staticmethod
     def _parse(resp) -> dict | None:
@@ -176,7 +194,8 @@ class Grader:
             )
 
     def _ask(self, conversation: Conversation, messages: list[dict],
-             effort: str | None = None, meter: UsageMeter | None = None) -> tuple[dict, str]:
+             effort: str | None = None, meter: UsageMeter | None = None,
+             batch_shape: bool = False) -> tuple[dict, str]:
         """A usable grade JSON and the model that produced it, or GradeParseError."""
         meter = meter if meter is not None else UsageMeter()
         for attempt in range(_MAX_ATTEMPTS):
@@ -185,7 +204,7 @@ class Grader:
                 conversation.id, self._model, self._ruleset.id, self._ruleset.version,
                 attempt + 1, _MAX_ATTEMPTS,
             )
-            resp = self._request(messages, effort)
+            resp = self._request(conversation, messages, effort, batch_shape)
             self._meter(meter, resp, conversation)
             candidate = self._usable(conversation, resp)
             if candidate is not None:
@@ -225,7 +244,7 @@ class Grader:
         self._guard(conversation, revised)
         before = {c.get("id"): c.get("v") for c in data.get("criteria") or []}
         after = {c.get("id"): c.get("v") for c in revised.get("criteria") or []}
-        checked = self._jev.verify(conversation, revised)
+        checked = self._jev.verify(conversation, revised, self._kb_text(conversation))
         checked["reconcile"] = {
             "disputed": targets,
             "changed": {cid: [before.get(cid), v] for cid, v in after.items()
@@ -233,10 +252,13 @@ class Grader:
         }
         return revised, revised_by, checked
 
-    def grade(self, conversation: Conversation, meter: UsageMeter | None = None) -> ConversationGrade:
+    def grade(self, conversation: Conversation, meter: UsageMeter | None = None,
+              batch_shape: bool = False) -> ConversationGrade:
+        """`batch_shape=True` grades live but in the batch's request shape — used to warm the
+        cache a batch is about to read (qa/batch.py `warm_up_set`)."""
         meter = meter if meter is not None else UsageMeter()
         messages = self.messages_for(conversation)
-        data, served_by = self._ask(conversation, messages, meter=meter)
+        data, served_by = self._ask(conversation, messages, meter=meter, batch_shape=batch_shape)
         return self._complete(conversation, messages, data, served_by, meter)
 
     def finish(self, conversation: Conversation, resp, meter: UsageMeter | None = None) -> ConversationGrade:
@@ -253,13 +275,17 @@ class Grader:
         served_by = getattr(resp, "model", None) or self._model
         return self._complete(conversation, self.messages_for(conversation), data, served_by, meter)
 
+    def _kb_text(self, conversation: Conversation) -> str:
+        kb = self.knowledge_for(conversation)
+        return kb.text if kb else ""
+
     def _complete(self, conversation: Conversation, messages: list[dict], data: dict,
                   served_by: str, meter: UsageMeter) -> ConversationGrade:
         self._guard(conversation, data)
 
         jev: dict | None = None
         if self._jev is not None:
-            jev = self._jev.verify(conversation, data)
+            jev = self._jev.verify(conversation, data, self._kb_text(conversation))
             if self._jev.mode == "reconcile" and reconcile_targets(jev):
                 data, served_by, jev = self._reconcile(conversation, messages, data,
                                                        served_by, jev, meter)
@@ -274,6 +300,8 @@ class Grader:
         grade.model = served_by
         grade.graded_at = datetime.now(timezone.utc).isoformat()
         grade.usage = meter.as_dict()
+        kb = self.knowledge_for(conversation)
+        grade.kb_version = f"{kb.brand}:{kb.version}" if kb else ""
         if jev is not None:
             grade.jev = jev
             # In shadow mode Jev's findings are recorded and change nothing.

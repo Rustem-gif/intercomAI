@@ -87,6 +87,17 @@ class Settings:
     jev_model: str = field(default_factory=lambda: _env("JEV_MODEL", "jev-1.13.0"))
     jev_mode: str = field(default_factory=lambda: _jev_mode(_env("JEV_MODE", "shadow")))
 
+    # The brand's published Intercom Help Center, given to the v4.1 grader as the approved
+    # KB/T&C that accuracy is judged against (qa/knowledge_base.py). Snapshots are refreshed
+    # when older than KB_MAX_AGE_HOURS; a failed refresh keeps the previous one.
+    kb_enabled: bool = field(
+        default_factory=lambda: _env("KB_ENABLED", "1") not in ("0", "false", "no")
+    )
+    kb_max_age_hours: float = field(
+        default_factory=lambda: float(_env("KB_MAX_AGE_HOURS", "24") or "24")
+    )
+    kb_dir: Path = field(default_factory=lambda: Path(_env("KB_DIR", "./data/kb")))
+
     # Ollama local inference backend (Qwen)
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen2.5:14b"))

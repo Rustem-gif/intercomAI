@@ -141,5 +141,7 @@ adds a second Sonnet call only on disputed chats, and it is on the grade's `usag
 - Sonnet's verdicts vary run to run (the same chat scored 64 / 69 / 75 across three runs), and the
   v4.1 cap makes one flipped Major a 20-point swing. Jev narrows this only where it disagrees; the
   variance itself is a grader property to track separately.
-- `accuracy-material` comes back `cannot_determine` on ~90% of chats because no KB/T&C is supplied
-  (manual §9) — that, not Jev, is what currently fills the manual-review queue.
+- `accuracy-material` used to come back `cannot_determine` on most chats because no KB/T&C was
+  supplied. The grader now gets the brand's Help Center (`qa/knowledge_base.py`), and Jev's support
+  question for an `accuracy-material` fail gets the same KB in its state (only then — `KB_JUDGED`).
+  What still fills the manual-review queue is `action-escalation-missed` without a system trace.

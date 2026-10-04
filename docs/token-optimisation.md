@@ -8,6 +8,12 @@ cache reads and writes included.
 
 ## Where the money goes (v4.1, live)
 
+**Since the Help Center KB was added** (`qa/knowledge_base.py`, ~15k tokens, cached per brand): a
+v4.1 request carries ~26k cached prompt tokens instead of ~6k. With a warm cache that adds ~$0.004
+per chat live and ~$0.0025 in a batch; batch at `high` measured **$0.016/chat**. A cache *miss* now
+costs ~20× a hit, which is why batch runs warm the cache first (one live chat per brand).
+
+
 **Production setting: Sonnet 5.5 at effort `high`** (chosen 2026-10-04, see "Effort and model"
 below). Live it costs ~$0.02–0.045 per chat (~2–3.6k output tokens, 15–30 s); in a batch run it
 costs about $0.014. The breakdown below was measured at `medium`, where the free wins were
