@@ -39,6 +39,8 @@ class ReviewRequest(BaseModel):
     ruleset_id: str | None = None
     # Restrict the run to a frozen calibration sample.
     sample: str | None = None
+    # Grade through the Claude Message Batches API: half price, results in minutes to hours.
+    batch: bool = False
 
 
 class JobOut(BaseModel):

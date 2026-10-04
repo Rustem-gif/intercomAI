@@ -233,6 +233,18 @@ export interface JevFinding {
   detail: string;
 }
 
+/** Tokens and USD behind one grade (qa/pricing.py). */
+export interface GradeUsage {
+  input: number;
+  cache_write_5m: number;
+  cache_write_1h: number;
+  cache_read: number;
+  output: number;
+  calls: number;
+  batch_calls: number;
+  cost_usd: number;
+}
+
 export interface JevCheck {
   model?: string;
   mode?: string;             // off | shadow | flag | reconcile
@@ -279,6 +291,9 @@ export interface Grade {
   confidence?: string;
   /** Jev's second opinion on the verdicts (v4.1 only). Advisory: it never moves the score. */
   jev?: JevCheck;
+  usage?: GradeUsage;
+  /** The model that produced the grade (differs from QA_MODEL when a fallback served it). */
+  model?: string;
   /** Each thing the player asked for, and what became of it. */
   requests?: { text: string; status: string; material?: boolean }[];
 }

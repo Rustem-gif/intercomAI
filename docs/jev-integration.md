@@ -107,8 +107,8 @@ A Jev error is stored as `jev.error` and never fails, skips or delays a grade be
 ## Cost and latency
 
 ~2–5k input tokens per chat × $0.042/Mtok ≈ **$0.0001–0.0002 per chat** (output is free), one extra
-HTTP request (~1 s). Sonnet itself is ~$0.018 per chat; `reconcile` adds a second Sonnet call
-only on disputed chats.
+HTTP request (~1 s). Sonnet itself is ~$0.013 per chat (half that in a batch run); `reconcile`
+adds a second Sonnet call only on disputed chats, and it is on the grade's `usage`.
 
 ## First live run (2026-10-04, 10 chats, shadow, nothing saved)
 

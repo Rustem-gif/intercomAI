@@ -291,7 +291,16 @@ sample that already has members.
   `ANTHROPIC_API_KEY` in `.env`. Then `./restart.sh`.
 - `QA_EFFORT` (`low`/`medium`/`high`/`xhigh`/`max`, default `medium`) is how hard the model thinks
   before grading — higher = slower and more output tokens. Measured on live chats at `medium`:
-  ~9 s and ~$0.018 per chat, with the system prompt served from the prompt cache after the first.
+  ~6–10 s and ~$0.013 per chat (v4.1), with the system prompt served from the prompt cache after the
+  first. `QA_CONCURRENCY` (default 10) is how many chats a live run grades at once.
+- **Cost:** every grade stores its tokens and dollars in `payload_json["usage"]` (`qa/pricing.py` —
+  update `PRICES` there if Anthropic's rates change); a run's total is on its job result and the
+  Evaluation page. **Batch runs** (`batch=true` / the Evaluation checkbox) go through the Message
+  Batches API at half price (`qa/batch.py`); if the server restarts mid-batch, the job's error names
+  the batch and `intercom-summary collect-batch <id>` saves it. Everything about tokens — what's
+  cached, what was trimmed, what was deliberately not done — is in `docs/token-optimisation.md`.
+- After changing how the grading request is built, run `scripts/cache_probe.py` (~$0.03): it fails if
+  the prompt stops being served from the cache.
 - **Before changing model, effort or a prompt, try it on real chats without saving anything:**
   `.venv/bin/python scripts/dry_run_grades.py -n 10 [--ruleset kb-v41] [--effort low]`. It prints
   the new grade next to the stored one and the QA analyst's score, plus cost.
@@ -358,7 +367,7 @@ sample that already has members.
 ### Change a setting (tokens, ports, model, timeouts)
 - Everything configurable is an environment variable in **`.env`** (see `.env.example` for the full
   annotated list). `settings.py` just reads them. After editing `.env`, run `./restart.sh`.
-- Common ones: `QA_BACKEND`, `QA_MODEL`, `QA_EFFORT`, `QA_V41_EFFECTIVE_FROM`, `INTERCOM_ACCESS_TOKEN`, `WEB_PORT`,
+- Common ones: `QA_BACKEND`, `QA_MODEL`, `QA_EFFORT`, `QA_CONCURRENCY`, `QA_V41_EFFECTIVE_FROM`, `INTERCOM_ACCESS_TOKEN`, `WEB_PORT`,
   `SLA_FIRST_RESPONSE_SEC`, `WEB_BASIC_AUTH`.
 
 ### Change how conversations are fetched from Intercom

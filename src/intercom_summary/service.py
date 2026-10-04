@@ -197,12 +197,10 @@ async def repair_agent_names(concurrency: int = 10) -> dict[str, Any]:
 # ── Review (QA grading) ─────────────────────────────────────────────────────────
 # Concurrency caps per backend.  Ollama runs one model on a single local GPU: with a
 # large model on a memory-constrained box, two concurrent calls thrash (and bust the
-# warm system-prompt KV cache), so 1 is faster end-to-end than 2 here.  The Anthropic
-# API can handle many more before hitting rate limits.
-_REVIEW_CONCURRENCY: dict[str, int] = {
-    "ollama": 1,
-    "api": 5,
-}
+# warm system-prompt KV cache), so 1 is faster end-to-end than 2 here.  The Claude API
+# takes QA_CONCURRENCY (default 10); its ceiling is the account's rate-limit tier.
+def _review_concurrency(backend: str) -> int:
+    return {"ollama": 1, "api": settings.qa_concurrency}.get(backend.lower(), 2)
 
 
 def review_and_store(
@@ -216,7 +214,9 @@ def review_and_store(
     backend: str | None = None,
     ruleset_id: str | None = None,
     sample: str | None = None,
+    batch: bool = False,
     on_progress: Callable[[int, int, int], None] | None = None,
+    on_batch: Callable[[dict], None] | None = None,
     cancel_event: "threading.Event | None" = None,
 ) -> dict[str, Any]:
     """Grade cached conversations concurrently and persist the grades.
@@ -234,6 +234,10 @@ def review_and_store(
     staleness or the scores of anything graded by another ruleset.
 
     `sample` restricts the run to a frozen calibration sample (see storage/calibration_store).
+
+    `batch` (Claude backend only) sends the run through the Message Batches API at half price;
+    results take minutes to hours. `on_batch(status)` receives the batch ids as soon as they
+    exist, then the processing counts on every poll (see qa/batch.py).
     """
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
@@ -275,7 +279,10 @@ def review_and_store(
         total = len(convos)
         # The run's own backend, not the configured default — a run started from the UI with
         # another backend must get that backend's concurrency.
-        concurrency = _REVIEW_CONCURRENCY.get((backend or settings.qa_backend).lower(), 2)
+        run_backend = (backend or settings.qa_backend).lower()
+        concurrency = _review_concurrency(run_backend)
+        if batch and run_backend != "api":
+            raise ValueError("Batch grading needs the Claude API backend")
 
         # Each conversation is graded against its assigned agent's ruleset — a VIP agent's
         # chats and emails get the VIP ruleset. Build one grader per ruleset we actually see
@@ -323,16 +330,21 @@ def review_and_store(
         failed_count = 0
         cancelled = False
         backend_unreachable = False
+        usage_blocks: list[dict] = []
+        batch_ids: list[str] = []
+        batch_fallbacks = 0
 
         async def _run() -> None:
-            nonlocal graded_count, failed_count, cancelled, backend_unreachable
+            nonlocal graded_count, failed_count, cancelled, backend_unreachable, batch_fallbacks
             sem = asyncio.Semaphore(concurrency)
             loop = asyncio.get_running_loop()
             executor = ThreadPoolExecutor(max_workers=concurrency)
 
-            async def grade_one(convo, grader) -> None:
-                nonlocal graded_count, failed_count, backend_unreachable
-                if cancel_event and cancel_event.is_set():
+            async def grade_one(convo, work, respect_cancel: bool = True) -> None:
+                """Run `work()` (→ grade, or (grade, fell_back) for a batch result) for one
+                conversation and save what it returns."""
+                nonlocal graded_count, failed_count, backend_unreachable, batch_fallbacks
+                if respect_cancel and cancel_event and cancel_event.is_set():
                     return
                 # The backend (e.g. local Ollama) died — don't burn through the rest of
                 # the batch racking up thousands of identical "connection refused" failures
@@ -340,10 +352,11 @@ def review_and_store(
                 if backend_unreachable:
                     return
                 async with sem:
-                    if cancel_event and cancel_event.is_set() or backend_unreachable:
+                    if (respect_cancel and cancel_event and cancel_event.is_set()
+                            or backend_unreachable):
                         return
                     try:
-                        grade = await loop.run_in_executor(executor, grader.grade, convo)
+                        grade = await loop.run_in_executor(executor, work)
                     except (httpx.ConnectError, httpx.ConnectTimeout,
                             httpx.RemoteProtocolError,
                             # Claude API: no connection after the SDK's own retries, or a
@@ -366,11 +379,71 @@ def review_and_store(
                         if on_progress:
                             on_progress(graded_count, skipped + failed_count, total)
                         return
+                if isinstance(grade, tuple):
+                    grade, fell_back = grade
+                    batch_fallbacks += fell_back
                 # DB writes happen back on the event-loop thread — no thread-safety issue.
                 grades_store.save(grade)
+                if getattr(grade, "usage", None):
+                    usage_blocks.append(grade.usage)
                 graded_count += 1
                 if on_progress:
                     on_progress(graded_count, skipped + failed_count, total)
+
+            def live(convo, grader):
+                return lambda: grader.grade(convo)
+
+            async def run_live(bucket, grader) -> None:
+                if not bucket:
+                    return
+                # One chat first: a cache entry is readable only once the first response has
+                # started, so N requests fired together would each pay to write the system
+                # prompt. After this one, the rest read it at a tenth of the price.
+                await grade_one(bucket[0], live(bucket[0], grader))
+                await asyncio.gather(*[grade_one(c, live(c, grader)) for c in bucket[1:]])
+
+            async def run_batch(bucket, grader) -> None:
+                from intercom_summary.qa import batch as batch_mod
+
+                queued = [c for c in bucket if batch_mod.batchable(c.id)]
+                odd = [c for c in bucket if not batch_mod.batchable(c.id)]
+                by_id = {c.id: c for c in queued}
+                status: dict = {"batch_ids": list(batch_ids)}
+
+                def report(update: dict) -> None:
+                    # Called from the polling thread too: hand the callback to the event-loop
+                    # thread, which owns the caller's DB connections.
+                    status.update(update, batch_ids=list(batch_ids))
+                    if on_batch:
+                        loop.call_soon_threadsafe(on_batch, dict(status))
+
+                if queued:
+                    ids = await loop.run_in_executor(executor, batch_mod.submit, grader, queued)
+                    batch_ids.extend(ids)
+                    report({"submitted": len(queued)})
+                    await loop.run_in_executor(
+                        executor, batch_mod.wait, grader.client, ids, cancel_event, report)
+                    items = await loop.run_in_executor(
+                        executor, lambda: list(batch_mod.results(grader.client, ids)))
+                    seen: set[str] = set()
+                    jobs = []
+                    for custom_id, result in items:
+                        convo = by_id.get(custom_id)
+                        if convo is None:
+                            continue
+                        seen.add(custom_id)
+                        usable = getattr(result, "type", None) == "succeeded"
+                        jobs.append(grade_one(
+                            convo,
+                            (lambda c=convo, r=result: batch_mod.grade_result(grader, c, r)),
+                            # A finished result is paid for — save it even on cancel; only
+                            # the live re-grades of failed items stop.
+                            respect_cancel=not usable,
+                        ))
+                    # Anything the results file did not mention is graded live.
+                    odd += [c for cid, c in by_id.items() if cid not in seen]
+                    await asyncio.gather(*jobs)
+                await asyncio.gather(*[grade_one(c, live(c, grader)) for c in odd])
 
             # One ruleset at a time: with ollama concurrency of 1 the throughput win comes from
             # a warm system-prompt KV cache, and alternating two system prompts would thrash it.
@@ -378,7 +451,7 @@ def review_and_store(
                 if backend_unreachable or (cancel_event and cancel_event.is_set()):
                     break
                 grader = grader_for(ruleset_id)
-                await asyncio.gather(*[grade_one(c, grader) for c in bucket])
+                await (run_batch if batch else run_live)(bucket, grader)
 
             executor.shutdown(wait=False)
             if cancel_event and cancel_event.is_set():
@@ -388,6 +461,16 @@ def review_and_store(
 
         if failed_count:
             log.info("Review finished with %d conversation(s) skipped after grading errors", failed_count)
+        from intercom_summary.qa.pricing import cache_hit_share, sum_usage
+
+        usage = sum_usage(usage_blocks)
+        if usage_blocks:
+            log.info(
+                "Review cost: $%.4f for %d chat(s) ($%.4f/chat), %d model call(s), cache hit %.0f%%%s",
+                usage["cost_usd"], len(usage_blocks), usage["cost_usd"] / len(usage_blocks),
+                usage["calls"], 100 * cache_hit_share(usage),
+                f", batch {', '.join(batch_ids)}" if batch_ids else "",
+            )
 
         return {
             "graded": graded_count,
@@ -402,6 +485,12 @@ def review_and_store(
             # the job as errored instead of "done" so the partial run isn't mistaken for
             # a complete one.
             "backend_unreachable": backend_unreachable,
+            # Tokens and USD across every grade saved by this run (qa/pricing.py).
+            "usage": usage,
+            "batch": batch,
+            "batch_ids": batch_ids,
+            # Batch items that came back unusable and were re-graded live, at full price.
+            "batch_fallbacks": batch_fallbacks,
         }
     finally:
         convos_store.close()

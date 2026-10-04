@@ -2,6 +2,7 @@
 
   intercom-summary fetch  --agent ada@co.com --since 2026-05-01 --out export.xlsx
   intercom-summary review --agent ada@co.com --since 2026-05-01 --out qa_report.xlsx
+  intercom-summary collect-batch msgbatch_01...   # save a Claude batch whose run died
 """
 from __future__ import annotations
 
@@ -119,6 +120,58 @@ async def _review(args: argparse.Namespace):
     log.info("Wrote QA report to %s and %s", out, md)
 
 
+async def _collect_batch(args: argparse.Namespace):
+    """Save the grades of a Claude batch whose review job was interrupted (a server restart
+    while it waited). The batch ran — and was billed — at Anthropic regardless."""
+    settings.require_qa("api")
+    from anthropic import Anthropic
+
+    from intercom_summary.qa import batch as batch_mod
+    from intercom_summary.qa.grader import Grader
+    from intercom_summary.qa.pricing import sum_usage
+    from intercom_summary.qa.rulesets import agent_ruleset_resolver
+    from intercom_summary.storage.conversations_store import ConversationsStore
+    from intercom_summary.storage.grades_store import GradesStore
+
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    log.info("Waiting for batch %s to end…", args.batch_id)
+    batch_mod.wait(client, [args.batch_id], on_status=lambda st: log.info("Batch: %s", st["counts"]))
+
+    # A batch holds one ruleset's requests. Unless told, resolve each chat the way the run that
+    # submitted it did (its agent's group and creation date).
+    resolve = (lambda _a, _c=None: args.ruleset) if args.ruleset else agent_ruleset_resolver()
+    graders: dict[str, Grader] = {}
+    cstore, gstore = ConversationsStore(), GradesStore()
+    saved = fallbacks = failed = 0
+    usage = []
+    try:
+        for custom_id, result in batch_mod.results(client, [args.batch_id]):
+            convo = cstore.get(custom_id)
+            if convo is None:
+                log.warning("%s: not in the conversation cache — skipped", custom_id)
+                failed += 1
+                continue
+            rid = resolve(convo.assignee_name, convo.created_at)
+            grader = graders.get(rid) or graders.setdefault(rid, Grader(ruleset_id=rid, client=client))
+            try:
+                grade, fell_back = batch_mod.grade_result(
+                    grader, convo, result, live_fallback=not args.no_live_fallback)
+            except Exception as exc:  # noqa: BLE001 — report and carry on with the rest
+                log.warning("%s: %s", custom_id, exc)
+                failed += 1
+                continue
+            gstore.save(grade)
+            usage.append(grade.usage)
+            saved += 1
+            fallbacks += fell_back
+    finally:
+        cstore.close()
+        gstore.close()
+    total = sum_usage(usage)
+    log.info("Saved %d grade(s) from %s (%d re-graded live, %d failed), $%.4f",
+             saved, args.batch_id, fallbacks, failed, total["cost_usd"])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="intercom-summary", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -134,6 +187,15 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out", help="Output QA report .xlsx path.")
     r.add_argument("--regrade", action="store_true", help="Re-grade even if already graded.")
     r.set_defaults(func=_review)
+
+    b = sub.add_parser("collect-batch",
+                       help="Save the grades of a Claude batch whose review run was interrupted.")
+    b.add_argument("batch_id", help="msgbatch_… id (shown in the failed job's error).")
+    b.add_argument("--ruleset", help="Ruleset the batch was submitted under, when the run forced "
+                                     "one (a pilot); default: resolve per chat as a run does.")
+    b.add_argument("--no-live-fallback", action="store_true",
+                   help="Skip unusable items instead of re-grading them live at full price.")
+    b.set_defaults(func=_collect_batch)
     return parser
 
 

@@ -62,6 +62,11 @@ class Settings:
     # How hard the model thinks before grading: low | medium | high | xhigh | max.
     # Higher is slower and costs more output tokens; measure before raising it.
     qa_effort: str = field(default_factory=lambda: _effort(_env("QA_EFFORT", "medium")))
+    # How many chats a live Claude run grades at once. The ceiling is the account's rate-limit
+    # tier; the SDK backs off and retries on a 429, so too high is slow, not broken.
+    qa_concurrency: int = field(
+        default_factory=lambda: max(1, int(_env("QA_CONCURRENCY", "10") or "10"))
+    )
     # On a policy decline, let the API re-run the grade on a fallback model (the grade then
     # records which model served it). Set QA_REFUSAL_FALLBACK=0 to just skip refused chats.
     qa_refusal_fallback: bool = field(
