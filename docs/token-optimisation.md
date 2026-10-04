@@ -49,29 +49,35 @@ because it's different for every chat.
 | Briefer evidence for the `default` / `vip` rulesets | Editing their prompts changes `rules_version` and marks their 8,820 existing grades stale. Do it only together with a planned re-grade. |
 | A cheaper model | Evaluation is fixed on Sonnet 5.5. |
 
-## Effort: measured, kept at `medium`
+## Effort: measured
 
 Thinking is part of the output bill, and `QA_EFFORT` controls it. On 2026-10-04, 30
-human-reviewed chats were graded at `low` and at `medium`, each as one batch run ($0.40 in
-total, nothing saved):
+human-reviewed chats were graded at each level, one batch run per level, with nothing saved:
 
-| Effort | $ / chat (batch) | Output tokens | Mean gap to human | PASS/FAIL agrees with human |
-|---|---:|---:|---:|---:|
-| `low` | 0.0066 | 940 | 13.3 | 18 / 30 |
-| `medium` | 0.0067 | 970 | 12.0 | 19 / 30 |
+| Effort | $ / chat batch (≈ live) | Output tok (max) | Gap to human | PASS/FAIL = human | Major fails per 30 chats | ≥15 below / above human |
+|---|---:|---:|---:|---:|---:|---:|
+| `low` | 0.0066 (≈0.013) | 940 (1,295) | 13.3 | 18 / 30 | 32 | 12 / 1 |
+| `medium` | 0.0067 (≈0.013) | 970 (1,279) | 12.0 | 19 / 30 | 26 | 9 / 2 |
+| `high` | 0.0138 (≈0.028) | 2,379 (4,421) | **7.8** | **24 / 30** | **9** | **4 / 2** |
 
-At `medium`, adaptive thinking already spends very little on this task. The output is
-almost entirely the JSON grade, so `low` saves about 3% while scoring slightly further from the
-human. 12% of verdicts differed between the two runs, which is the same as the run-to-run
-noise at a single effort level. **Keep `medium`; there's nothing to gain here.** Re-check only
-after a model or prompt change, with the same commands:
+(Major fails counts `resp-no-ghost`, `res-no-fake-close` and `financial-case-abandoned`.)
 
-    .venv/bin/python scripts/dry_run_grades.py --batch --effort low    --ids <30 reviewed chats>
-    .venv/bin/python scripts/dry_run_grades.py --batch --effort medium --ids <same chats>
+- `low` and `medium` behave alike. At `medium`, adaptive thinking spends very little, so `low`
+  saves about 3%.
+- **`high` is the first level that changes the grades.** It thinks about 2.5× longer and mostly
+  stops issuing Major fails that the transcript doesn't support. Each of those caps a chat at
+  75: `resp-no-ghost` went from 12 to 5, `financial-case-abandoned` from 8 to 1. Chats scored
+  ≥15 points *below* the human fell from 9 to 4, while chats ≥15 points *above* stayed at 2.
+  It became less harsh without becoming soft.
+- Output doubles the cost. Even so, `high` in a batch ($0.0138) is cheaper than the original live
+  `medium` ($0.0178).
+- Caveats: this was one trial of 30 chats. The human scores (mean 93.6, 25/30 PASS) were given
+  under the old `default` ruleset, so agreement with them partly rewards leniency. 24% of
+  verdicts differ between `medium` and `high`, against about 12% between two `medium`-like runs.
 
-The same run confirmed the batch price at scale: **$0.0067 per chat** at `medium`, about 38%
-of the original $0.0178 live price. Human scores were given under the old `default` ruleset,
-so the gap to them is only indicative.
+To re-check after a model or prompt change:
+
+    .venv/bin/python scripts/dry_run_grades.py --batch --effort high --ids <30 reviewed chats>
 
 ## Checking caching after a change
 
