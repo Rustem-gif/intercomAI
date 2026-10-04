@@ -143,7 +143,13 @@ def create_app() -> FastAPI:
         try:
             for j in js.list_recent(limit=50):
                 if j["status"] in ("running", "queued", "cancelling"):
-                    js.update(j["id"], status="error", error="interrupted by server restart")
+                    ids = ((j.get("result") or {}).get("batch_status") or {}).get("batch_ids")
+                    error = "interrupted by server restart"
+                    if ids:
+                        # The batch keeps running at Anthropic and is already paid for.
+                        error += (" — its Claude batch is still recoverable: "
+                                  + "; ".join(f"intercom-summary collect-batch {b}" for b in ids))
+                    js.update(j["id"], status="error", error=error)
         finally:
             js.close()
 
@@ -971,6 +977,8 @@ def create_app() -> FastAPI:
 
             if body.ruleset_id not in known_ruleset_ids():
                 raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
+        if body.batch and (body.backend or settings.qa_backend).lower() != "api":
+            raise HTTPException(400, "Batch grading needs the Claude API backend.")
         try:
             settings.require_qa(body.backend)
         except RuntimeError as exc:
@@ -2013,13 +2021,21 @@ def _run_review_job(job_id: str, params: dict) -> None:
     js = JobsStore()
     js.update(job_id, status="running")
     try:
+        progress: dict = {"partial": True}
+
         def on_progress(graded: int, skipped: int, total: int) -> None:
-            js.update(job_id, result={
-                "graded": graded, "skipped": skipped, "total": total, "partial": True,
-            })
+            progress.update(graded=graded, skipped=skipped, total=total)
+            js.update(job_id, result=progress)
+
+        def on_batch(status: dict) -> None:
+            # The batch ids land in the job as soon as they exist: a submitted batch is paid
+            # for, and `intercom-summary collect-batch <id>` can still save it if this
+            # process dies before the results are in.
+            progress["batch_status"] = status
+            js.update(job_id, result=progress)
 
         result = service.review_and_store(**params, on_progress=on_progress,
-                                          cancel_event=cancel_event)
+                                          on_batch=on_batch, cancel_event=cancel_event)
         if result.get("backend_unreachable"):
             # The grading backend died mid-run — don't pass this off as a completed review.
             js.update(job_id, status="error",

@@ -288,7 +288,7 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "expected_handling": "<Answer|Agent action|Internal escalation>",
   "data_sufficiency": "<Sufficient|Insufficient>",
   "requests": [{"text": "<what the player asked>", "status": "<answered|action taken|escalated|unresolved>", "material": <true|false>}],
-  "criteria": [{"id": "<criterion id>", "v": "<pass|fail|n/a|cannot_determine>", "ev": "<short direct quote, or why it cannot be determined>"}],
+  "criteria": [{"id": "<criterion id>", "v": "<pass|fail|n/a|cannot_determine>", "ev": "<see EVIDENCE below>"}],
   "outcome_status": "<Resolved|Pending-legitimate|Escalated correctly|Partially resolved|Unresolved|Abandoned-fake-closed|Critical Fail>",
   "flags": ["<flag_name>"],
   "violations": ["<most critical first>"],
@@ -297,5 +297,9 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "manual_review_reason": "<why, or empty>",
   "confidence": "<High|Medium|Low>"
 }
+EVIDENCE ("ev") depends on the verdict:
+- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most.
+- cannot_determine — what is missing, 12 words at most.
+- pass and n/a — an empty string "". Nothing is recorded for them.
 Evaluate every criterion listed above, once each. Evaluate the transcript below and return ONLY the JSON.
 """

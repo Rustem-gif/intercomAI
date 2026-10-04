@@ -7,6 +7,8 @@ before it touches the database.
     .venv/bin/python scripts/dry_run_grades.py                     # 10 chats, kb-v41
     .venv/bin/python scripts/dry_run_grades.py -n 5 --ruleset vip --effort low
     .venv/bin/python scripts/dry_run_grades.py --ids 123 456       # specific chats
+    .venv/bin/python scripts/dry_run_grades.py -n 30 --batch       # half price, waits for the batch
+    .venv/bin/python scripts/dry_run_grades.py -n 10 --model claude-opus-5-5 --effort medium
 
 Half the sample (by default) is chats a human has already re-scored — the closest thing to
 ground truth we have.
@@ -21,8 +23,6 @@ import time
 from intercom_summary.settings import settings
 from intercom_summary.storage.conversations_store import ConversationsStore, tags_are_ignored
 
-# $ per million tokens — Claude Sonnet 5.5 (input, 5-minute cache write, cache read, output).
-PRICES = {"in": 2.00, "cache_write": 2.50, "cache_read": 0.20, "out": 10.00}
 
 
 def pick_ids(n: int) -> list[str]:
@@ -52,13 +52,34 @@ def stored(cid: str) -> dict:
     return {"score": row[0], "human": row[1], "ruleset": row[2], "model": row[3]}
 
 
-def cost(u) -> float:
-    if u is None:
-        return 0.0
-    g = lambda k: getattr(u, k, 0) or 0
-    return (g("input_tokens") * PRICES["in"] + g("cache_creation_input_tokens") * PRICES["cache_write"]
-            + g("cache_read_input_tokens") * PRICES["cache_read"]
-            + g("output_tokens") * PRICES["out"]) / 1e6
+def grade_live(grader, c):
+    t0 = time.time()
+    try:
+        g = grader.grade(c)
+    except Exception as exc:  # noqa: BLE001 — a dry run reports, it doesn't stop
+        g = exc
+    return g, time.time() - t0
+
+
+def grade_batch(grader, convos):
+    from intercom_summary.qa import batch as batch_mod
+
+    t0 = time.time()
+    by_id = {c.id: c for c in convos}
+    ids = batch_mod.submit(grader, convos)
+    print(f"batch {', '.join(ids)} submitted ({len(convos)} chats) — waiting…")
+    batch_mod.wait(grader.client, ids, on_status=lambda st: print(f"  {st['counts']}"), poll=15)
+    dt = time.time() - t0
+    print(f"batch ended after {dt:.0f}s\n")
+    for custom_id, result in batch_mod.results(grader.client, ids):
+        c = by_id[custom_id]
+        try:
+            g, fell_back = batch_mod.grade_result(grader, c, result)
+            if fell_back:
+                print(f"{custom_id}: batch item unusable — graded live")
+        except Exception as exc:  # noqa: BLE001
+            g = exc
+        yield c, g, dt / max(len(convos), 1)
 
 
 def main() -> None:
@@ -67,13 +88,18 @@ def main() -> None:
     ap.add_argument("--ids", nargs="*")
     ap.add_argument("--ruleset", default="kb-v41")
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
+    ap.add_argument("--model", help="override QA_MODEL for this run, e.g. claude-opus-5-5")
     ap.add_argument("--json", action="store_true", help="also dump each new grade's verdicts")
     ap.add_argument("--jev", choices=["off", "shadow", "flag", "reconcile"],
                     help="override JEV_MODE for this run (v4.1 only)")
+    ap.add_argument("--batch", action="store_true",
+                    help="grade through the Message Batches API (half price; waits for it)")
     args = ap.parse_args()
 
     if args.effort:
         object.__setattr__(settings, "qa_effort", args.effort)
+    if args.model:
+        object.__setattr__(settings, "qa_model", args.model)
     if args.jev:
         object.__setattr__(settings, "jev_mode", args.jev)
 
@@ -87,20 +113,26 @@ def main() -> None:
     cs = ConversationsStore()
     total_cost, rows = 0.0, []
     try:
+        convos = []
         for cid in args.ids or pick_ids(args.n):
             c = cs.get(cid)
             if c is None or tags_are_ignored(c.tags):
                 print(f"{cid}: not in cache or ignored-tag — skipped")
                 continue
-            t0 = time.time()
-            try:
-                g = grader.grade(c)
-            except Exception as exc:  # noqa: BLE001 — a dry run reports, it doesn't stop
-                print(f"{cid}: FAILED — {exc}")
+            convos.append(c)
+
+        if args.batch:
+            graded = grade_batch(grader, convos)
+        else:
+            graded = ((c, *grade_live(grader, c)) for c in convos)
+
+        for c, g, dt in graded:
+            cid = c.id
+            if isinstance(g, Exception):
+                print(f"{cid}: FAILED — {g}")
                 continue
-            dt = time.time() - t0
-            u = grader.last_usage
-            total_cost += (cc := cost(u))
+            u = g.usage or {}
+            total_cost += (cc := u.get("cost_usd", 0.0))
             old = stored(cid)
             failed = [r.rule_id for r in g.rule_results if r.verdict == "fail"]
             undet = [r.rule_id for r in g.rule_results if r.verdict == "cannot_determine"]
@@ -111,7 +143,9 @@ def main() -> None:
                 f"  human {old.get('human') if old.get('human') is not None else '—'!s:>3}"
                 f"  | {g.case_type or '-'} / {g.risk_flag or '-'} / {g.outcome_status or '-'}"
                 f"  | {dt:4.1f}s ${cc:.4f}"
-                f" cache_read={getattr(u, 'cache_read_input_tokens', 0)} out={getattr(u, 'output_tokens', 0)}"
+                f" in={u.get('input', 0)} cache_read={u.get('cache_read', 0)}"
+                f" cache_write={u.get('cache_write_5m', 0) + u.get('cache_write_1h', 0)}"
+                f" out={u.get('output', 0)}{' batch' if u.get('batch_calls') else ''}"
                 f"  model={g.model}"
             )
             print(f"      fail: {', '.join(failed) or '—'}"

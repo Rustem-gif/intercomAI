@@ -59,10 +59,13 @@ def test_review_and_store_then_overview(temp_db, monkeypatch):
                         lambda backend=None, ruleset_id=None: grader_mod.Grader(ruleset_id="default"))
 
     result = service.review_and_store(conversation_ids=["1", "2"])
+    usage = result.pop("usage")
     assert result == {
         "graded": 2, "skipped": 0, "failed": 0, "total": 2, "ignored": 0,
         "cancelled": False, "backend_unreachable": False,
+        "batch": False, "batch_ids": [], "batch_fallbacks": 0,
     }
+    assert usage["calls"] == 2 and usage["batch_calls"] == 0
 
     # Idempotent: re-running skips both.
     again = service.review_and_store(conversation_ids=["1", "2"])

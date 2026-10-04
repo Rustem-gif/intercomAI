@@ -615,6 +615,15 @@ export default function GradePanel({
 
       <p className="text-sm">{grade.summary}</p>
 
+      {/* What this grade cost to produce, summed over every model call behind it. */}
+      {!editing && grade.usage?.calls ? (
+        <p className="text-[11px] text-muted-foreground">
+          {grade.model ? `${grade.model} · ` : ""}${grade.usage.cost_usd.toFixed(4)}
+          {grade.usage.calls > 1 ? ` · ${grade.usage.calls} calls` : ""}
+          {grade.usage.batch_calls ? " · batch" : ""}
+        </p>
+      ) : null}
+
       {grade.violations.length > 0 && !editing && (
         <div>
           <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">Violations</h4>

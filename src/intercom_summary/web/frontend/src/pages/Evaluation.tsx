@@ -67,6 +67,17 @@ function ProgressBar({ pct: p }: { pct: number }) {
   );
 }
 
+// ── Run cost (result.usage — see qa/pricing.py) ───────────────────────────────
+
+function runCost(r: any): string | null {
+  const u = r?.usage;
+  if (!u || !u.calls) return null;
+  const prompt = (u.input ?? 0) + (u.cache_write_5m ?? 0) + (u.cache_write_1h ?? 0) + (u.cache_read ?? 0);
+  const hit = prompt ? Math.round((100 * (u.cache_read ?? 0)) / prompt) : 0;
+  const n = r?.graded || 0;
+  return `≈ $${Number(u.cost_usd ?? 0).toFixed(2)}${n ? ` for ${n} chat${n === 1 ? "" : "s"}` : ""} · cache hit ${hit}%`;
+}
+
 // ── Active-job panel ──────────────────────────────────────────────────────────
 
 function ActiveJobPanel({
@@ -85,6 +96,11 @@ function ActiveJobPanel({
   const skipped = r?.skipped ?? 0;
   const p = pct(graded, total);
   const active = ["running", "queued", "cancelling"].includes(job.status);
+  // A batch run waits at Anthropic before anything is graded; show its own progress.
+  const bs = r?.batch_status;
+  const bc = bs?.counts;
+  const batchWaiting = active && bs && !bs.ended;
+  const cost = runCost(r);
 
   return (
     <Card>
@@ -123,6 +139,18 @@ function ActiveJobPanel({
             </div>
           </>
         )}
+        {batchWaiting && (
+          <p className="text-xs text-muted-foreground">
+            Waiting for the Claude batch —{" "}
+            {bc
+              ? `${(bc.succeeded ?? 0) + (bc.errored ?? 0) + (bc.canceled ?? 0) + (bc.expired ?? 0)}/${
+                  bs.submitted ?? (bc.processing ?? 0) + (bc.succeeded ?? 0) + (bc.errored ?? 0)
+                } processed`
+              : "submitted"}
+            . Results usually arrive within an hour; grades are saved when it ends.
+          </p>
+        )}
+        {cost && <p className="text-xs text-muted-foreground">{cost}</p>}
         {job.status === "error" && (
           <p className="text-sm text-destructive">{job.error ?? "Unknown error"}</p>
         )}
@@ -154,6 +182,7 @@ function RunForm({
   const [until, setUntil] = useState("");
   const [state, setStateVal] = useState("");
   const [regrade, setRegrade] = useState(false);
+  const [batch, setBatch] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -168,6 +197,7 @@ function RunForm({
         state: state || null,
         regrade,
         backend,
+        batch: backend === "api" && batch,
       });
       onStarted(j);
     } catch (e: any) {
@@ -238,6 +268,24 @@ function RunForm({
           Re-grade already-evaluated conversations
         </label>
 
+        {backend === "api" && (
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={batch}
+              onChange={(e) => setBatch(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-input"
+            />
+            <span>
+              Batch — 50% cheaper
+              <span className="block text-xs text-muted-foreground">
+                Graded by the Claude Batch API: results in minutes to a few hours instead of
+                seconds. Same grades; use it for large or overnight runs.
+              </span>
+            </span>
+          </label>
+        )}
+
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         <Button className="w-full" onClick={start} disabled={loading}>
@@ -260,7 +308,7 @@ function JobHistory({ jobs }: { jobs: JobListItem[] }) {
       <table className="w-full text-sm">
         <thead className="bg-muted/50">
           <tr>
-            {["Started", "Engine", "Graded", "Skipped", "Total", "Status"].map((h) => (
+            {["Started", "Engine", "Graded", "Skipped", "Total", "Cost", "Status"].map((h) => (
               <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-muted-foreground">
                 {h}
               </th>
@@ -275,7 +323,9 @@ function JobHistory({ jobs }: { jobs: JobListItem[] }) {
               api: "Claude API",
               claude_code: "Claude Code",
             };
-            const engine = engineMap[(j as any).params?.backend ?? ""] ?? "—";
+            const params = (j as any).params ?? {};
+            const engine =
+              (engineMap[params.backend ?? ""] ?? "—") + (params.batch ? " · batch" : "");
             return (
               <tr key={j.id} className="hover:bg-muted/30">
                 <td className="px-4 py-2.5 text-xs text-muted-foreground">{fmt(j.created_at)}</td>
@@ -283,6 +333,9 @@ function JobHistory({ jobs }: { jobs: JobListItem[] }) {
                 <td className="px-4 py-2.5 font-medium">{r?.graded ?? "—"}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{r?.skipped ?? "—"}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{r?.total ?? "—"}</td>
+                <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                  {r?.usage?.calls ? `$${Number(r.usage.cost_usd ?? 0).toFixed(2)}` : "—"}
+                </td>
                 <td className="px-4 py-2.5">
                   <StatusBadge status={j.status} />
                   {j.status === "error" && (
