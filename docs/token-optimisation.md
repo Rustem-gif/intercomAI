@@ -49,35 +49,41 @@ because it's different for every chat.
 | Briefer evidence for the `default` / `vip` rulesets | Editing their prompts changes `rules_version` and marks their 8,820 existing grades stale. Do it only together with a planned re-grade. |
 | A cheaper model | Evaluation is fixed on Sonnet 5.5. |
 
-## Effort: measured
+## Effort and model: measured
 
-Thinking is part of the output bill, and `QA_EFFORT` controls it. On 2026-10-04, 30
-human-reviewed chats were graded at each level, one batch run per level, with nothing saved:
+On 2026-10-04 the same 30 human-reviewed chats were graded in each configuration, one batch run
+each, with nothing saved. $ / chat is the batch price with a warm prompt cache; live is about
+twice that.
 
-| Effort | $ / chat batch (≈ live) | Output tok (max) | Gap to human | PASS/FAIL = human | Major fails per 30 chats | ≥15 below / above human |
+| Configuration | $ / chat (batch) | Output tok (max) | Gap to human | PASS/FAIL = human | Major fails / 30 chats | ≥15 below / above human |
 |---|---:|---:|---:|---:|---:|---:|
-| `low` | 0.0066 (≈0.013) | 940 (1,295) | 13.3 | 18 / 30 | 32 | 12 / 1 |
-| `medium` | 0.0067 (≈0.013) | 970 (1,279) | 12.0 | 19 / 30 | 26 | 9 / 2 |
-| `high` | 0.0138 (≈0.028) | 2,379 (4,421) | **7.8** | **24 / 30** | **9** | **4 / 2** |
+| Sonnet 5.5 `low` | 0.0066 | 940 (1,295) | 13.3 | 18 / 30 | 32 | 12 / 1 |
+| Sonnet 5.5 `medium` | 0.0067 | 970 (1,279) | 12.0 | 19 / 30 | 26 | 9 / 2 |
+| **Sonnet 5.5 `high`** | **0.0138** | 2,379 (4,421) | **7.8** | **24 / 30** | **9** | **4 / 2** |
+| Sonnet 5.5 `xhigh` | 0.0268 | 4,991 (9,477) | 8.5 | 23 / 30 | 9 | 5 / 2 |
+| Opus 5.5 `medium` | ≈0.022 * | 1,869 (2,709) | 7.7 | 24 / 30 | 8 | 4 / 2 |
 
 (Major fails counts `resp-no-ghost`, `res-no-fake-close` and `financial-case-abandoned`.)
+\* Opus measured $0.0442 because its cache was cold: caches are per-model, and 29 of 30 requests
+paid the 1-hour write. ≈0.022 is the same tokens priced with cache reads.
 
-- `low` and `medium` behave alike. At `medium`, adaptive thinking spends very little, so `low`
-  saves about 3%.
-- **`high` is the first level that changes the grades.** It thinks about 2.5× longer and mostly
-  stops issuing Major fails that the transcript doesn't support. Each of those caps a chat at
-  75: `resp-no-ghost` went from 12 to 5, `financial-case-abandoned` from 8 to 1. Chats scored
-  ≥15 points *below* the human fell from 9 to 4, while chats ≥15 points *above* stayed at 2.
-  It became less harsh without becoming soft.
-- Output doubles the cost. Even so, `high` in a batch ($0.0138) is cheaper than the original live
-  `medium` ($0.0178).
-- Caveats: this was one trial of 30 chats. The human scores (mean 93.6, 25/30 PASS) were given
-  under the old `default` ruleset, so agreement with them partly rewards leniency. 24% of
-  verdicts differ between `medium` and `high`, against about 12% between two `medium`-like runs.
+- `low` ≈ `medium`. At `medium`, adaptive thinking spends very little on this task.
+- **`high` is the sweet spot.** It mostly stops issuing Major fails the transcript doesn't
+  support, each of which caps a chat at 75. Chats scored ≥15 points below the human fell from
+  9 to 4, while chats ≥15 points above stayed at 2. It became less harsh without becoming soft.
+- **`xhigh` buys nothing more.** It costs twice `high` and scores the same. Only 9.8% of verdicts
+  differ between `high` and `xhigh`, which is run-to-run noise. Its longest answer was 9.5k
+  tokens, under the 16k `max_tokens` cap, but `xhigh`/`max` would need the cap raised and
+  streaming to be safe.
+- **Opus 5.5 `medium` matches Sonnet `high`** (7.7 vs 7.8, 14.5% of verdicts differ) at about
+  1.6× the price. There's no accuracy reason to pay for Opus here.
+- Caveats: one trial of 30 chats. The human scores (mean 93.6, 25/30 PASS) were given under the
+  old `default` ruleset, so agreement with them partly rewards leniency.
 
 To re-check after a model or prompt change:
 
     .venv/bin/python scripts/dry_run_grades.py --batch --effort high --ids <30 reviewed chats>
+    .venv/bin/python scripts/dry_run_grades.py --batch --model claude-opus-5-5 --effort medium --ids <same>
 
 ## Checking caching after a change
 

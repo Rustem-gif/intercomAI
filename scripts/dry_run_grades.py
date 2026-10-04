@@ -8,6 +8,7 @@ before it touches the database.
     .venv/bin/python scripts/dry_run_grades.py -n 5 --ruleset vip --effort low
     .venv/bin/python scripts/dry_run_grades.py --ids 123 456       # specific chats
     .venv/bin/python scripts/dry_run_grades.py -n 30 --batch       # half price, waits for the batch
+    .venv/bin/python scripts/dry_run_grades.py -n 10 --model claude-opus-5-5 --effort medium
 
 Half the sample (by default) is chats a human has already re-scored — the closest thing to
 ground truth we have.
@@ -87,6 +88,7 @@ def main() -> None:
     ap.add_argument("--ids", nargs="*")
     ap.add_argument("--ruleset", default="kb-v41")
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
+    ap.add_argument("--model", help="override QA_MODEL for this run, e.g. claude-opus-5-5")
     ap.add_argument("--json", action="store_true", help="also dump each new grade's verdicts")
     ap.add_argument("--jev", choices=["off", "shadow", "flag", "reconcile"],
                     help="override JEV_MODE for this run (v4.1 only)")
@@ -96,6 +98,8 @@ def main() -> None:
 
     if args.effort:
         object.__setattr__(settings, "qa_effort", args.effort)
+    if args.model:
+        object.__setattr__(settings, "qa_model", args.model)
     if args.jev:
         object.__setattr__(settings, "jev_mode", args.jev)
 
