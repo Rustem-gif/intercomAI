@@ -49,17 +49,29 @@ because it's different for every chat.
 | Briefer evidence for the `default` / `vip` rulesets | Editing their prompts changes `rules_version` and marks their 8,820 existing grades stale. Do it only together with a planned re-grade. |
 | A cheaper model | Evaluation is fixed on Sonnet 5.5. |
 
-## Next lever, not yet applied: effort
+## Effort: measured, kept at `medium`
 
-Thinking is part of the output bill, and `QA_EFFORT` controls it. Going from `medium` to `low` is a
-quality tradeoff, so it needs a measurement first. The proposal is to grade 30 human-reviewed chats
-at each level as one batch run (about $0.40):
+Thinking is part of the output bill, and `QA_EFFORT` controls it. On 2026-10-04, 30
+human-reviewed chats were graded at `low` and at `medium`, each as one batch run ($0.40 in
+total, nothing saved):
 
-    .venv/bin/python scripts/dry_run_grades.py -n 60 --batch --effort low
-    .venv/bin/python scripts/dry_run_grades.py -n 60 --batch --effort medium
+| Effort | $ / chat (batch) | Output tokens | Mean gap to human | PASS/FAIL agrees with human |
+|---|---:|---:|---:|---:|
+| `low` | 0.0066 | 940 | 13.3 | 18 / 30 |
+| `medium` | 0.0067 | 970 | 12.0 | 19 / 30 |
 
-Then compare the mean gap to the human score, how often a verdict flips, and $ per chat. Human
-scores were given under the old `default` ruleset, so the gap is only indicative.
+At `medium`, adaptive thinking already spends very little on this task. The output is
+almost entirely the JSON grade, so `low` saves about 3% while scoring slightly further from the
+human. 12% of verdicts differed between the two runs, which is the same as the run-to-run
+noise at a single effort level. **Keep `medium`; there's nothing to gain here.** Re-check only
+after a model or prompt change, with the same commands:
+
+    .venv/bin/python scripts/dry_run_grades.py --batch --effort low    --ids <30 reviewed chats>
+    .venv/bin/python scripts/dry_run_grades.py --batch --effort medium --ids <same chats>
+
+The same run confirmed the batch price at scale: **$0.0067 per chat** at `medium`, about 38%
+of the original $0.0178 live price. Human scores were given under the old `default` ruleset,
+so the gap to them is only indicative.
 
 ## Checking caching after a change
 
