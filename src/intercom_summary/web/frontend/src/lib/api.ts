@@ -226,6 +226,21 @@ export interface RuleResult {
   group?: string;
 }
 
+export interface JevFinding {
+  rule: string;              // gate1_missed | major_unsupported | double_count | …
+  criterion: string | null;
+  p: number | null;
+  detail: string;
+}
+
+export interface JevCheck {
+  model?: string;
+  mode?: string;             // off | shadow | flag | reconcile
+  findings?: JevFinding[];
+  error?: string;
+  reconcile?: { changed?: Record<string, [string, string]>; error?: string };
+}
+
 export interface Grade {
   conversation_id: string;
   agent_name: string;
@@ -262,6 +277,8 @@ export interface Grade {
   expected_handling?: string;
   data_sufficiency?: string;
   confidence?: string;
+  /** Jev's second opinion on the verdicts (v4.1 only). Advisory: it never moves the score. */
+  jev?: JevCheck;
   /** Each thing the player asked for, and what became of it. */
   requests?: { text: string; status: string; material?: boolean }[];
 }

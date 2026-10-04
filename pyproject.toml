@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "bcrypt>=4.1",
     "itsdangerous>=2.1",
+    "typesafe-sdk>=0.7",
 ]
 
 [project.optional-dependencies]
@@ -39,5 +40,5 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 testpaths = ["tests"]

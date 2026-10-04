@@ -68,15 +68,20 @@ def main() -> None:
     ap.add_argument("--ruleset", default="kb-v41")
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
     ap.add_argument("--json", action="store_true", help="also dump each new grade's verdicts")
+    ap.add_argument("--jev", choices=["off", "shadow", "flag", "reconcile"],
+                    help="override JEV_MODE for this run (v4.1 only)")
     args = ap.parse_args()
 
     if args.effort:
         object.__setattr__(settings, "qa_effort", args.effort)
+    if args.jev:
+        object.__setattr__(settings, "jev_mode", args.jev)
 
     from intercom_summary.qa.grader import Grader
 
     grader = Grader(ruleset_id=args.ruleset)
-    print(f"model={settings.qa_model} effort={settings.qa_effort} ruleset={args.ruleset} "
+    print(f"model={settings.qa_model} effort={settings.qa_effort} jev={settings.jev_mode} "
+          f"ruleset={args.ruleset} "
           f"({grader.rules_version}) — nothing is saved\n")
 
     cs = ConversationsStore()
@@ -112,6 +117,14 @@ def main() -> None:
             print(f"      fail: {', '.join(failed) or '—'}"
                   + (f"   cannot_determine: {', '.join(undet)}" if undet else "")
                   + ("   [manual review]" if g.manual_review_needed else ""))
+            if g.jev:
+                j = g.jev
+                found = "; ".join(
+                    f"{f['rule']}" + (f"({f['criterion']})" if f.get("criterion") else "")
+                    + (f" p={f['p']}" if f.get("p") is not None else "")
+                    for f in j.get("findings") or []) or "agrees"
+                print(f"      jev[{j.get('mode')}]: {j.get('error') or found}"
+                      f"  ({(j.get('usage') or {}).get('input_tokens', 0)} tok)")
             if args.json:
                 print(json.dumps({r.rule_id: [r.verdict, r.evidence] for r in g.rule_results},
                                  ensure_ascii=False, indent=1))

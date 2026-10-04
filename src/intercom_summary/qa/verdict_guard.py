@@ -86,6 +86,12 @@ def _is_grounded(evidence: str, transcript: str) -> bool:
     return ev[:_PREFIX] in transcript
 
 
+def evidence_in_conversation(evidence: str, conversation: Conversation) -> bool:
+    """True if a cited quote really comes from the conversation (the whole thread, bots
+    included — same test the guards below use)."""
+    return _is_grounded(evidence, _norm(conversation.transcript_text()))
+
+
 def _player_names(conversation: Conversation) -> list[str]:
     """Every name the agent could reasonably have used, longest first.
 
