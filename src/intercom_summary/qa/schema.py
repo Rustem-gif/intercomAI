@@ -210,6 +210,8 @@ class ConversationGrade:
     jev: dict = field(default_factory=dict)
     # Tokens and USD behind this grade, summed over every model call (qa/pricing.py).
     usage: dict = field(default_factory=dict)
+    # "<brand>:<hash>" of the Help Center snapshot the grader judged accuracy against, or "".
+    kb_version: str = ""
 
     @property
     def effective_score(self) -> int:
@@ -377,4 +379,5 @@ class ConversationGrade:
         g.confidence = d.get("confidence", "")
         g.jev = d.get("jev") or {}
         g.usage = d.get("usage") or {}
+        g.kb_version = d.get("kb_version") or ""
         return g

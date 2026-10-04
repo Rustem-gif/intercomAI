@@ -39,10 +39,28 @@ def batchable(conversation_id: str) -> bool:
     return bool(_CUSTOM_ID.match(conversation_id or ""))
 
 
+def warm_up_set(grader, conversations: list) -> list:
+    """One conversation per distinct cached prefix (ruleset prompt + the brand's KB block).
+
+    Batch requests run concurrently, so without a warm cache most of them each pay the 1-hour
+    write for the whole prefix — with the ~15k-token Help Center in it, a miss costs about 20x
+    a hit. Grading these few live first, in the batch's exact request shape, writes the entry
+    the rest of the batch then reads."""
+    seen: set = set()
+    picked = []
+    for c in conversations:
+        kb = grader.knowledge_for(c)
+        key = kb.version if kb else ""
+        if key not in seen:
+            seen.add(key)
+            picked.append(c)
+    return picked
+
+
 def submit(grader, conversations: Iterable) -> list[str]:
     requests = [
         {"custom_id": c.id,
-         "params": grader.request_params(grader.messages_for(c), batch=True)}
+         "params": grader.request_params(c, batch=True)}
         for c in conversations
     ]
     ids: list[str] = []

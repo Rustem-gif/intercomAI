@@ -83,7 +83,7 @@ def test_a_batch_request_is_the_live_request_with_a_one_hour_cache():
     assert ids == ["msgbatch_1"]
     req = client.submitted[0][0]
     assert req["custom_id"] == "42"
-    assert req["params"] == grader.request_params(grader.messages_for(_convo()), batch=True)
+    assert req["params"] == grader.request_params(_convo(), batch=True)
     assert "betas" not in req["params"]
 
 
@@ -193,14 +193,21 @@ def test_a_batch_run_saves_every_grade_and_reports_the_batch(batch_service):
                                       ruleset_id="kb-v41", batch=True, on_batch=statuses.append)
     assert result["graded"] == 3 and result["failed"] == 0
     assert result["batch_ids"] == ["msgbatch_1"] and result["batch_fallbacks"] == 1
-    assert len(client.live_calls) == 1                     # only the errored item
-    assert result["usage"]["batch_calls"] == 2
+    # Chat 1 warmed the cache live, in the batch's request shape; 2 and 3 went in the batch,
+    # and 3 came back errored and was re-graded live.
+    warm = client.live_calls[0]
+    assert warm["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert "betas" not in warm and "extra_body" not in warm
+    assert [r["custom_id"] for r in client.submitted[0]] == ["2", "3"]
+    assert len(client.live_calls) == 2
+    assert result["usage"]["batch_calls"] == 1
     # The batch id reached the caller before the batch ended, so a dead run is recoverable.
-    assert statuses[0]["batch_ids"] == ["msgbatch_1"] and statuses[0].get("submitted") == 3
+    assert statuses[0]["batch_ids"] == ["msgbatch_1"] and statuses[0].get("submitted") == 2
     assert statuses[-1]["ended"] is True
     store = GradesStore(settings.db_path)
     try:
-        assert store.get("1")["usage"]["batch_calls"] == 1
+        assert store.get("2")["usage"]["batch_calls"] == 1
+        assert store.get("1")["usage"]["batch_calls"] == 0
     finally:
         store.close()
 
@@ -208,7 +215,7 @@ def test_a_batch_run_saves_every_grade_and_reports_the_batch(batch_service):
 def test_a_cancelled_batch_run_saves_what_finished_and_grades_nothing_live(batch_service):
     from intercom_summary import service
 
-    client = FakeBatchClaude(outcomes={"_unfinished": ("2", "3")}, polls_to_end=99)
+    client = FakeBatchClaude(outcomes={"_unfinished": ("3",)}, polls_to_end=99)
     batch_service(client)
     stop = threading.Event()
 
@@ -220,8 +227,10 @@ def test_a_cancelled_batch_run_saves_what_finished_and_grades_nothing_live(batch
                                       cancel_event=stop)
     assert client.cancelled == ["msgbatch_1"]
     assert result["cancelled"] is True
-    assert result["graded"] == 1                 # chat 1 finished before the cancel — kept
-    assert client.live_calls == []               # cancelled items are not re-graded live
+    # Chat 1 warmed the cache live before the batch; chat 2 finished in the batch before the
+    # cancel and is kept; chat 3 was cancelled and is not re-graded live.
+    assert result["graded"] == 2
+    assert len(client.live_calls) == 1
 
 
 def test_batch_needs_the_claude_backend(batch_service):

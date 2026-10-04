@@ -256,6 +256,28 @@ every resolver call passes the chat's `created_at`.
   `POST /api/review {"ruleset_id": "kb-v41", "sample": "kb-v41-180"}`. Grades are stored under the
   ruleset that produced them, so a pilot cannot disturb anything graded by another ruleset.
 
+### The knowledge base behind v4.1 accuracy (Help Center)
+- The manual judges `accuracy-material` / `accuracy-minor` against "approved KB/T&C" and says
+  `cannot_determine` without it — and every `cannot_determine` sends a chat to manual review. Before
+  the KB, that was ~2 in 3 chats. The brand's **published Intercom Help Center** is that KB: the
+  v4.1 grader gets it as a second cached system block (`qa/knowledge_base.py`), per brand
+  (`BRAND_HELP_CENTERS`: Betncare/King Billy → help center 248; Tomb Riches → 8189, no articles yet,
+  so its chats are graded without a KB and keep the old rule).
+- Snapshots: `data/kb/<brand>.md`, refreshed when older than `KB_MAX_AGE_HOURS` (24) or by
+  `intercom-summary sync-kb`. A failed refresh keeps the previous snapshot. The text has no dates,
+  so it only changes — and only re-writes the prompt cache — when an article does. Every grade
+  records the snapshot it used: `kb_version` (`Betncare:<hash>`). `KB_ENABLED=0` switches it off.
+- The rule (prompt section `## ACCURACY`): a general rule/fact the agent states is checked against
+  the KB and the transcript (fail if contradicted, pass if it agrees, n/a if no such statement);
+  what the agent reports about *this player's own account* is not an accuracy question; and
+  `cannot_determine` is only for a decisive rule the KB does not cover. Measured on 30 reviewed chats:
+  `accuracy-material` undetermined 20 → 6, chats sent to manual review 29 → 22.
+- Cost: ~15k more cached tokens per request (+~$0.004/chat live, +~$0.0025 batch). Batch runs grade
+  one chat per brand live first (`batch.warm_up_set`) so the batch reads the cache instead of every
+  request paying to write it.
+- What still fills manual review: `action-escalation-missed` / `ownership-effort` — the manual
+  requires a system trace (an internal note or CRM record) and most chats have neither.
+
 ### Jev — a second opinion on the verdicts that matter most
 After Sonnet grades a v4.1 chat and before the score is computed, **Jev** (TypeSafe) checks the
 claims that move a score the most: the Gate 1 blacklist (independently of Sonnet), whether each
@@ -369,7 +391,7 @@ sample that already has members.
 ### Change a setting (tokens, ports, model, timeouts)
 - Everything configurable is an environment variable in **`.env`** (see `.env.example` for the full
   annotated list). `settings.py` just reads them. After editing `.env`, run `./restart.sh`.
-- Common ones: `QA_BACKEND`, `QA_MODEL`, `QA_EFFORT`, `QA_CONCURRENCY`, `QA_V41_EFFECTIVE_FROM`, `INTERCOM_ACCESS_TOKEN`, `WEB_PORT`,
+- Common ones: `QA_BACKEND`, `QA_MODEL`, `QA_EFFORT`, `QA_CONCURRENCY`, `QA_V41_EFFECTIVE_FROM`, `KB_ENABLED`, `INTERCOM_ACCESS_TOKEN`, `WEB_PORT`,
   `SLA_FIRST_RESPONSE_SEC`, `WEB_BASIC_AUTH`.
 
 ### Change how conversations are fetched from Intercom

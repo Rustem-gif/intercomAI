@@ -48,7 +48,7 @@ def main() -> int:
     print(f"{'':8}{'input':>8}{'write':>8}{'read':>8}{'output':>8}{'$':>9}")
     rows = []
     for label in ("first", "second"):
-        resp = grader._request(messages)
+        resp = grader._request(convo, messages)
         u = usage_dict(resp.usage)
         rows.append(u)
         print(f"{label:8}{u['input']:>8}{u['cache_write_5m'] + u['cache_write_1h']:>8}"

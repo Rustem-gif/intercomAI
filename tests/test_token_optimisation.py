@@ -77,8 +77,8 @@ def test_everything_before_the_transcript_is_identical_across_conversations(rule
     grader = Grader(ruleset_id=ruleset_id, client=claude, jev=False)
     a = _convo()
     b = replace(_convo(), id="43", subject="Bonus")
-    pa = grader.request_params(grader.messages_for(a))
-    pb = grader.request_params(grader.messages_for(b))
+    pa = grader.request_params(a)
+    pb = grader.request_params(b)
     for key in ("model", "system", "output_config", "max_tokens"):
         assert json.dumps(pa[key]) == json.dumps(pb[key]), key
     assert pa["messages"] != pb["messages"]
@@ -92,8 +92,7 @@ def test_strict_schema_serialises_identically_every_time():
 
 def test_batch_requests_use_the_one_hour_cache_and_otherwise_match_live():
     grader = Grader(ruleset_id="kb-v41", client=FakeClaude(reply(_v41())), jev=False)
-    msgs = grader.messages_for(_convo())
-    live, batch = grader.request_params(msgs), grader.request_params(msgs, batch=True)
+    live, batch = grader.request_params(_convo()), grader.request_params(_convo(), batch=True)
     assert batch["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert {k: v for k, v in live.items() if k != "system"} == \
            {k: v for k, v in batch.items() if k != "system"}

@@ -100,7 +100,8 @@ FAIL_DEFINITIONS: dict[str, str] = {
     "accuracy-material": (
         "The agent gave wrong information that can affect the player's money, a withdrawal or "
         "deposit, wagering, eligibility, KYC or account status, bonus rights, limits, "
-        "responsible gaming, or what the player does next."),
+        "responsible gaming, or what the player does next. Wrong means it contradicts the "
+        "casino's knowledge base (when one is given) or the transcript itself."),
     "severe-business-trust": (
         "The agent stated an invented operation status, gave a financial deadline that was not "
         "confirmed, or promised a refund or bonus beyond their authority without confirmation "
@@ -202,12 +203,21 @@ RISK_FLAGS = {
 
 
 # ── questions ──────────────────────────────────────────────────────────────────────────
-def build_request(transcript: str, criteria: list[dict]) -> tuple[dict, dict, dict]:
-    """(state, questions, plan). `plan` maps question ids back to what code does with them."""
+# Criteria judged against the brand's knowledge base: their support question gets it in state.
+KB_JUDGED = frozenset({"accuracy-material"})
+
+
+def build_request(transcript: str, criteria: list[dict],
+                  knowledge_base: str = "") -> tuple[dict, dict, dict]:
+    """(state, questions, plan). `plan` maps question ids back to what code does with them.
+
+    The knowledge base joins the state only when a KB-judged criterion failed — Jev loses
+    accuracy on context its questions do not need, and only that question needs it."""
     verdicts = {c.get("id"): c for c in criteria if isinstance(c, dict)}
     graded: list[dict] = []
     questions: dict[str, dict] = {}
     plan: dict[str, Any] = {"support": {}, "same_episode": {}}
+    uses_kb = False
 
     for cid in GATE1:
         questions[f"blacklist.{cid}"] = {
@@ -232,10 +242,14 @@ def build_request(transcript: str, criteria: list[dict]) -> tuple[dict, dict, di
         if verdicts.get(cid, {}).get("v") != "fail":
             continue
         i = graded_index(cid)
+        source = "`transcript`"
+        if cid in KB_JUDGED and knowledge_base:
+            uses_kb = True
+            source = "`transcript`, read against `knowledge_base` (the casino's approved rules),"
         questions[f"support.{i}"] = {
             "type": "noul",
             "instructions": (
-                f"{_ROLES} Does `transcript` show the failure described in "
+                f"{_ROLES} Does {source} show the failure described in "
                 f"`graded[{i}].definition`? `graded[{i}].evidence` is the line a grader cited "
                 "as proof — judge from the transcript itself, not from the grader's choice."),
             "criteria": {
@@ -288,6 +302,8 @@ def build_request(transcript: str, criteria: list[dict]) -> tuple[dict, dict, di
     }
 
     state = {"transcript": transcript, "graded": graded}
+    if uses_kb:
+        state["knowledge_base"] = knowledge_base
     return state, questions, plan
 
 
@@ -370,7 +386,7 @@ class JevVerifier:
             client = TypeSafeClient(api_key=settings.jev_api_key, timeout=30.0)
         self._client = client
 
-    def verify(self, conversation: Conversation, data: dict) -> dict:
+    def verify(self, conversation: Conversation, data: dict, knowledge_base: str = "") -> dict:
         """The `jev` block stored on the grade. Never raises."""
         block: dict[str, Any] = {
             "model": self.model, "mode": self.mode,
@@ -380,7 +396,7 @@ class JevVerifier:
         try:
             criteria = data.get("criteria") or []
             transcript = trim_transcript(conversation.transcript_text(include_bots=False))
-            state, questions, plan = build_request(transcript, criteria)
+            state, questions, plan = build_request(transcript, criteria, knowledge_base)
             resp = self._client.system_one(state=state, questions=questions, model=self.model)
             answers = _answers_to_dict(resp)
             block["model"] = getattr(resp, "model", None) or self.model

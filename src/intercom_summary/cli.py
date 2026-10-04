@@ -3,6 +3,7 @@
   intercom-summary fetch  --agent ada@co.com --since 2026-05-01 --out export.xlsx
   intercom-summary review --agent ada@co.com --since 2026-05-01 --out qa_report.xlsx
   intercom-summary collect-batch msgbatch_01...   # save a Claude batch whose run died
+  intercom-summary sync-kb                        # refresh the Help Center knowledge base now
 """
 from __future__ import annotations
 
@@ -172,6 +173,19 @@ async def _collect_batch(args: argparse.Namespace):
              saved, args.batch_id, fallbacks, failed, total["cost_usd"])
 
 
+async def _sync_kb(args: argparse.Namespace):
+    """Re-fetch the brands' published Help Center articles (the v4.1 grader's KB/T&C)."""
+    settings.require_intercom()
+    from intercom_summary.qa import knowledge_base
+
+    counts = knowledge_base.sync()
+    for brand, kb in knowledge_base.load_all(refresh=False).items():
+        log.info("%s: %d articles, %d chars, version %s", brand, kb.articles, len(kb.text), kb.version)
+    missing = [b for b, n in counts.items() if not n]
+    if missing:
+        log.info("No published articles (graded without a KB): %s", ", ".join(missing))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="intercom-summary", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -196,6 +210,9 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--no-live-fallback", action="store_true",
                    help="Skip unusable items instead of re-grading them live at full price.")
     b.set_defaults(func=_collect_batch)
+
+    k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
+    k.set_defaults(func=_sync_kb)
     return parser
 
 

@@ -90,6 +90,7 @@ cd -
 | `ANTHROPIC_API_KEY` | console.anthropic.com → API keys (needed for `QA_BACKEND=api`) |
 | `QA_MODEL` / `QA_EFFORT` | `claude-sonnet-5-5` / `high` |
 | `QA_CONCURRENCY` | chats graded at once in a live run (default `10`) |
+| `KB_ENABLED` | `1` — v4.1 judges accuracy against the brand's Intercom Help Center (`intercom-summary sync-kb`) |
 | `QA_V41_EFFECTIVE_FROM` | `YYYY-MM-DD` — standard chats created on/after it are graded under v4.1 |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | Slack app — bot `xoxb-…` + app-level `xapp-…` (Socket Mode) |
 | `WEB_SECRET_KEY` | any long random string (signs session cookies) |

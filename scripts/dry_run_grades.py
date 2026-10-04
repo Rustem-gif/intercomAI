@@ -52,10 +52,10 @@ def stored(cid: str) -> dict:
     return {"score": row[0], "human": row[1], "ruleset": row[2], "model": row[3]}
 
 
-def grade_live(grader, c):
+def grade_live(grader, c, batch_shape=False):
     t0 = time.time()
     try:
-        g = grader.grade(c)
+        g = grader.grade(c, batch_shape=batch_shape)
     except Exception as exc:  # noqa: BLE001 — a dry run reports, it doesn't stop
         g = exc
     return g, time.time() - t0
@@ -65,6 +65,14 @@ def grade_batch(grader, convos):
     from intercom_summary.qa import batch as batch_mod
 
     t0 = time.time()
+    # Warm the batch's cache entries live first, as a real batch run does.
+    warm = batch_mod.warm_up_set(grader, convos) if len(convos) > 1 else []
+    for c in warm:
+        t1 = time.time()
+        g, _ = grade_live(grader, c, batch_shape=True)
+        print(f"{c.id}: graded live to warm the cache")
+        yield c, g, time.time() - t1
+    convos = [c for c in convos if c not in warm]
     by_id = {c.id: c for c in convos}
     ids = batch_mod.submit(grader, convos)
     print(f"batch {', '.join(ids)} submitted ({len(convos)} chats) — waiting…")
