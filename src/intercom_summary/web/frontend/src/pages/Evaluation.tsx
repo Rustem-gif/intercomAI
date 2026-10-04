@@ -142,15 +142,18 @@ function ActiveJobPanel({
 
 function RunForm({
   onStarted,
+  backend,
+  setBackend,
 }: {
   onStarted: (job: Job) => void;
+  backend: string;
+  setBackend: (b: string) => void;
 }) {
   const [agents, setAgents] = useState<string[]>([]);
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [state, setStateVal] = useState("");
   const [regrade, setRegrade] = useState(false);
-  const [backend, setBackend] = useState("ollama");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -220,8 +223,8 @@ function RunForm({
             value={backend}
             onChange={(e) => setBackend(e.target.value)}
           >
-            <option value="ollama">Qwen (local · Ollama)</option>
             <option value="api">Claude API</option>
+            <option value="ollama">Qwen (local · Ollama)</option>
           </select>
         </div>
 
@@ -419,6 +422,8 @@ export default function Evaluation() {
   const { user } = useAuth();
   const qc = useQueryClient();
   const writer = canWrite(user?.role);
+  // Claude API is the grading engine; the Ollama panel only matters if someone picks Qwen.
+  const [backend, setBackend] = useState("api");
 
   const { data: stats, refetch: refetchStats } = useQuery<EvalStats>({
     queryKey: ["evalStats"],
@@ -548,7 +553,7 @@ export default function Evaluation() {
       <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
         {/* Left column: active job + history */}
         <div className="space-y-6">
-          <OllamaPanel writer={writer} />
+          {backend === "ollama" && <OllamaPanel writer={writer} />}
 
           {activeJob && (
             <ActiveJobPanel
@@ -600,7 +605,7 @@ export default function Evaluation() {
                 </CardContent>
               </Card>
             ) : (
-              <RunForm onStarted={handleStarted} />
+              <RunForm onStarted={handleStarted} backend={backend} setBackend={setBackend} />
             )}
           </div>
         )}

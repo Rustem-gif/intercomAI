@@ -29,6 +29,16 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+QA_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _effort(value: str) -> str:
+    value = value.lower()
+    if value not in QA_EFFORT_LEVELS:
+        raise ValueError(f"QA_EFFORT must be one of {', '.join(QA_EFFORT_LEVELS)} (got {value!r}).")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     # Intercom
@@ -37,11 +47,25 @@ class Settings:
     intercom_api_version: str = field(default_factory=lambda: _env("INTERCOM_API_VERSION", "2.11"))
 
     # QA agent — which backend grades conversations:
-    #   "ollama" → local Ollama server running Qwen (default; free, no API key)
-    #   "api"    → Anthropic API (needs ANTHROPIC_API_KEY)
-    qa_backend: str = field(default_factory=lambda: _env("QA_BACKEND", "ollama").lower())
+    #   "api"    → Claude API (default; needs ANTHROPIC_API_KEY)
+    #   "ollama" → local Ollama server running Qwen (free, but slow on this hardware)
+    qa_backend: str = field(default_factory=lambda: _env("QA_BACKEND", "api").lower())
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
-    qa_model: str = field(default_factory=lambda: _env("QA_MODEL", "claude-opus-4-8"))
+    qa_model: str = field(default_factory=lambda: _env("QA_MODEL", "claude-sonnet-5-5"))
+    # How hard the model thinks before grading: low | medium | high | xhigh | max.
+    # Higher is slower and costs more output tokens; measure before raising it.
+    qa_effort: str = field(default_factory=lambda: _effort(_env("QA_EFFORT", "medium")))
+    # On a policy decline, let the API re-run the grade on a fallback model (the grade then
+    # records which model served it). Set QA_REFUSAL_FALLBACK=0 to just skip refused chats.
+    qa_refusal_fallback: bool = field(
+        default_factory=lambda: _env("QA_REFUSAL_FALLBACK", "1") not in ("0", "false", "no")
+    )
+    # From this date (YYYY-MM-DD, by conversation creation date) standard chats are graded
+    # under QA Manual v4.1 (`kb-v41`); older ones stay on `default`. Manual §9: a historical
+    # chat is never graded automatically under a newer version of the rules.
+    qa_v41_effective_from: str = field(
+        default_factory=lambda: _env("QA_V41_EFFECTIVE_FROM", "2026-10-05")
+    )
 
     # Ollama local inference backend (Qwen)
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://localhost:11434"))
@@ -114,11 +138,12 @@ class Settings:
         if not self.anthropic_api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set (needed for QA grading).")
 
-    def require_qa(self) -> None:
-        """Validate whichever QA backend is selected."""
-        if self.qa_backend == "api":
+    def require_qa(self, backend: str | None = None) -> None:
+        """Validate a QA backend — the configured one unless a run picks another."""
+        backend = (backend or self.qa_backend).lower()
+        if backend == "api":
             self.require_anthropic()
-        elif self.qa_backend == "ollama":
+        elif backend == "ollama":
             import httpx as _httpx
 
             try:
@@ -130,7 +155,7 @@ class Settings:
                 ) from exc
         else:
             raise RuntimeError(
-                f"Unknown QA_BACKEND '{self.qa_backend}' (use ollama or api)."
+                f"Unknown QA_BACKEND '{backend}' (use api or ollama)."
             )
 
     def require_slack(self) -> None:

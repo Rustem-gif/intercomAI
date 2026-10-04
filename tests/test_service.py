@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -27,15 +28,21 @@ def _convo(cid):
 
 
 class FakeAnthropic:
+    """Stands in for the Claude client: every grade fails `info-actionable` (8 points) → 92/100."""
+
     def __init__(self, *a, **k):
-        self.messages = SimpleNamespace(create=self._create)
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
 
     def _create(self, **kwargs):
-        block = SimpleNamespace(type="tool_use", name="submit_grade", input={
-            "overall_score": 80, "summary": "ok", "rule_results": [],
-            "violations": ["minor"], "suggestions": [],
+        body = json.dumps({
+            "overall_score": 0, "critical_fail": False,
+            "criteria": [{"id": "info-actionable", "v": "fail", "ded": -8, "ev": "Hi"}],
+            "summary": "ok", "violations": ["minor"], "coaching": [],
         })
-        return SimpleNamespace(content=[block])
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=body)],
+            stop_reason="end_turn", model="claude-sonnet-5-5", usage=None,
+        )
 
 
 def test_review_and_store_then_overview(temp_db, monkeypatch):
@@ -48,7 +55,8 @@ def test_review_and_store_then_overview(temp_db, monkeypatch):
     import intercom_summary.qa.backends as backends_mod
     import intercom_summary.qa.grader as grader_mod
     monkeypatch.setattr(grader_mod, "Anthropic", FakeAnthropic)
-    monkeypatch.setattr(backends_mod, "get_grader", lambda backend=None, ruleset_id=None: grader_mod.Grader())
+    monkeypatch.setattr(backends_mod, "get_grader",
+                        lambda backend=None, ruleset_id=None: grader_mod.Grader(ruleset_id="default"))
 
     result = service.review_and_store(conversation_ids=["1", "2"])
     assert result == {
@@ -63,7 +71,7 @@ def test_review_and_store_then_overview(temp_db, monkeypatch):
     overview = service.build_overview()
     assert overview["kpis"]["conversations"] == 2
     assert overview["kpis"]["graded"] == 2
-    assert overview["kpis"]["avg_score"] == 80.0
+    assert overview["kpis"]["avg_score"] == 92.0
     assert overview["agent_leaderboard"][0]["agent"] == "Ada"
     assert overview["top_violations"][0]["text"] == "minor"
 
@@ -124,3 +132,31 @@ def test_build_overview_scopes_kpis_to_one_brand(temp_db):
 
     tr = service.build_overview(brand="Tomb Riches")["kpis"]
     assert tr["conversations"] == 1 and tr["agents"] == 1
+
+
+def test_claude_api_outage_aborts_the_run_instead_of_skipping_every_chat(temp_db, monkeypatch):
+    import anthropic
+    import httpx
+
+    import intercom_summary.qa.backends as backends_mod
+
+    cstore = ConversationsStore(temp_db)
+    for cid in ("1", "2", "3"):
+        cstore.save(_convo(cid))
+    cstore.close()
+
+    calls = 0
+
+    class DownGrader:
+        ruleset_id, rules_version = "default", "v"
+
+        def grade(self, c):
+            nonlocal calls
+            calls += 1
+            raise anthropic.APIConnectionError(request=httpx.Request("POST", "https://api"))
+
+    monkeypatch.setattr(backends_mod, "get_grader", lambda backend=None, ruleset_id=None: DownGrader())
+    result = service.review_and_store(conversation_ids=["1", "2", "3"], backend="api")
+    assert result["backend_unreachable"] is True
+    assert result["graded"] == 0
+    assert calls < 3 or result["failed"] == 0

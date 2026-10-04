@@ -18,6 +18,9 @@ import httpx
 
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
+from intercom_summary.qa.grading_common import GradeParseError
+from intercom_summary.qa.grading_common import is_valid_grade as _is_valid_grade
+from intercom_summary.qa.grading_common import trim_transcript as _trim_transcript
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
 from intercom_summary.qa.rulesets import get_ruleset, output_schema_for, validate_ruleset
 from intercom_summary.qa.schema import ConversationGrade
@@ -33,10 +36,6 @@ _MAX_ATTEMPTS = 2
 _ATTEMPT_TEMPERATURES = [0.0, 0.5]
 
 
-class GradeParseError(Exception):
-    """The model did not return a usable grade (empty/unparseable) after all retries."""
-
-
 # Connection-level errors that mean "the server isn't there right now" rather than "this
 # conversation can't be graded". When Ollama crashes (e.g. a USB-mounted model store
 # hiccups) launchd restarts it within a couple of seconds, so we ride out the gap here
@@ -50,48 +49,6 @@ _RETRYABLE_CONN_ERRORS = (
 # Seconds to wait between connection attempts (~67s total). Generous enough to cover a
 # launchd restart plus the start of a cold model reload from the USB store.
 _CONNECT_RETRY_BACKOFF = [2, 5, 10, 20, 30]
-
-
-# Verdicts that count as the model having actually looked at a criterion. "cannot_determine"
-# belongs here: it is a real, considered answer under the v4.1 evidence rules — "the data
-# cannot show me this" — not a refusal to evaluate.
-_EVALUATED = ("pass", "fail", "n/a", "cannot_determine")
-
-
-def _is_valid_grade(data: dict) -> bool:
-    """A real grade has a non-empty criteria list with at least one evaluated item.
-    An empty list or one where the model declined to evaluate everything is rejected
-    so it can be retried rather than saved as a meaningless 0/100."""
-    criteria = data.get("criteria")
-    if not isinstance(criteria, list) or not criteria:
-        return False
-    return any(c.get("v") in _EVALUATED for c in criteria)
-
-
-# Transcripts longer than this are split into head + tail so that opening
-# greetings (name use, initial tone) are never lost to truncation.
-# Budget: qwen2.5:14b with num_ctx=8192 → ~6 700 tokens free after system prompt +
-# output; at ~4 chars/token that's ~26 800 chars. 15 000 gives comfortable margin.
-_MAX_TRANSCRIPT_CHARS = 15_000
-_HEAD_CHARS = 2_000   # always keep the opening — greeting, name use, first impression
-_TAIL_CHARS = _MAX_TRANSCRIPT_CHARS - _HEAD_CHARS
-
-
-def _trim_transcript(text: str) -> str:
-    """Keep head + tail so the greeting is never truncated away."""
-    if len(text) <= _MAX_TRANSCRIPT_CHARS:
-        return text
-    head = text[:_HEAD_CHARS]
-    # Avoid cutting mid-line at the head boundary.
-    last_nl = head.rfind("\n")
-    if last_nl > 0:
-        head = head[:last_nl]
-    tail = text[-_TAIL_CHARS:]
-    # Avoid cutting mid-line at the tail boundary.
-    first_nl = tail.find("\n")
-    if first_nl > 0:
-        tail = tail[first_nl + 1:]
-    return f"{head}\n[... transcript truncated for length ...]\n{tail}"
 
 
 class OllamaGrader:
@@ -212,11 +169,11 @@ class OllamaGrader:
             )
 
         # Overturn opening-criteria verdicts the transcript contradicts, BEFORE the grade is
-        # built — from_ollama_output computes the score from these same criteria entries.
+        # built — from_model_output computes the score from these same criteria entries.
         if guard_flags := apply_guards(conversation, data):
             data["flags"] = [*(data.get("flags") or []), *guard_flags]
 
-        grade = ConversationGrade.from_ollama_output(
+        grade = ConversationGrade.from_model_output(
             conversation.id, conversation.assignee_name, data, ruleset_id=self._ruleset.id
         )
         grade.agent_email = conversation.assignee.email if conversation.assignee else ""

@@ -45,7 +45,7 @@ def _grade(cid="42", agent="Ada", ruleset_id="default", rules_version="v1"):
 def test_agent_group_membership_and_ruleset_resolution(tmp_path):
     store = AgentGroupsStore(tmp_path / "t.db")
     assert store.get_group("Ada") == "standard"          # no row = standard
-    assert ruleset_id_for_group(store.get_group("Ada")) == "default"
+    assert ruleset_id_for_group(store.get_group("Ada")) == "kb-v41"
 
     store.set_group("Ada", GROUP_VIP, agent_email="ada@co.com", updated_by="admin")
     assert store.get_group("Ada") == "vip"
@@ -232,3 +232,74 @@ def test_shipped_rulesets_have_no_prompt_criteria_drift(ruleset_id):
     """The deduction points in the prompt text must match the criteria catalogue — otherwise
     the model and a manual re-score would disagree on what the same criterion costs."""
     assert validate_ruleset(get_ruleset(ruleset_id)) == []
+
+
+# ── the dated v4.1 cutover ────────────────────────────────────────────────────────────
+def test_standard_chats_switch_to_v41_on_the_effective_date_only():
+    """Manual §9: a historical chat is never graded automatically under newer rules. Old
+    standard chats stay on `default` (so their grades stay current and nothing is re-graded);
+    chats from the effective date on get `kb-v41`. VIP is not part of the cutover."""
+    from datetime import datetime, timedelta, timezone
+
+    from intercom_summary.settings import settings
+
+    start = datetime.fromisoformat(settings.qa_v41_effective_from).replace(tzinfo=timezone.utc)
+    before = start - timedelta(seconds=1)
+
+    assert ruleset_id_for_group("standard", before) == "default"
+    assert ruleset_id_for_group("standard", start) == "kb-v41"
+    assert ruleset_id_for_group("standard", start + timedelta(days=30)) == "kb-v41"
+    assert ruleset_id_for_group("vip", before) == "vip"
+    assert ruleset_id_for_group("vip", start) == "vip"
+    # No date (a question about the agent, not a chat) → the current ruleset.
+    assert ruleset_id_for_group("standard") == "kb-v41"
+
+
+def test_effective_date_is_judged_in_utc():
+    """A chat at 01:00 on the effective date in UTC+3 was created the day before in UTC."""
+    from datetime import datetime, timedelta, timezone
+
+    from intercom_summary.settings import settings
+
+    day = datetime.fromisoformat(settings.qa_v41_effective_from)
+    plus3 = timezone(timedelta(hours=3))
+    assert ruleset_id_for_group("standard", day.replace(hour=1, tzinfo=plus3)) == "default"
+    assert ruleset_id_for_group("standard", day.replace(hour=4, tzinfo=plus3)) == "kb-v41"
+
+
+def test_review_grades_old_and_new_standard_chats_under_their_own_rulesets(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from intercom_summary import service
+    from intercom_summary.intercom.models import Admin, Conversation, Message
+    from intercom_summary.settings import settings
+    from intercom_summary.storage.conversations_store import ConversationsStore
+    import intercom_summary.qa.backends as backends_mod
+
+    object.__setattr__(settings, "db_path", tmp_path / "cut.db")
+    start = datetime.fromisoformat(settings.qa_v41_effective_from).replace(tzinfo=timezone.utc)
+
+    def convo(cid, when):
+        return Conversation(id=cid, created_at=when, updated_at=None, state="closed",
+                            subject="S", assignee=Admin(id="1", name="Ada", email="a@co.com"),
+                            messages=[Message(0, "admin", "Ada", None, "Hi")])
+
+    cs = ConversationsStore(tmp_path / "cut.db")
+    cs.save(convo("old", start - timedelta(days=2)))
+    cs.save(convo("new", start + timedelta(hours=5)))
+    cs.close()
+
+    seen: dict[str, str] = {}
+
+    class Recorder:
+        def __init__(self, rid):
+            self.ruleset_id, self.rules_version = rid, "v-" + rid
+
+        def grade(self, c):
+            seen[c.id] = self.ruleset_id
+            raise RuntimeError("not saving in this test")
+
+    monkeypatch.setattr(backends_mod, "get_grader",
+                        lambda backend=None, ruleset_id=None: Recorder(ruleset_id))
+    service.review_and_store(conversation_ids=["old", "new"])
+    assert seen == {"old": "default", "new": "kb-v41"}
