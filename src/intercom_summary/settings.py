@@ -60,8 +60,9 @@ class Settings:
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
     qa_model: str = field(default_factory=lambda: _env("QA_MODEL", "claude-sonnet-5-5"))
     # How hard the model thinks before grading: low | medium | high | xhigh | max.
-    # Higher is slower and costs more output tokens; measure before raising it.
-    qa_effort: str = field(default_factory=lambda: _effort(_env("QA_EFFORT", "medium")))
+    # `high` was measured best on 2026-10-04 (docs/token-optimisation.md): half the gap to human
+    # scores of `medium` at ~2x the cost; `xhigh` and Opus added cost, not accuracy.
+    qa_effort: str = field(default_factory=lambda: _effort(_env("QA_EFFORT", "high")))
     # How many chats a live Claude run grades at once. The ceiling is the account's rate-limit
     # tier; the SDK backs off and retries on a 429, so too high is slow, not broken.
     qa_concurrency: int = field(

@@ -88,7 +88,7 @@ cd -
 | `INTERCOM_REGION` | `eu` (your workspace is EU-hosted) |
 | `QA_BACKEND` | `api` (default, Claude API) or `ollama` (local Qwen) |
 | `ANTHROPIC_API_KEY` | console.anthropic.com → API keys (needed for `QA_BACKEND=api`) |
-| `QA_MODEL` / `QA_EFFORT` | `claude-sonnet-5-5` / `medium` |
+| `QA_MODEL` / `QA_EFFORT` | `claude-sonnet-5-5` / `high` |
 | `QA_CONCURRENCY` | chats graded at once in a live run (default `10`) |
 | `QA_V41_EFFECTIVE_FROM` | `YYYY-MM-DD` — standard chats created on/after it are graded under v4.1 |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | Slack app — bot `xoxb-…` + app-level `xapp-…` (Socket Mode) |
@@ -117,7 +117,7 @@ buttons. `/intercom whoami`, `/intercom help`, and typed `/intercom fetch agent:
 
 ### Grading
 With `QA_BACKEND=api` (default), **Run QA** / `intercom-summary review` grade with
-**Claude Sonnet 5.5** (~6–10 s and ~$0.013 per chat, 10 at a time). Tick **Batch — 50% cheaper**
+**Claude Sonnet 5.5** at effort `high` (~15–30 s and ~$0.03 per chat, 10 at a time). Tick **Batch — 50% cheaper**
 on the Evaluation page for big or overnight runs: results arrive in minutes to hours at half
 price. Every run shows what it cost. Try a model/effort/prompt change on live chats without
 saving anything first: `.venv/bin/python scripts/dry_run_grades.py -n 10`. See

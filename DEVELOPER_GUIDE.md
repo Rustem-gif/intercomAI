@@ -289,10 +289,12 @@ sample that already has members.
 ### Switch which AI model does the grading
 - Default: the **Claude API** (`QA_BACKEND=api`) with `QA_MODEL=claude-sonnet-5-5` and
   `ANTHROPIC_API_KEY` in `.env`. Then `./restart.sh`.
-- `QA_EFFORT` (`low`/`medium`/`high`/`xhigh`/`max`, default `medium`) is how hard the model thinks
-  before grading — higher = slower and more output tokens. Measured on live chats at `medium`:
-  ~6–10 s and ~$0.013 per chat (v4.1), with the system prompt served from the prompt cache after the
-  first. `QA_CONCURRENCY` (default 10) is how many chats a live run grades at once.
+- `QA_EFFORT` (`low`/`medium`/`high`/`xhigh`/`max`, default `high`) is how hard the model thinks
+  before grading — higher = slower and more output tokens. `high` was chosen on 2026-10-04 after a
+  30-chat comparison (half the gap to human scores of `medium`; `xhigh` and Opus 5.5 cost more for
+  no gain — see `docs/token-optimisation.md`). Live at `high`: ~15–30 s and ~$0.02–0.045 per chat
+  (v4.1); in a batch run about half that (~$0.014). The system prompt is served from the prompt
+  cache after the first chat. `QA_CONCURRENCY` (default 10) is how many chats a live run grades at once.
 - **Cost:** every grade stores its tokens and dollars in `payload_json["usage"]` (`qa/pricing.py` —
   update `PRICES` there if Anthropic's rates change); a run's total is on its job result and the
   Evaluation page. **Batch runs** (`batch=true` / the Evaluation checkbox) go through the Message

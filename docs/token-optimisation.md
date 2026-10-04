@@ -6,7 +6,13 @@ person doesn't have to work it out again. Rates come from the Claude pricing pag
 1-hour cache write, $0.20 for a cache read and $10 for output. The Batch API halves every line,
 cache reads and writes included.
 
-## Where the money goes (v4.1, effort `medium`, live)
+## Where the money goes (v4.1, live)
+
+**Production setting: Sonnet 5.5 at effort `high`** (chosen 2026-10-04, see "Effort and model"
+below). Live it costs ~$0.02–0.045 per chat (~2–3.6k output tokens, 15–30 s); in a batch run it
+costs about $0.014. The breakdown below was measured at `medium`, where the free wins were
+developed and tested. At `high` the shape is the same, except that output (now mostly thinking)
+is an even larger share of the bill.
 
 Per chat, measured on 10 real chats (`scripts/dry_run_grades.py`):
 
