@@ -972,7 +972,7 @@ def create_app() -> FastAPI:
             if body.ruleset_id not in known_ruleset_ids():
                 raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
         try:
-            settings.require_qa()
+            settings.require_qa(body.backend)
         except RuntimeError as exc:
             raise HTTPException(503, str(exc)) from exc
         js = JobsStore()
@@ -1026,17 +1026,11 @@ def create_app() -> FastAPI:
     def evaluation_stats(group: str | None = None, brand: str | None = None,
                          user: dict = Depends(auth.current_user)):
         """Counts of conversations vs graded vs active job, used by the Evaluation page."""
-        from intercom_summary.qa.backends import get_grader
         from intercom_summary.qa.rulesets import GROUP_VIP, list_rulesets
 
-        # Take each ruleset's live version from the grader that would run, not from the prompt
-        # file: the Anthropic backend grades against support_rules.md and stamps that hash.
-        versions: dict[str, str] = {}
-        for rs in list_rulesets():
-            try:
-                versions[rs.id] = get_grader(ruleset_id=rs.id).rules_version
-            except Exception:
-                versions[rs.id] = rs.version
+        # Both backends stamp grades with the ruleset's prompt-text hash, so that hash is the
+        # live version — no need to build a grader (and an API client) just to read it.
+        versions: dict[str, str] = {rs.id: rs.version for rs in list_rulesets()}
 
         ags = AgentGroupsStore()
         try:
@@ -2027,10 +2021,11 @@ def _run_review_job(job_id: str, params: dict) -> None:
         result = service.review_and_store(**params, on_progress=on_progress,
                                           cancel_event=cancel_event)
         if result.get("backend_unreachable"):
-            # Backend (Ollama) died mid-run — don't pass this off as a completed review.
+            # The grading backend died mid-run — don't pass this off as a completed review.
             js.update(job_id, status="error",
-                      error="Grading backend (Ollama) became unreachable — run aborted. "
-                            "Start Ollama and re-run; ungraded conversations will be retried.",
+                      error="Grading backend became unreachable (Claude API down, or the API "
+                            "key was rejected; or Ollama stopped) — run aborted. Fix it and "
+                            "re-run; ungraded conversations will be retried.",
                       result=result)
         else:
             final_status = "cancelled" if result.get("cancelled") else "done"

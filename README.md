@@ -26,10 +26,11 @@ dashboard**, an interactive **Slack bot**, and a **CLI**.
   (`admin_assignee_id` + date window + state), fetch full threads, normalise, HTML→text.
 - **`export/xlsx.py` / `transcript.py`** — **Summary + Messages** workbook; per-conversation
   Markdown transcripts.
-- **QA backends** (`QA_BACKEND`): **`ollama`** (default) grades locally with **Qwen** via a
-  local Ollama server — free, no API key (`qa/ollama_grader.py`); **`api`** uses the Anthropic
-  SDK (`qa/grader.py`) as a fallback. `qa/backends.py` selects; shared prompt in
-  `qa/prompt.py`. **`qa/report.py`** aggregates per-agent.
+- **QA backends** (`QA_BACKEND`): **`api`** (default) grades with **Claude Sonnet 5.5** via the
+  Anthropic SDK (`qa/grader.py`, structured outputs + prompt caching); **`ollama`** grades locally
+  with **Qwen** (`qa/ollama_grader.py`) and is kept as an optional fallback. `qa/backends.py`
+  selects; shared transcript in `qa/prompt.py`. Standard chats from `QA_V41_EFFECTIVE_FROM` on are
+  graded under **QA Manual v4.1** (`kb-v41`, gated scoring); older ones keep `default`. **`qa/report.py`** aggregates per-agent.
 - **`rules/support_rules.md`** — the **editable ruleset** you own.
 - **`storage/`** — SQLite: `grades`, `conversations` (browse cache), `jobs`. Grading is
   **idempotent** per ruleset version.
@@ -85,8 +86,10 @@ cd -
 |---|---|
 | `INTERCOM_ACCESS_TOKEN` | Intercom → Settings → Developer Hub → your app → Access token |
 | `INTERCOM_REGION` | `eu` (your workspace is EU-hosted) |
-| `QA_BACKEND` | `ollama` (default, local Qwen via Ollama) or `api` |
-| `ANTHROPIC_API_KEY` | only if `QA_BACKEND=api` — console.anthropic.com → API keys |
+| `QA_BACKEND` | `api` (default, Claude API) or `ollama` (local Qwen) |
+| `ANTHROPIC_API_KEY` | console.anthropic.com → API keys (needed for `QA_BACKEND=api`) |
+| `QA_MODEL` / `QA_EFFORT` | `claude-sonnet-5-5` / `medium` |
+| `QA_V41_EFFECTIVE_FROM` | `YYYY-MM-DD` — standard chats created on/after it are graded under v4.1 |
 | `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` | Slack app — bot `xoxb-…` + app-level `xapp-…` (Socket Mode) |
 | `WEB_SECRET_KEY` | any long random string (signs session cookies) |
 | `WEB_BASE_URL` | public URL of the dashboard (Slack "Open dashboard" buttons) |
@@ -112,10 +115,10 @@ pull conversations, **Run QA** to grade, browse in **Conversations**, edit polic
 buttons. `/intercom whoami`, `/intercom help`, and typed `/intercom fetch agent:…` also work.
 
 ### Grading
-With `QA_BACKEND=ollama` (default), **Run QA** / `intercom-summary review` grade
-automatically using a local **Qwen** model served by Ollama — free, no API key. Make sure
-Ollama is running (`brew services start ollama`) and the model is pulled
-(`ollama pull qwen2.5:14b`). Set `QA_BACKEND=api` to grade with the Anthropic API instead.
+With `QA_BACKEND=api` (default), **Run QA** / `intercom-summary review` grade with
+**Claude Sonnet 5.5** (~9 s and ~$0.02 per chat). Try a model/effort/prompt change on live chats
+without saving anything first: `.venv/bin/python scripts/dry_run_grades.py -n 10`.
+`QA_BACKEND=ollama` grades with a local Qwen model instead (`brew services start ollama`).
 ```bash
 intercom-web                                   # backend on :8000
 cd src/intercom_summary/web/frontend && npm run dev   # Vite on :5173, proxies /api
@@ -126,9 +129,8 @@ cd src/intercom_summary/web/frontend && npm run dev   # Vite on :5173, proxies /
 ## What you must do by hand (one-time)
 
 1. **Intercom token** → `.env` (read access to conversations + admins).
-2. **QA backend** → default `ollama` needs a local **Ollama** server running with the Qwen
-   model pulled (`brew services start ollama && ollama pull qwen2.5:14b`). Only set
-   `ANTHROPIC_API_KEY` if you switch `QA_BACKEND=api`.
+2. **QA backend** → set `ANTHROPIC_API_KEY` (default backend `api`, model `claude-sonnet-5-5`).
+   Only needed for `QA_BACKEND=ollama`: a local Ollama server with `qwen2.5:14b` pulled.
 3. **Slack app** (api.slack.com/apps):
    - **Socket Mode** ON → App-Level Token (`connections:write`) → `SLACK_APP_TOKEN`.
    - **Interactivity** ON (required for the modal/buttons).

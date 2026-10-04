@@ -18,19 +18,11 @@ log = get_logger(__name__)
 def get_grader(backend: str | None = None, ruleset_id: str | None = None):
     backend = (backend or settings.qa_backend).lower()
     if backend == "api":
-        from intercom_summary.qa.rulesets import DEFAULT_RULESET_ID
         from intercom_summary.qa.grader import Grader
 
-        if ruleset_id and ruleset_id != DEFAULT_RULESET_ID:
-            # The Anthropic backend grades against rules/support_rules.md, which has no
-            # per-group variants. Don't silently grade VIP work with the standard rules.
-            raise RuntimeError(
-                f"The '{backend}' backend has no '{ruleset_id}' ruleset — VIP grading "
-                "requires QA_BACKEND=ollama."
-            )
-        return Grader()
+        return Grader(ruleset_id=ruleset_id)
     if backend == "ollama":
         from intercom_summary.qa.ollama_grader import OllamaGrader
 
         return OllamaGrader(ruleset_id=ruleset_id)
-    raise RuntimeError(f"Unknown QA_BACKEND '{backend}' (use ollama or api).")
+    raise RuntimeError(f"Unknown QA_BACKEND '{backend}' (use api or ollama).")

@@ -15,6 +15,19 @@ def test_factory_selects_backend():
         get_grader("claude_code")
 
 
+@pytest.mark.parametrize("rid", ["default", "vip", "kb-v41"])
+def test_api_backend_grades_every_ruleset(rid):
+    """The Claude backend used to refuse anything but `default`, so VIP and v4.1 could only
+    run on Ollama. Every ruleset must now get a Claude grader stamped like Ollama's."""
+    from intercom_summary.qa.grader import Grader
+    from intercom_summary.qa.rulesets import get_ruleset
+
+    g = get_grader("api", ruleset_id=rid)
+    assert isinstance(g, Grader)
+    assert g.ruleset_id == rid
+    assert g.rules_version == get_ruleset(rid).version == OllamaGrader(ruleset_id=rid).rules_version
+
+
 def test_ollama_output_coerces_non_string_fields():
     """Qwen sometimes returns summary/evidence as objects; these must become strings
     so the SQLite write doesn't fail with 'type dict is not supported'."""

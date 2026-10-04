@@ -11,12 +11,12 @@ The product does four things, in this order:
 
 ```
    Intercom  ──fetch──►  SQLite cache  ──grade──►  grades  ──show──►  Web dashboard
-  (support                (data/grades.db)        (local Qwen        (+ Slack bot)
-   chats)                                          via Ollama)
+  (support                (data/grades.db)        (Claude Sonnet     (+ Slack bot)
+   chats)                                          5.5 via API)
 ```
 
 1. **Fetch** support conversations from Intercom and store them locally.
-2. **Grade** each conversation against your rulebook using a local AI model (Qwen, run by Ollama).
+2. **Grade** each conversation against your rulebook using Claude (Sonnet 5.5, via the Claude API).
 3. **Show** the results in a web dashboard (and a Slack bot).
 4. Humans can **override** AI scores, leave comments, run coaching, etc.
 
@@ -63,9 +63,10 @@ intercomSummary/
     │   └── models.py         ← The shape of a Conversation/Message/Admin in our code.
     │
     ├── qa/                   ← The AI grading engine.
-    │   ├── backends.py       ← Chooses which grader to use (Qwen vs Claude API).
-    │   ├── ollama_grader.py  ← Grades using local Qwen (the default).
-    │   ├── grader.py         ← Grades using the Claude API (fallback, needs a key).
+    │   ├── backends.py       ← Chooses which grader to use (Claude API vs Qwen).
+    │   ├── grader.py         ← Grades using the Claude API (the default — Sonnet 5.5).
+    │   ├── ollama_grader.py  ← Grades using local Qwen (optional; slow on this Mac).
+    │   ├── grading_common.py ← What both graders share: transcript trimming, validity check.
     │   ├── casino_prompt.py  ← The scoring rubric + JSON schema the AI must fill in. ⚠️ delicate.
     │   ├── schema.py          ← Turns the AI's answer into a score (does the math itself).
     │   ├── verdict_guard.py  ← Overturns greeting/name verdicts the transcript contradicts.
@@ -100,7 +101,7 @@ intercomSummary/
 | Conversations (`/conversations`) | `pages/Conversations.tsx` | Browse/search all chats |
 | Needs Attention (`/needs-attention`) | `pages/NeedsAttention.tsx` | Flagged low scores |
 | Agents (`/agents`) | `pages/Agents.tsx` | Per-agent performance |
-| Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress, Ollama restart |
+| Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress (Ollama restart only when Qwen is picked) |
 | AI Accuracy (`/accuracy`) | `pages/Accuracy.tsx` | AI-vs-human override stats |
 | Knowledge Base (`/knowledge-base`) | `pages/KnowledgeBase.tsx` | Reference content |
 | Coaching (`/coaching`) | `pages/Coaching.tsx` | Coaching sessions |
@@ -187,7 +188,7 @@ ship for real.
   scores come from different criteria, so they are never averaged together — don't compare them.
 
 ### Change what the VIP ruleset checks (or add another ruleset)
-A **ruleset** = a system prompt (what Qwen follows) + a criteria catalogue (ids, titles, points).
+A **ruleset** = a system prompt (what the grading model follows) + a criteria catalogue (ids, titles, points).
 - Prompt text: **Ruleset** page → *VIP* tab (admin), or `rules/qa_system_prompt_vip.txt`.
 - Criteria + points: `config/rulesets.yaml`.
 - ⚠️ The points live in **both** places: the `Ded` column inside the prompt (what the AI applies
@@ -242,12 +243,18 @@ status) is not in the data. Only `cannot_determine` sets `manual_review_needed` 
 to a QC manager, so collapsing the two buries the question instead of asking it. Both cost zero
 points. `verdict_guard` enforces this for `tag-chat`, which has no honest `n/a`.
 
-**Piloting a scoring model before adopting it.** Ruleset selection is normally by agent group, but
-a review run can be forced onto one ruleset: `POST /api/review {"ruleset_id": "kb-v41", "sample":
-"kb-v41-180"}`. Grades are stored under the ruleset that produced them, so a pilot cannot disturb
-the scores or staleness of anything graded by another ruleset. The eventual cutover is one line —
-`GROUP_RULESETS[GROUP_STANDARD]` in `qa/rulesets.py` — and old grades keep `ruleset_id='default'`
-rather than being re-graded, exactly as the VIP rollout behaved.
+**v4.1 is live for standard chats — by date.** `GROUP_RULESETS[GROUP_STANDARD]` is `kb-v41`, but
+only for conversations **created on or after `QA_V41_EFFECTIVE_FROM`** (`.env`, a `YYYY-MM-DD`
+date, judged in UTC). Older standard chats keep `default`. That is manual §9 ("a historical chat is
+never graded automatically under a newer version of the rules"), and it is also what stops the
+switch from re-grading the whole backlog: their existing `default` grades stay current. VIP is not
+part of the cutover. The rule lives in `_in_effect()` / `PREVIOUS_RULESET` in `qa/rulesets.py`;
+every resolver call passes the chat's `created_at`.
+- To move the cutover: change `QA_V41_EFFECTIVE_FROM` and `./restart.sh`. Moving it *earlier* makes
+  the chats in between pending under `kb-v41`, so the next review grades them (≈ $0.02 each).
+- **Forcing a run onto one ruleset** still overrides all of this, for pilots and calibration:
+  `POST /api/review {"ruleset_id": "kb-v41", "sample": "kb-v41-180"}`. Grades are stored under the
+  ruleset that produced them, so a pilot cannot disturb anything graded by another ruleset.
 
 ### Calibration samples (measuring the AI against human graders)
 A **calibration sample** is a frozen list of conversations. Frozen is the point: two measurement
@@ -265,10 +272,24 @@ sample that already has members.
   `/api/calibration/samples`.
 
 ### Switch which AI model does the grading
-- In `.env`: `OLLAMA_MODEL=qwen2.5:14b` (current). This Mac only comfortably runs the 14b model;
-  smaller ones grade worse. Then `./restart.sh`.
-- To use the Claude API instead of local Qwen: set `QA_BACKEND=api` and `ANTHROPIC_API_KEY=...` in
-  `.env`. (Costs money; local Qwen is free.)
+- Default: the **Claude API** (`QA_BACKEND=api`) with `QA_MODEL=claude-sonnet-5-5` and
+  `ANTHROPIC_API_KEY` in `.env`. Then `./restart.sh`.
+- `QA_EFFORT` (`low`/`medium`/`high`/`xhigh`/`max`, default `medium`) is how hard the model thinks
+  before grading — higher = slower and more output tokens. Measured on live chats at `medium`:
+  ~9 s and ~$0.018 per chat, with the system prompt served from the prompt cache after the first.
+- **Before changing model, effort or a prompt, try it on real chats without saving anything:**
+  `.venv/bin/python scripts/dry_run_grades.py -n 10 [--ruleset kb-v41] [--effort low]`. It prints
+  the new grade next to the stored one and the QA analyst's score, plus cost.
+- How the Claude grader works (`qa/grader.py`): the ruleset prompt is the cached system block, the
+  transcript block is the user turn, and the answer is constrained to the ruleset's JSON schema with
+  structured outputs (`rulesets.strict_schema()`). The model never supplies the score — the same
+  `from_model_output` → flat/gated scoring as Ollama computes it. Grades are stamped with the same
+  `rules_version` (prompt hash) either backend would use, so switching backend re-grades nothing.
+- Sonnet 5.5 rejects `temperature`, forced `tool_choice` and disabled thinking — don't add them back.
+- A refused grade is re-run on a fallback model by the API (`QA_REFUSAL_FALLBACK=1`); `grades.model`
+  records the model that actually answered.
+- Local Qwen is still available (`QA_BACKEND=ollama`, `OLLAMA_MODEL=qwen2.5:14b`), but it takes
+  90–140 s per chat on this Mac and grades worse.
 
 ### Add or change a website button/screen
 - **Existing screen:** edit its file in `frontend/src/pages/`.
@@ -322,7 +343,7 @@ sample that already has members.
 ### Change a setting (tokens, ports, model, timeouts)
 - Everything configurable is an environment variable in **`.env`** (see `.env.example` for the full
   annotated list). `settings.py` just reads them. After editing `.env`, run `./restart.sh`.
-- Common ones: `OLLAMA_MODEL`, `QA_BACKEND`, `INTERCOM_ACCESS_TOKEN`, `WEB_PORT`,
+- Common ones: `QA_BACKEND`, `QA_MODEL`, `QA_EFFORT`, `QA_V41_EFFECTIVE_FROM`, `INTERCOM_ACCESS_TOKEN`, `WEB_PORT`,
   `SLA_FIRST_RESPONSE_SEC`, `WEB_BASIC_AUTH`.
 
 ### Change how conversations are fetched from Intercom

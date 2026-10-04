@@ -238,6 +238,7 @@ def review_and_store(
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
+    import anthropic
     import httpx
 
     from intercom_summary.qa.backends import get_grader
@@ -272,7 +273,9 @@ def review_and_store(
         convos = [c for c in convos if not tags_are_ignored(c.tags)]
 
         total = len(convos)
-        concurrency = _REVIEW_CONCURRENCY.get(settings.qa_backend, 2)
+        # The run's own backend, not the configured default — a run started from the UI with
+        # another backend must get that backend's concurrency.
+        concurrency = _REVIEW_CONCURRENCY.get((backend or settings.qa_backend).lower(), 2)
 
         # Each conversation is graded against its assigned agent's ruleset — a VIP agent's
         # chats and emails get the VIP ruleset. Build one grader per ruleset we actually see
@@ -291,12 +294,13 @@ def review_and_store(
         # Group membership is read once for the whole run, not once per conversation — the
         # latter opens a DB connection each time and exhausts the process's file descriptors.
         ruleset_for = (
-            (lambda _agent: ruleset_id) if ruleset_id else agent_ruleset_resolver()
+            (lambda _agent, _created=None: ruleset_id) if ruleset_id
+            else agent_ruleset_resolver()
         )
 
         buckets: dict[str, list] = defaultdict(list)
         for c in convos:
-            rid = ruleset_for(c.assignee_name)
+            rid = ruleset_for(c.assignee_name, c.created_at)
             grader = grader_for(rid)
             if regrade or not grades_store.is_current(c.id, rid, grader.rules_version):
                 buckets[rid].append(c)
@@ -341,7 +345,12 @@ def review_and_store(
                     try:
                         grade = await loop.run_in_executor(executor, grader.grade, convo)
                     except (httpx.ConnectError, httpx.ConnectTimeout,
-                            httpx.RemoteProtocolError) as exc:
+                            httpx.RemoteProtocolError,
+                            # Claude API: no connection after the SDK's own retries, or a
+                            # key that is missing/revoked — every remaining chat would fail
+                            # the same way.
+                            anthropic.APIConnectionError, anthropic.AuthenticationError,
+                            anthropic.PermissionDeniedError) as exc:
                         # The grader already retried with backoff and the backend is still
                         # down — treat as fatal for the whole run rather than a
                         # per-conversation skip (so we don't churn through the rest racking
@@ -389,7 +398,7 @@ def review_and_store(
             "total": total,
             "ignored": ignored,
             "cancelled": cancelled,
-            # True when the backend (Ollama) became unreachable mid-run; the caller marks
+            # True when the backend (Claude API / Ollama) became unreachable mid-run; the caller marks
             # the job as errored instead of "done" so the partial run isn't mistaken for
             # a complete one.
             "backend_unreachable": backend_unreachable,

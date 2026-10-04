@@ -95,7 +95,7 @@ async def _review(args: argparse.Namespace):
     grades: list[ConversationGrade] = []
     try:
         for convo in convos:
-            rid = ruleset_for(convo.assignee_name)
+            rid = ruleset_for(convo.assignee_name, convo.created_at)
             grader = _grader_for(rid)
             if not args.regrade and store.is_current(convo.id, rid, grader.rules_version):
                 cached = store.get(convo.id)

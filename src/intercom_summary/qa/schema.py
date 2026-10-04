@@ -1,7 +1,7 @@
-"""Structured shapes for a QA grade, plus the JSON schema we hand to Claude.
+"""Structured shapes for a QA grade.
 
-The grader asks Claude to call a single tool whose input matches GRADE_TOOL_SCHEMA, so we
-get back validated, machine-readable grades instead of free text.
+The graders constrain the model to the ruleset's JSON schema (rulesets.output_schema_for) and
+`ConversationGrade.from_model_output` turns that JSON into a grade, computing the score itself.
 """
 from __future__ import annotations
 
@@ -242,14 +242,18 @@ class ConversationGrade:
         )
 
     @classmethod
-    def from_ollama_output(
+    def from_model_output(
         cls,
         conversation_id: str,
         agent_name: str,
         data: dict[str, Any],
         ruleset_id: str | None = None,
     ) -> "ConversationGrade":
-        """Build a ConversationGrade from the deduction-based QA JSON produced by the Ollama grader."""
+        """Build a ConversationGrade from the ruleset-shaped QA JSON either backend returns.
+
+        The Claude and Ollama graders are asked for the same JSON (rulesets.output_schema_for),
+        so this is the single place a model's answer becomes a grade and gets its score.
+        """
         from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset
 
         ruleset = get_ruleset(ruleset_id)
@@ -333,6 +337,9 @@ class ConversationGrade:
             grade.critical_fail = bool(critical_fail and score == 0)
         return grade
 
+    # The original name, from when Ollama was the only backend that produced this shape.
+    from_ollama_output = from_model_output
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ConversationGrade":
         """Rebuild a grade from a stored payload dict (inverse of to_dict)."""
@@ -365,50 +372,3 @@ class ConversationGrade:
         g.manual_review_reason = d.get("manual_review_reason", "")
         g.confidence = d.get("confidence", "")
         return g
-
-
-# Tool schema given to Claude (structured output).
-GRADE_TOOL_SCHEMA: dict[str, Any] = {
-    "name": "submit_grade",
-    "description": "Submit the QA evaluation of a single support conversation.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "overall_score": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 100,
-                "description": "Overall compliance score 0-100.",
-            },
-            "summary": {
-                "type": "string",
-                "description": "2-4 sentence summary of how the agent handled this conversation.",
-            },
-            "rule_results": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "rule_id": {"type": "string"},
-                        "title": {"type": "string"},
-                        "verdict": {"type": "string", "enum": ["pass", "fail", "n/a", "cannot_determine"]},
-                        "evidence": {"type": "string", "description": "Short quote or reference."},
-                        "comment": {"type": "string"},
-                    },
-                    "required": ["rule_id", "verdict"],
-                },
-            },
-            "violations": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Concrete rule violations, most important first.",
-            },
-            "suggestions": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Actionable coaching suggestions for the agent.",
-            },
-        },
-        "required": ["overall_score", "summary", "rule_results"],
-    },
-}

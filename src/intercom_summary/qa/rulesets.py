@@ -1,13 +1,15 @@
 """Ruleset registry — which criteria + system prompt a conversation is graded against.
 
-A ruleset is a system prompt (the text Qwen follows) plus its criteria catalogue (ids,
-titles, deduction points, which ones are critical). There are two:
+A ruleset is a system prompt (the text the grading model follows) plus its criteria catalogue
+(ids, titles, deduction points, which ones are critical). There are three:
 
-    default  standard support        rules/qa_system_prompt.txt      (seed: casino_prompt.py)
-    vip      the VIP department      rules/qa_system_prompt_vip.txt  (seed: vip_prompt.py)
+    kb-v41   standard support (QA Manual v4.1, gated)  rules/qa_system_prompt_kb_v41.txt  (seed: kbv41_prompt.py)
+    default  standard support before v4.1 (flat)       rules/qa_system_prompt.txt         (seed: casino_prompt.py)
+    vip      the VIP department                        rules/qa_system_prompt_vip.txt     (seed: vip_prompt.py)
 
-Which one applies is decided by the assigned agent's group (see storage/agent_groups_store.py):
-an agent in the `vip` group gets the `vip` ruleset for all of their conversations, chat or email.
+Which one applies is decided by the assigned agent's group (see storage/agent_groups_store.py)
+and, for standard agents, the conversation's date: chats from QA_V41_EFFECTIVE_FROM onward get
+`kb-v41`, older ones keep `default`. An agent in the `vip` group gets `vip` for every chat.
 
 Two things are deliberate here:
 
@@ -28,6 +30,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -54,9 +57,36 @@ GROUP_VIP = "vip"
 
 # group → ruleset. Kept 1:1 on purpose; a group exists precisely to select a ruleset.
 GROUP_RULESETS: dict[str, str] = {
-    GROUP_STANDARD: DEFAULT_RULESET_ID,
+    GROUP_STANDARD: KBV41_RULESET_ID,
     GROUP_VIP: VIP_RULESET_ID,
 }
+
+# A ruleset that replaced another applies only to conversations created on or after its
+# effective date; older ones keep the ruleset they were always graded under. QA Manual v4.1
+# §9: a historical chat is never graded automatically under a newer version of the rules.
+# This is also what keeps the switch from re-grading the whole backlog.
+PREVIOUS_RULESET: dict[str, str] = {
+    KBV41_RULESET_ID: DEFAULT_RULESET_ID,
+}
+
+
+def _effective_from(ruleset_id: str) -> date | None:
+    if ruleset_id == KBV41_RULESET_ID:
+        return date.fromisoformat(settings.qa_v41_effective_from)
+    return None
+
+
+def _in_effect(ruleset_id: str, created_at: datetime | None) -> str:
+    """The ruleset that actually applies to a conversation created at `created_at`.
+    With no date (a question about the agent, not a chat) the current ruleset applies."""
+    start = _effective_from(ruleset_id)
+    if start is None or created_at is None:
+        return ruleset_id
+    if created_at.tzinfo is not None:
+        created_at = created_at.astimezone(timezone.utc)
+    if created_at.date() < start:
+        return PREVIOUS_RULESET.get(ruleset_id, ruleset_id)
+    return ruleset_id
 
 
 @dataclass
@@ -208,6 +238,47 @@ def output_schema_for(ruleset_id: str | None) -> dict:
     return CASINO_OUTPUT_SCHEMA
 
 
+# JSON-schema keywords the Claude structured-output grammar accepts. Anything else in the
+# Ollama grammars (none today) is dropped rather than letting the request 400.
+_STRICT_KEYWORDS = frozenset({
+    "type", "properties", "required", "items", "enum", "const", "description", "anyOf",
+})
+
+
+def _strictify(node):
+    if isinstance(node, list):
+        return [_strictify(n) for n in node]
+    if not isinstance(node, dict):
+        return node
+    out = {k: _strictify(v) for k, v in node.items() if k in _STRICT_KEYWORDS}
+    if isinstance(node.get("properties"), dict):
+        # Keys under `properties` are field names, not keywords — keep every one.
+        out["properties"] = {name: _strictify(sub) for name, sub in node["properties"].items()}
+    if node.get("type") == "object":
+        # Structured outputs require every object to be closed.
+        out["additionalProperties"] = False
+    return out
+
+
+def strict_schema(ruleset: "QaRuleset") -> dict:
+    """The ruleset's output schema in the form the Claude API's structured outputs accept.
+
+    Same fields as the Ollama grammar (output_schema_for), so both backends return the same
+    JSON. Two differences: every object is closed (`additionalProperties: false`, which the API
+    requires), and a criterion `id` must be one of the ruleset's catalogue ids — the scorer
+    ignores ids it does not know, so a misspelt id would silently drop a failure.
+    """
+    schema = _strictify(output_schema_for(ruleset.id))
+    ids = [c["id"] for c in ruleset.criteria if c.get("id")]
+    try:
+        id_field = schema["properties"]["criteria"]["items"]["properties"]["id"]
+    except KeyError:
+        return schema
+    if ids:
+        id_field["enum"] = ids
+    return schema
+
+
 def _load_config() -> dict:
     """Read config/rulesets.yaml, writing the seed on first use."""
     p = settings.rulesets_path
@@ -284,11 +355,12 @@ def list_rulesets() -> list[QaRuleset]:
     return [get_ruleset(rid) for rid in _load_config()]
 
 
-def ruleset_id_for_group(group_id: str | None) -> str:
-    return GROUP_RULESETS.get(group_id or GROUP_STANDARD, DEFAULT_RULESET_ID)
+def ruleset_id_for_group(group_id: str | None, created_at: datetime | None = None) -> str:
+    rid = GROUP_RULESETS.get(group_id or GROUP_STANDARD, DEFAULT_RULESET_ID)
+    return _in_effect(rid, created_at)
 
 
-def agent_ruleset_resolver() -> "Callable[[str | None], str]":
+def agent_ruleset_resolver() -> "Callable[..., str]":
     """Load group membership once, return a resolver for many agents.
 
     Use this for anything that resolves a ruleset in a loop (a review run walks thousands of
@@ -304,13 +376,15 @@ def agent_ruleset_resolver() -> "Callable[[str | None], str]":
     finally:
         store.close()
 
-    def resolve(agent_name: str | None) -> str:
-        return ruleset_id_for_group(groups.get((agent_name or "").lower(), GROUP_STANDARD))
+    def resolve(agent_name: str | None, created_at: datetime | None = None) -> str:
+        return ruleset_id_for_group(
+            groups.get((agent_name or "").lower(), GROUP_STANDARD), created_at
+        )
 
     return resolve
 
 
-def ruleset_id_for_agent(agent_name: str | None) -> str:
+def ruleset_id_for_agent(agent_name: str | None, created_at: datetime | None = None) -> str:
     """The ruleset a single agent's conversations are graded against.
 
     Opens (and closes) a connection per call — for a loop, use agent_ruleset_resolver().
@@ -319,7 +393,7 @@ def ruleset_id_for_agent(agent_name: str | None) -> str:
 
     store = AgentGroupsStore()
     try:
-        return ruleset_id_for_group(store.get_group(agent_name))
+        return ruleset_id_for_group(store.get_group(agent_name), created_at)
     finally:
         store.close()
 
