@@ -206,6 +206,8 @@ class ConversationGrade:
     manual_review_needed: bool = False
     manual_review_reason: str = ""
     confidence: str = ""                     # High/Medium/Low — the model's own certainty
+    # Jev's second opinion on the verdicts (qa/jev_verifier.py); empty when it did not run.
+    jev: dict = field(default_factory=dict)
 
     @property
     def effective_score(self) -> int:
@@ -371,4 +373,5 @@ class ConversationGrade:
         g.manual_review_needed = bool(d.get("manual_review_needed"))
         g.manual_review_reason = d.get("manual_review_reason", "")
         g.confidence = d.get("confidence", "")
+        g.jev = d.get("jev") or {}
         return g

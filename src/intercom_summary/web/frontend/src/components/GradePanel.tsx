@@ -321,6 +321,37 @@ export default function GradePanel({
           </div>
         )}
 
+        {/* Jev is a second, independent check on the verdicts that move a v4.1 score most. It
+            never changes the score; in shadow mode it only records, so say so. */}
+        {!editing && grade.jev && (grade.jev.error || (grade.jev.findings?.length ?? 0) > 0) && (
+          <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Jev check</span>
+            {grade.jev.mode === "shadow" ? " (recorded only)" : ""}
+            {grade.jev.error ? (
+              <span> — did not run: {grade.jev.error}</span>
+            ) : (
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {grade.jev.findings!.map((f, i) => (
+                  <li key={i}>
+                    {f.criterion ? <span className="font-mono">{f.criterion}</span> : null}
+                    {f.criterion ? " — " : ""}
+                    {f.detail}
+                    {f.p != null ? ` (p ${f.p.toFixed(2)})` : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {grade.jev.reconcile?.changed && Object.keys(grade.jev.reconcile.changed).length > 0 && (
+              <p className="mt-1">
+                Re-examined:{" "}
+                {Object.entries(grade.jev.reconcile.changed)
+                  .map(([c, [from, to]]) => `${c} ${from}→${to}`)
+                  .join(", ")}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Scores this chat used to carry. A grade is re-run whenever the rulebook changes, so
             "it was green last week" is a question people genuinely ask — in September it was
             asked about a whole month of chats and had no answer at all. */}

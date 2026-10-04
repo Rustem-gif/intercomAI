@@ -32,6 +32,13 @@ def _env(name: str, default: str = "") -> str:
 QA_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
+def _jev_mode(value: str) -> str:
+    value = value.lower()
+    if value not in ("off", "shadow", "flag", "reconcile"):
+        raise ValueError(f"JEV_MODE must be off, shadow, flag or reconcile (got {value!r}).")
+    return value
+
+
 def _effort(value: str) -> str:
     value = value.lower()
     if value not in QA_EFFORT_LEVELS:
@@ -66,6 +73,13 @@ class Settings:
     qa_v41_effective_from: str = field(
         default_factory=lambda: _env("QA_V41_EFFECTIVE_FROM", "2026-10-05")
     )
+
+    # Jev (TypeSafe) — a calibrated second opinion on v4.1 verdicts; see qa/jev_verifier.py.
+    #   off · shadow (record only) · flag (disagreements → manual review) · reconcile (flag,
+    #   and ask the grader once to re-examine the disputed criteria first)
+    jev_api_key: str = field(default_factory=lambda: _env("JEV_API_KEY"))
+    jev_model: str = field(default_factory=lambda: _env("JEV_MODEL", "jev-1.13.0"))
+    jev_mode: str = field(default_factory=lambda: _jev_mode(_env("JEV_MODE", "shadow")))
 
     # Ollama local inference backend (Qwen)
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://localhost:11434"))

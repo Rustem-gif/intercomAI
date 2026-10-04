@@ -256,6 +256,21 @@ every resolver call passes the chat's `created_at`.
   `POST /api/review {"ruleset_id": "kb-v41", "sample": "kb-v41-180"}`. Grades are stored under the
   ruleset that produced them, so a pilot cannot disturb anything graded by another ruleset.
 
+### Jev — a second opinion on the verdicts that matter most
+After Sonnet grades a v4.1 chat and before the score is computed, **Jev** (TypeSafe) checks the
+claims that move a score the most: the Gate 1 blacklist (independently of Sonnet), whether each
+Gate 1 / Gate 2 Major `fail` is really shown by the transcript, whether a Major and a deduction
+are one mistake counted twice (manual §10), and Step 0. One request per chat, ~$0.0001.
+- Code: `qa/jev_verifier.py` — questions, thresholds and the policy are all there. Full plan,
+  request/stored schema and measurement plan: `docs/jev-integration.md`.
+- `JEV_MODE` in `.env`: `off` · `shadow` (default — record only) · `flag` (disagreements set
+  `manual_review_needed`) · `reconcile` (Sonnet re-examines the disputed criteria once first).
+  `JEV_API_KEY` must be set; `JEV_MODEL` is pinned to `jev-1.13.0`.
+- Jev never changes a score by itself, and a Jev error never fails a grade (`jev.error`).
+- Findings are stored in `payload_json["jev"]` and shown in the grade panel as "Jev check".
+- Try it on live chats without saving: `scripts/dry_run_grades.py -n 10 --jev shadow`.
+- Tests run offline: `tests/conftest.py` switches Jev off unless a test injects a fake.
+
 ### Calibration samples (measuring the AI against human graders)
 A **calibration sample** is a frozen list of conversations. Frozen is the point: two measurement
 runs are only comparable if they graded the same chats, so membership is written down once
