@@ -102,6 +102,7 @@ intercomSummary/
 | Needs Attention (`/needs-attention`) | `pages/NeedsAttention.tsx` | Flagged low scores |
 | Agents (`/agents`) | `pages/Agents.tsx` | Per-agent performance |
 | Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress (Ollama restart only when Qwen is picked) |
+| Calibration 180 (`/calibration`) — **temporary** | `pages/Calibration.tsx` | Claude's v4.1 grades of a calibration sample next to the QA managers' own verdicts |
 | AI Accuracy (`/accuracy`) | `pages/Accuracy.tsx` | AI-vs-human override stats |
 | Knowledge Base (`/knowledge-base`) | `pages/KnowledgeBase.tsx` | Reference content |
 | Coaching (`/coaching`) | `pages/Coaching.tsx` | Coaching sessions |
@@ -307,6 +308,22 @@ sample that already has members.
   re-import from Intercom, so a short sample stays short until someone restores it.
 - Browse one: `/api/conversations?sample=<id>`. List them with their gradeable counts:
   `/api/calibration/samples`.
+
+**Calibration runs: the temporary "Calibration 180" tab.** A run grades every member of a sample
+with the Claude grader (`kb-v41`, the same engine as live grading) into **its own tables**
+(`calibration_runs` / `calibration_results`), never into `grades`. Live grades, their history and
+their human overrides are untouched. Members missing from the cache, including trashed ones, are
+fetched from Intercom by id and kept only on the run. They are **not** saved to `conversations`
+and they don't leave the trash. Tickets are recorded and not graded.
+- Start one from the tab ("Run evaluation"), or `intercom-summary calibrate kb-v41-180 [--pilot] [--batch]`.
+  Code: `service.run_calibration`, which calls `review_and_store(conversations=…, save_grade=…)`.
+- QA managers open a chat and use the normal Re-score form. It posts to
+  `/api/calibration/runs/<run>/conversations/<id>/review` (same scoring as the live override, via
+  `_score_override` in `web/api.py`) and is stored on the run. The tab shows Δ and the criteria they disagree on.
+  Export: `/api/calibration/samples/<id>/export.xlsx`.
+- Each run keeps its own verdicts. A new run starts with none, so pick the older run in the run selector to see them.
+- Removing the tab: delete the route in `App.tsx`, the nav entry in `AppShell.tsx` and
+  `pages/Calibration.tsx`. The tables can stay as an archive.
 
 ### Switch which AI model does the grading
 - Default: the **Claude API** (`QA_BACKEND=api`) with `QA_MODEL=claude-sonnet-5-5` and

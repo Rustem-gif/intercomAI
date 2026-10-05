@@ -163,6 +163,43 @@ CREATE TABLE IF NOT EXISTS calibration_sample_items (
 );
 CREATE INDEX IF NOT EXISTS idx_cal_items_sample ON calibration_sample_items(sample_id);
 
+-- A calibration run: one pass of the AI over a frozen sample. Its grades live in
+-- calibration_results, never in `grades` — grading the sample must not replace the live grade
+-- (or sit under the human override) of a chat that is also on the dashboards.
+CREATE TABLE IF NOT EXISTS calibration_runs (
+    id            TEXT PRIMARY KEY,
+    sample_id     TEXT NOT NULL,
+    ruleset_id    TEXT NOT NULL,
+    rules_version TEXT,
+    model         TEXT,
+    effort        TEXT,
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    job_id        TEXT,
+    cost_usd      REAL,
+    created_by    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_cal_runs_sample ON calibration_runs(sample_id, started_at);
+
+CREATE TABLE IF NOT EXISTS calibration_results (
+    run_id            TEXT NOT NULL,
+    conversation_id   TEXT NOT NULL,
+    source            TEXT,                 -- 'cache' | 'intercom': where the transcript came from
+    status            TEXT NOT NULL,        -- 'graded' | 'failed' | 'not_found' | 'ticket'
+    error             TEXT,
+    overall_score     INTEGER,
+    payload_json      TEXT,                 -- full ConversationGrade, same shape as grades
+    conversation_json TEXT,                 -- the transcript graded, so it stays viewable
+    -- The QA manager's own verdict on this chat, recorded in the Calibration tab.
+    human_score       INTEGER,
+    human_criteria    TEXT,                 -- JSON {criterion_id: verdict} diff vs the AI
+    human_deductions  TEXT,                 -- JSON [{category, points, note}]
+    human_note        TEXT,
+    reviewed_by       TEXT,
+    reviewed_at       TEXT,
+    PRIMARY KEY (run_id, conversation_id)
+);
+
 -- Coaching sessions: manager groups conversations for an agent with notes + due date.
 CREATE TABLE IF NOT EXISTS coaching_sessions (
     id          TEXT PRIMARY KEY,

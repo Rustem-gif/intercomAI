@@ -20,13 +20,24 @@ interface DrawerProps {
   detailUrl?: string;
   /** When set (portal context), enables the agent "Dispute this rating" action posting here. */
   disputeUrl?: string;
+  /** Sandboxed review (Calibration tab): the grade form posts here instead of overriding the
+   *  live grade, and the actions that act on the live conversation are hidden. */
+  overrideUrl?: string;
+  onOverridden?: () => void;
 }
 
-export default function ConversationDrawer({ id, onClose, readOnly = false, detailUrl, disputeUrl }: DrawerProps) {
+export default function ConversationDrawer({
+  id, onClose, readOnly = false, detailUrl, disputeUrl, overrideUrl, onOverridden,
+}: DrawerProps) {
   const { user, displayName } = useAuth();
   const qc = useQueryClient();
   const { brands } = useBrand();
+  // `writer` gates the grade form; the side features (KB, coaching, tags, comments, AI chat)
+  // act on the live conversation, so a sandboxed review hides them.
+  const sandboxed = !!overrideUrl;
   const writer = !readOnly && canWrite(user?.role);
+  const sideReadOnly = readOnly || sandboxed;
+  const sideWriter = writer && !sandboxed;
   const [rightPanel, setRightPanel] = useState<RightPanel>("grade");
   const [savingTags, setSavingTags] = useState(false);
   const [togglingIconic, setTogglingIconic] = useState(false);
@@ -46,7 +57,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
   const { data: commentsData } = useQuery({
     queryKey: commentsKey,
     queryFn: () => api.get<{ comments: Comment[] }>(`/api/conversations/${id}/comments`),
-    enabled: !readOnly,
+    enabled: !sideReadOnly,
   });
 
   const addCommentMutation = useMutation({
@@ -83,7 +94,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
         <div className="flex h-14 shrink-0 items-center justify-between border-b px-5">
           <h2 className="font-semibold">Conversation {id}</h2>
           <div className="flex items-center gap-1">
-            {writer && data && (
+            {sideWriter && data && (
               <Button
                 variant={data.iconic ? "default" : "outline"}
                 size="sm"
@@ -116,7 +127,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                 </span>
               </Button>
             )}
-            {writer && (
+            {sideWriter && (
               <div className="relative">
                 <Button
                   variant="outline"
@@ -226,7 +237,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                 )}
               </div>
               {/* Custom tags */}
-              {!readOnly && (
+              {!sideReadOnly && (
                 <div className="mb-4">
                   <p className="mb-1 text-xs font-medium text-muted-foreground">Custom tags</p>
                   <TagEditor
@@ -235,7 +246,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                         ? (data.conversation as any).custom_tags.split(",").filter(Boolean)
                         : []
                     }
-                    disabled={!writer || savingTags}
+                    disabled={!sideWriter || savingTags}
                     onChange={async (tags) => {
                       setSavingTags(true);
                       try {
@@ -288,7 +299,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
               </div>
 
               {/* Manager comments */}
-              {!readOnly && (
+              {!sideReadOnly && (
                 <div className="mt-6 border-t pt-4">
                   <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <MessageSquare className="h-3.5 w-3.5" />
@@ -353,7 +364,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
             {/* Right panel — Grade or AI chat */}
             <div className="flex w-96 shrink-0 flex-col bg-card">
               {/* Tab switcher — hidden in read-only mode (only grade tab available) */}
-              {!readOnly && (
+              {!sideReadOnly && (
                 <div className="flex shrink-0 border-b">
                   <button
                     onClick={() => setRightPanel("grade")}
@@ -381,7 +392,7 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
               )}
 
               <div className="min-h-0 flex-1 overflow-hidden">
-                {(readOnly || rightPanel === "grade") ? (
+                {(sideReadOnly || rightPanel === "grade") ? (
                   <div className="h-full overflow-auto">
                     <GradePanel
                       grade={data.grade}
@@ -391,8 +402,10 @@ export default function ConversationDrawer({ id, onClose, readOnly = false, deta
                       history={data.grade_history ?? []}
                       disputeUrl={disputeUrl}
                       readOnly={readOnly}
+                      overrideUrl={overrideUrl}
                       onDisputeChange={afterDisputeChange}
                       onOverridden={() => {
+                        onOverridden?.();
                         qc.invalidateQueries({ queryKey: ["conversation", fetchUrl] });
                         qc.invalidateQueries({ queryKey: ["conversations"] });
                         qc.invalidateQueries({ queryKey: ["accuracy"] });

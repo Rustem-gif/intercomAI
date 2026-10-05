@@ -186,6 +186,21 @@ async def _sync_kb(args: argparse.Namespace):
         log.info("No published articles (graded without a KB): %s", ", ".join(missing))
 
 
+async def _calibrate(args: argparse.Namespace):
+    """Grade a frozen calibration sample into a new run (never into live grades)."""
+    settings.require_qa("api")
+    from intercom_summary import service
+
+    # run_calibration drives its own event loops, so it runs off this one.
+    result = await asyncio.to_thread(
+        service.run_calibration, args.sample, ruleset_id=args.ruleset, batch=args.batch,
+        pilot_only=args.pilot, created_by="cli",
+    )
+    log.info("Run %s: graded %d of %d member(s); %d ticket(s), %d unavailable, %d failed, $%.4f",
+             result["run_id"], result["graded"], result["members"], result["tickets"],
+             result["unavailable"], result["failed"], (result.get("usage") or {}).get("cost_usd", 0))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="intercom-summary", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -210,6 +225,14 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--no-live-fallback", action="store_true",
                    help="Skip unusable items instead of re-grading them live at full price.")
     b.set_defaults(func=_collect_batch)
+
+    c = sub.add_parser("calibrate",
+                       help="Grade a calibration sample with Claude into a separate run.")
+    c.add_argument("sample", help="Calibration sample id, e.g. kb-v41-180.")
+    c.add_argument("--ruleset", default="kb-v41")
+    c.add_argument("--batch", action="store_true", help="Message Batches API: half price, slower.")
+    c.add_argument("--pilot", action="store_true", help="Only the sample's Pilot-20 members.")
+    c.set_defaults(func=_calibrate)
 
     k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
     k.set_defaults(func=_sync_kb)

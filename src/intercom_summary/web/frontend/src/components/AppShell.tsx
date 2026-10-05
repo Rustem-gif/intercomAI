@@ -11,6 +11,7 @@ import {
   BookOpen,
   GraduationCap,
   HardDrive,
+  FlaskConical,
   Moon,
   Sun,
   LogOut,
@@ -30,6 +31,8 @@ const nav = [
   { to: "/disputes", label: "Grade Disputes", icon: Scale },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/evaluation", label: "Evaluation", icon: ClipboardCheck },
+  // Temporary: the v4.1 calibration sample (AI vs QA managers). Remove with pages/Calibration.
+  { to: "/calibration", label: "Calibration 180", icon: FlaskConical },
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
   { to: "/coaching", label: "Coaching", icon: GraduationCap },
