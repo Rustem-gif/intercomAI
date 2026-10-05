@@ -47,11 +47,14 @@ interface Props {
   disputeUrl?: string;
   readOnly?: boolean;
   onDisputeChange?: () => void;
+  /** Where the override form saves. Defaults to the live grade's override endpoint; the
+   *  Calibration tab points it at the run so a manager's verdict never touches live grades. */
+  overrideUrl?: string;
 }
 
 export default function GradePanel({
   grade, conversationId, canOverride, onOverridden,
-  dispute, history, disputeUrl, readOnly, onDisputeChange,
+  dispute, history, disputeUrl, readOnly, onDisputeChange, overrideUrl,
 }: Props) {
   const displayName = useDisplayName();
   const [editing, setEditing] = useState(false);
@@ -159,14 +162,14 @@ export default function GradePanel({
         const cleaned = deductions.filter((d) => Number(d.points) > 0);
         // Send the full verdict map + manual deductions; the server computes the diff and
         // the authoritative score (criteria deductions + manual deductions).
-        await api.post(`/api/conversations/${conversationId}/override`, {
+        await api.post(overrideUrl ?? `/api/conversations/${conversationId}/override`, {
           criteria: verdicts,
           manual_deductions: cleaned,
           reason: reason.trim(),
         });
       } else {
         if (scoreInput < 0 || scoreInput > 100) { setSaveError("Score must be 0–100."); return; }
-        await api.post(`/api/conversations/${conversationId}/override`, {
+        await api.post(overrideUrl ?? `/api/conversations/${conversationId}/override`, {
           score: scoreInput,
           reason: reason.trim(),
         });
@@ -225,8 +228,9 @@ export default function GradePanel({
   };
 
   // Agent (portal) may dispute; analyst (dashboard) raises via the editor area too.
+  // A sandboxed review (overrideUrl) has no live grade to dispute.
   const canRaiseDispute =
-    !!conversationId && (readOnly ? !!disputeUrl : !!canOverride) &&
+    !!conversationId && !overrideUrl && (readOnly ? !!disputeUrl : !!canOverride) &&
     (!dispute || dispute.status === "rejected");
   const canResolveDispute = !!canOverride && dispute?.status === "open";
 

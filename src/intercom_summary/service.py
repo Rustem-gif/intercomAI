@@ -218,6 +218,8 @@ def review_and_store(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_batch: Callable[[dict], None] | None = None,
     cancel_event: "threading.Event | None" = None,
+    conversations: list[Any] | None = None,
+    save_grade: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """Grade cached conversations concurrently and persist the grades.
 
@@ -234,6 +236,11 @@ def review_and_store(
     staleness or the scores of anything graded by another ruleset.
 
     `sample` restricts the run to a frozen calibration sample (see storage/calibration_store).
+
+    `conversations` grades exactly these, already-built conversations: no cache lookup, no
+    ignore-tag triage and no staleness skip — the caller owns membership. `save_grade(grade)`
+    replaces the write into the live `grades` table. Together they let a calibration run reuse
+    this engine without touching a single live grade (see run_calibration).
 
     `batch` (Claude backend only) sends the run through the Message Batches API at half price;
     results take minutes to hours. `on_batch(status)` receives the batch ids as soon as they
@@ -262,7 +269,10 @@ def review_and_store(
             log.info("Review scoped to calibration sample %r (%d chats)",
                      sample, len(conversation_ids))
 
-        if conversation_ids:
+        if conversations is not None:
+            convos = list(conversations)
+            regrade = True
+        elif conversation_ids:
             convos = [c for cid in conversation_ids if (c := convos_store.get(cid))]
         else:
             rows, _ = convos_store.query(
@@ -273,8 +283,9 @@ def review_and_store(
 
         # Triage/noise chats (tagged spam, empty, test, Jira, Follow-Up, no request) are
         # never graded — drop them here so they count as neither graded nor pending.
-        ignored = sum(1 for c in convos if tags_are_ignored(c.tags))
-        convos = [c for c in convos if not tags_are_ignored(c.tags)]
+        ignored = 0 if conversations is not None else sum(1 for c in convos if tags_are_ignored(c.tags))
+        if conversations is None:
+            convos = [c for c in convos if not tags_are_ignored(c.tags)]
 
         total = len(convos)
         # The run's own backend, not the configured default — a run started from the UI with
@@ -383,7 +394,7 @@ def review_and_store(
                     grade, fell_back = grade
                     batch_fallbacks += fell_back
                 # DB writes happen back on the event-loop thread — no thread-safety issue.
-                grades_store.save(grade)
+                (save_grade or grades_store.save)(grade)
                 if getattr(grade, "usage", None):
                     usage_blocks.append(grade.usage)
                 graded_count += 1
@@ -512,6 +523,138 @@ def review_and_store(
     finally:
         convos_store.close()
         grades_store.close()
+
+
+# ── Calibration: grade a frozen sample without touching live grades ─────────────
+async def _fetch_from_intercom(ids: list[str], concurrency: int = 8) -> dict[str, Any]:
+    """{id: Conversation | "not_found" | "error: …"} straight from Intercom, never cached.
+
+    Saving them would be wrong twice over: a trashed member is trashed on purpose, and the
+    conversations store refuses it anyway (a tombstone blocks re-import).
+    """
+    import asyncio
+
+    from intercom_summary.intercom.client import IntercomClient, IntercomError
+    from intercom_summary.intercom.models import Admin
+
+    out: dict[str, Any] = {}
+    if not ids:
+        return out
+    client = IntercomClient()
+    try:
+        known_admins = {
+            str(a["id"]): Admin(id=str(a["id"]), name=a.get("name", ""), email=a.get("email", ""))
+            for a in await client.list_admins() if a.get("id")
+        }
+        sem = asyncio.Semaphore(concurrency)
+
+        async def one(cid: str) -> None:
+            async with sem:
+                try:
+                    raw = await client.get_conversation(cid)
+                except IntercomError as exc:
+                    out[cid] = "not_found" if str(exc).startswith("404") else f"error: {exc}"
+                    return
+                except Exception as exc:  # network trouble on one chat must not sink the run
+                    out[cid] = f"error: {exc}"
+                    return
+            out[cid] = normalise_conversation(raw, known_admins=known_admins)
+
+        await asyncio.gather(*[one(c) for c in ids])
+    finally:
+        await client.aclose()
+    return out
+
+
+def run_calibration(
+    sample_id: str,
+    ruleset_id: str = "kb-v41",
+    batch: bool = False,
+    pilot_only: bool = False,
+    job_id: str | None = None,
+    created_by: str = "",
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_batch: Callable[[dict], None] | None = None,
+    cancel_event: "threading.Event | None" = None,
+    fetch: Callable[[list[str]], Any] | None = None,
+) -> dict[str, Any]:
+    """Grade every member of a calibration sample with the Claude grader into a new run.
+
+    Members come from the cache when present and are fetched from Intercom by id otherwise
+    (trashed and never-fetched chats alike). Grades go to `calibration_results` only — the
+    live `grades` table, its history and its human overrides are not touched. Tickets are
+    recorded and not graded (chats only). `fetch` swaps the Intercom fetch (tests).
+    """
+    import asyncio
+
+    from intercom_summary.qa.rulesets import get_ruleset
+    from intercom_summary.storage.calibration_store import CalibrationStore
+
+    cal = CalibrationStore()
+    cstore = ConversationsStore()
+    try:
+        if cal.get(sample_id) is None:
+            raise KeyError(f"No calibration sample {sample_id!r}")
+        ids = cal.conversation_ids(sample_id, pilot_only=pilot_only)
+        run_id = cal.start_run(
+            sample_id, ruleset_id, rules_version=get_ruleset(ruleset_id).version,
+            model=settings.qa_model, effort=settings.qa_effort, job_id=job_id,
+            created_by=created_by,
+        )
+        convos: dict[str, Any] = {}
+        source: dict[str, str] = {}
+        for cid in ids:
+            if (c := cstore.get(cid)) is not None:
+                convos[cid], source[cid] = c, "cache"
+        missing = [cid for cid in ids if cid not in convos]
+        fetched = (fetch or (lambda m: asyncio.run(_fetch_from_intercom(m))))(missing)
+        unavailable = 0
+        for cid in missing:
+            got = fetched.get(cid, "error: not returned")
+            if isinstance(got, str):
+                status = "not_found" if got == "not_found" else "failed"
+                cal.save_result(run_id, cid, status, source="intercom",
+                                error=None if status == "not_found" else got)
+                unavailable += 1
+            else:
+                convos[cid], source[cid] = got, "intercom"
+
+        to_grade = []
+        tickets = 0
+        for cid in ids:
+            c = convos.get(cid)
+            if c is None:
+                continue
+            if c.is_ticket:
+                cal.save_result(run_id, cid, "ticket", source=source[cid], conversation=c)
+                tickets += 1
+            else:
+                to_grade.append(c)
+
+        def save(grade) -> None:
+            cid = grade.conversation_id
+            cal.save_result(run_id, cid, "graded", source=source.get(cid), grade=grade,
+                            conversation=convos.get(cid))
+
+        log.info("Calibration run %s on %r: %d to grade (%d from Intercom), %d ticket(s), "
+                 "%d unavailable", run_id, sample_id, len(to_grade),
+                 sum(1 for c in to_grade if source[c.id] == "intercom"), tickets, unavailable)
+        result = review_and_store(
+            conversations=to_grade, save_grade=save, ruleset_id=ruleset_id, backend="api",
+            batch=batch, on_progress=on_progress, on_batch=on_batch, cancel_event=cancel_event,
+        )
+        # Anything handed to the grader that did not come back graded failed in it.
+        graded = {r["conversation_id"] for r in cal.results(run_id) if r["status"] == "graded"}
+        for c in to_grade:
+            if c.id not in graded:
+                cal.save_result(run_id, c.id, "failed", source=source[c.id], conversation=c,
+                                error="grading failed or was cancelled")
+        cal.finish_run(run_id, cost_usd=(result.get("usage") or {}).get("cost_usd"))
+        return {**result, "run_id": run_id, "sample_id": sample_id, "members": len(ids),
+                "tickets": tickets, "unavailable": unavailable}
+    finally:
+        cal.close()
+        cstore.close()
 
 
 def build_conversation_snapshot(conversation_id: str) -> dict[str, Any] | None:

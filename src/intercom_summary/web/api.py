@@ -34,6 +34,7 @@ from intercom_summary.web.schemas import (
     AgentLinkCreate,
     AgentLinkOut,
     AiChatRequest,
+    CalibrationRunRequest,
     CoachingItemIn,
     CoachingSessionCreate,
     CoachingSessionUpdate,
@@ -474,9 +475,6 @@ def create_app() -> FastAPI:
     @app.post("/api/conversations/{conversation_id}/override")
     def override_grade(conversation_id: str, body: OverrideRequest,
                        user: dict = Depends(auth.require_write)):
-        from intercom_summary.qa.rulesets import get_ruleset
-        from intercom_summary.qa.schema import score_from_verdicts
-
         if not body.reason.strip():
             raise HTTPException(422, "Reason is required")
         gstore = GradesStore()
@@ -486,38 +484,7 @@ def create_app() -> FastAPI:
                 grade = gstore.get(conversation_id)
                 if not grade:
                     raise HTTPException(404, "No grade found for this conversation — grade it first")
-                # Re-score with the ruleset that produced this grade, not the one the agent
-                # would get today — otherwise moving an agent into the VIP group would change
-                # the points under their already-graded history.
-                ruleset_id = grade.get("ruleset_id") or "default"
-                manual_deduction_ids = get_ruleset(ruleset_id).manual_deduction_ids
-                ai_verdicts = {r["rule_id"]: r["verdict"] for r in grade.get("rule_results", [])}
-                # A QC manager reviewing a v4.1 grade can leave a verdict at
-                # cannot_determine — the manual's whole point is that "I could not check
-                # this" is a legitimate answer, so the override form must be able to say it.
-                valid = {"pass", "fail", "n/a", "cannot_determine"}
-                for cid, v in (body.criteria or {}).items():
-                    if cid not in ai_verdicts:
-                        raise HTTPException(422, f"Unknown criterion '{cid}'")
-                    if v not in valid:
-                        raise HTTPException(422, f"Invalid verdict '{v}' for '{cid}'")
-                diff = {cid: v for cid, v in (body.criteria or {}).items()
-                        if ai_verdicts.get(cid) != v}
-                # Validate manual deductions (analyst-chosen points the AI can't judge).
-                deductions: list[dict] = []
-                for d in (body.manual_deductions or []):
-                    if d.category not in manual_deduction_ids:
-                        raise HTTPException(422, f"Unknown deduction category '{d.category}'")
-                    if not (1 <= d.points <= 100):
-                        raise HTTPException(422, "Deduction points must be 1–100")
-                    deductions.append({"category": d.category, "points": d.points, "note": d.note.strip()})
-                if not diff and not deductions:
-                    raise HTTPException(422, "No criterion changes or deductions to save")
-                effective = {**ai_verdicts, **diff}
-                extra = sum(d["points"] for d in deductions)
-                score, _band, _result = score_from_verdicts(
-                    effective, extra_deduction=extra, ruleset_id=ruleset_id
-                )
+                score, diff, deductions = _score_override(grade, body)
                 ok = gstore.save_override(
                     conversation_id, score, body.reason, user["username"],
                     human_criteria=diff, human_deductions=deductions,
@@ -988,13 +955,9 @@ def create_app() -> FastAPI:
             # Only one review may run at a time — a single local model can't grade two
             # batches at once, and parallel runs duplicate work and thrash the GPU.
             # If a run is already active, return it instead of starting a duplicate.
-            existing = next(
-                (j for j in js.list_recent(kind="review", limit=10)
-                 if j["status"] in ("queued", "running", "cancelling")),
-                None,
-            )
+            existing = _active_grading_job(js)
             if existing:
-                return JobOut(id=existing["id"], kind="review", status=existing["status"],
+                return JobOut(id=existing["id"], kind=existing["kind"], status=existing["status"],
                               result=existing["result"], error=existing["error"])
             job_id = js.create("review", body.model_dump())
         finally:
@@ -1238,6 +1201,172 @@ def create_app() -> FastAPI:
             return {"items": out}
         finally:
             store.close()
+
+    # ── Calibration runs (temporary tab: AI vs QA managers on a frozen sample) ─────────
+    @app.post("/api/calibration/samples/{sample_id}/run", response_model=JobOut)
+    def calibration_run(sample_id: str, body: CalibrationRunRequest,
+                        background: BackgroundTasks, user: dict = Depends(auth.require_write)):
+        from intercom_summary.qa.rulesets import known_ruleset_ids
+        from intercom_summary.storage.calibration_store import CalibrationStore
+
+        if body.ruleset_id not in known_ruleset_ids():
+            raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
+        cal = CalibrationStore()
+        try:
+            if cal.get(sample_id) is None:
+                raise HTTPException(404, "Calibration sample not found")
+        finally:
+            cal.close()
+        try:
+            settings.require_qa("api")
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        js = JobsStore()
+        try:
+            existing = _active_grading_job(js)
+            if existing:
+                return JobOut(id=existing["id"], kind=existing["kind"], status=existing["status"],
+                              result=existing["result"], error=existing["error"])
+            params = {"sample_id": sample_id, **body.model_dump(),
+                      "created_by": user["username"]}
+            job_id = js.create("calibration", params)
+        finally:
+            js.close()
+        background.add_task(_run_calibration_job, job_id, params)
+        return JobOut(id=job_id, kind="calibration", status="queued")
+
+    @app.get("/api/calibration/samples/{sample_id}/results")
+    def calibration_results(sample_id: str, run: str = "latest",
+                            user: dict = Depends(auth.current_user)):
+        """Every sample member with the run's AI grade, the QA manager's verdict and the gap."""
+        from intercom_summary.storage.calibration_store import CalibrationStore
+
+        cal = CalibrationStore()
+        js = JobsStore()
+        try:
+            sample = cal.get(sample_id)
+            if sample is None:
+                raise HTTPException(404, "Calibration sample not found")
+            meta = cal.latest_run(sample_id) if run == "latest" else cal.get_run(run)
+            active = _active_grading_job(js)
+            active = active if active and active["kind"] == "calibration" else None
+            if meta is None:
+                return {"sample": sample, "run": None, "runs": [], "rows": [], "summary": None,
+                        "active_job": active}
+            rows = [_calibration_row(r, meta["ruleset_id"]) for r in cal.results(meta["id"])]
+            return {"sample": sample, "run": meta, "runs": cal.list_runs(sample_id),
+                    "rows": rows, "summary": _calibration_summary(rows), "active_job": active}
+        finally:
+            cal.close()
+            js.close()
+
+    @app.get("/api/calibration/runs/{run_id}/conversations/{conversation_id}")
+    def calibration_detail(run_id: str, conversation_id: str,
+                           user: dict = Depends(auth.current_user)):
+        """The graded chat in the shape of /api/conversations/{id}, so the drawer reuses it."""
+        from intercom_summary.intercom.models import Conversation
+
+        res, grade = _calibration_grade(run_id, conversation_id)
+        if not res.get("conversation_json"):
+            raise HTTPException(404, "No transcript stored for this chat in this run")
+        convo = Conversation.from_dict(res["conversation_json"])
+        convo_dict = convo.to_dict()
+        convo_dict["custom_tags"] = ""
+        return {
+            "conversation": convo_dict,
+            "transcript": convo.transcript_text(),
+            "grade": grade,
+            "grade_history": [],
+            "sla": convo.sla_summary(settings.sla_first_response_sec, settings.sla_followup_sec),
+            "iconic": None,
+            "grade_dispute": None,
+            "calibration": {"run_id": run_id, "status": res["status"], "source": res["source"],
+                            "error": res["error"]},
+        }
+
+    @app.post("/api/calibration/runs/{run_id}/conversations/{conversation_id}/review")
+    def calibration_review(run_id: str, conversation_id: str, body: OverrideRequest,
+                           user: dict = Depends(auth.require_write)):
+        """A QA manager's own verdict on a calibration chat — same form and scoring as the
+        live override, stored only on the run."""
+        from intercom_summary.storage.calibration_store import CalibrationStore
+
+        if not body.reason.strip():
+            raise HTTPException(422, "Reason is required")
+        _res, grade = _calibration_grade(run_id, conversation_id)
+        if grade is None:
+            raise HTTPException(409, "This chat has no AI grade in this run")
+        diff: dict | None = None
+        deductions: list | None = None
+        if body.criteria is not None or body.manual_deductions:
+            score, diff, deductions = _score_override(grade, body)
+        else:
+            if body.score is None or not (0 <= body.score <= 100):
+                raise HTTPException(422, "Score must be 0–100")
+            score = body.score
+        cal = CalibrationStore()
+        try:
+            ok = cal.save_review(run_id, conversation_id, score, body.reason.strip(),
+                                 user["username"], human_criteria=diff,
+                                 human_deductions=deductions)
+        finally:
+            cal.close()
+        if not ok:
+            raise HTTPException(404, "No graded chat to review")
+        return {"ok": True, "human_score": score}
+
+    @app.get("/api/calibration/samples/{sample_id}/export.xlsx")
+    def calibration_export(sample_id: str, run: str = "latest",
+                           user: dict = Depends(auth.current_user)):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+
+        from intercom_summary.storage.calibration_store import CalibrationStore
+
+        cal = CalibrationStore()
+        try:
+            meta = cal.latest_run(sample_id) if run == "latest" else cal.get_run(run)
+            if meta is None:
+                raise HTTPException(404, "No calibration run yet")
+            raw = cal.results(meta["id"])
+        finally:
+            cal.close()
+        rows = [_calibration_row(r, meta["ruleset_id"]) for r in raw]
+        criteria: list[tuple[str, str]] = []
+        for r in rows:
+            for c in r["criteria"]:
+                if c["id"] not in {cid for cid, _ in criteria}:
+                    criteria.append((c["id"], c["title"]))
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Calibration"
+        head = ["№", "Chat ID", "Date", "Agent", "Category", "Pilot-20", "Status", "Source",
+                "AI score", "Band", "Severity", "Critical fail", "Catastrophic",
+                "Manual review", "QA score", "Δ (QA − AI)", "Criteria disagreed",
+                "QA note", "Reviewed by", "AI summary"]
+        for _cid, title in criteria:
+            head += [f"{title} — AI", f"{title} — QA"]
+        ws.append(head)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for r in rows:
+            by_id = {c["id"]: c for c in r["criteria"]}
+            line = [r["seq"], r["conversation_id"], r["chat_date"], r["agent_name"],
+                    r["category"], "так" if r["pilot"] else "", r["status"] or "not run",
+                    r["source"], r["ai_score"], r["band"], r["severity"],
+                    "yes" if r["critical_fail"] else "", "yes" if r["catastrophic"] else "",
+                    "yes" if r["manual_review_needed"] else "", r["human_score"], r["delta"],
+                    r["disagreed"], r["human_note"], r["reviewed_by"], r["summary"]]
+            for cid, _t in criteria:
+                c = by_id.get(cid)
+                line += [c["ai"] if c else None, c["human"] if c and r["human_score"] is not None else None]
+            ws.append(line)
+        ws.freeze_panes = "C2"
+        tmpdir = tempfile.mkdtemp()
+        out = Path(tmpdir) / f"calibration_{sample_id}.xlsx"
+        wb.save(out)
+        return FileResponse(out, filename=out.name,
+                            background=BackgroundTask(shutil.rmtree, tmpdir, True))
 
     @app.get("/api/rulesets/{ruleset_id}/prompt")
     def get_ruleset_prompt(ruleset_id: str, user: dict = Depends(auth.current_user)):
@@ -2013,6 +2142,178 @@ def _run_fetch_job(job_id: str, params: dict) -> None:
         js.update(job_id, status="error", error=str(e))
     finally:
         js.close()
+
+
+
+def _active_grading_job(js: JobsStore) -> dict | None:
+    """The review or calibration run in flight, if any — only one grading run at a time."""
+    jobs = js.list_recent(kind="review", limit=10) + js.list_recent(kind="calibration", limit=10)
+    return next((j for j in jobs if j["status"] in ("queued", "running", "cancelling")), None)
+
+
+def _calibration_grade(run_id: str, conversation_id: str) -> tuple[dict, dict | None]:
+    """(result row, grade in the shape GradesStore.get returns) for one calibration chat."""
+    from intercom_summary.storage.calibration_store import CalibrationStore
+    from intercom_summary.storage.grades_store import _normalize_criteria
+
+    cal = CalibrationStore()
+    try:
+        run = cal.get_run(run_id)
+        res = cal.result(run_id, conversation_id)
+    finally:
+        cal.close()
+    if run is None or res is None:
+        raise HTTPException(404, "Chat not in this calibration run")
+    payload = res.get("payload_json")
+    if not payload:
+        return res, None
+    grade = dict(payload)
+    grade["ruleset_id"] = grade.get("ruleset_id") or run["ruleset_id"]
+    grade["rule_results"] = _normalize_criteria(grade.get("rule_results"), grade["ruleset_id"])
+    grade.update(
+        human_score=res["human_score"], override_reason=res["human_note"],
+        overridden_by=res["reviewed_by"], overridden_at=res["reviewed_at"],
+        human_criteria=res["human_criteria"], human_deductions=res["human_deductions"],
+    )
+    return res, grade
+
+
+def _calibration_row(r: dict, ruleset_id: str) -> dict:
+    """One table row: the AI's call, the QA manager's call, and where they part."""
+    from intercom_summary.storage.grades_store import _normalize_criteria
+
+    p = r.get("payload") or {}
+    crit = _normalize_criteria(p.get("rule_results"), p.get("ruleset_id") or ruleset_id) if p else []
+    human = r.get("human_criteria") or {}
+    reviewed = r.get("human_score") is not None
+    criteria = [{"id": c["rule_id"], "title": c.get("title") or c["rule_id"],
+                 "ai": c["verdict"], "human": human.get(c["rule_id"], c["verdict"])}
+                for c in crit]
+    ai = r.get("overall_score")
+    return {
+        "seq": r["seq"], "conversation_id": r["conversation_id"], "chat_date": r["chat_date"],
+        "agent_name": r["agent_name"], "category": r["category"], "pilot": r["pilot"],
+        "status": r["status"], "source": r["source"], "error": r["error"],
+        "ai_score": ai, "band": p.get("band"), "severity": p.get("severity"),
+        "overall_result": p.get("overall_result"), "outcome_status": p.get("outcome_status"),
+        "critical_fail": bool(p.get("critical_fail")),
+        "catastrophic": bool(p.get("catastrophic_service_failure")),
+        "manual_review_needed": bool(p.get("manual_review_needed")),
+        "summary": p.get("summary"),
+        "human_score": r.get("human_score"), "human_note": r.get("human_note"),
+        "reviewed_by": r.get("reviewed_by"), "reviewed_at": r.get("reviewed_at"),
+        "delta": (r["human_score"] - ai) if reviewed and ai is not None else None,
+        # A score-only review says nothing about individual criteria.
+        "disagreed": len(human) if reviewed and r.get("human_criteria") is not None else None,
+        "criteria": criteria,
+        "live_score": r.get("live_human_score") if r.get("live_human_score") is not None
+        else r.get("live_score"),
+        "live_ruleset_id": r.get("live_ruleset_id"),
+    }
+
+
+def _calibration_summary(rows: list[dict]) -> dict:
+    graded = [r for r in rows if r["status"] == "graded"]
+    reviewed = [r for r in graded if r["human_score"] is not None]
+    by_criteria = [r for r in reviewed if r["disagreed"] is not None]
+    checked = sum(len(r["criteria"]) for r in by_criteria)
+    disagreed = sum(r["disagreed"] for r in by_criteria)
+
+    def mean(xs):
+        xs = [x for x in xs if x is not None]
+        return round(sum(xs) / len(xs), 1) if xs else None
+
+    status: dict[str, int] = {}
+    for r in rows:
+        status[r["status"] or "not_run"] = status.get(r["status"] or "not_run", 0) + 1
+    return {
+        "members": len(rows), "graded": len(graded), "reviewed": len(reviewed),
+        "status": status,
+        "mean_ai": mean(r["ai_score"] for r in graded),
+        "mean_ai_reviewed": mean(r["ai_score"] for r in reviewed),
+        "mean_human": mean(r["human_score"] for r in reviewed),
+        "mean_abs_delta": mean(abs(r["delta"]) for r in reviewed if r["delta"] is not None),
+        "mean_delta": mean(r["delta"] for r in reviewed),
+        "criteria_agreement": round(100 * (1 - disagreed / checked), 1) if checked else None,
+        "manual_review": sum(r["manual_review_needed"] for r in graded),
+        "critical_fail": sum(r["critical_fail"] for r in graded),
+        "catastrophic": sum(r["catastrophic"] for r in graded),
+    }
+
+
+def _run_calibration_job(job_id: str, params: dict) -> None:
+    cancel_event = threading.Event()
+    _review_cancel_events[job_id] = cancel_event
+    js = JobsStore()
+    js.update(job_id, status="running")
+    try:
+        progress: dict = {"partial": True}
+
+        def on_progress(graded: int, skipped: int, total: int) -> None:
+            progress.update(graded=graded, skipped=skipped, total=total)
+            js.update(job_id, result=progress)
+
+        def on_batch(status: dict) -> None:
+            progress["batch_status"] = status
+            js.update(job_id, result=progress)
+
+        result = service.run_calibration(**params, job_id=job_id, on_progress=on_progress,
+                                         on_batch=on_batch, cancel_event=cancel_event)
+        if result.get("backend_unreachable"):
+            js.update(job_id, status="error", result=result,
+                      error="Claude API became unreachable (or the key was rejected) — run "
+                            "aborted. Start a new run once it is back.")
+        else:
+            js.update(job_id, status="cancelled" if result.get("cancelled") else "done",
+                      result=result)
+    except Exception as e:
+        log.exception("calibration job failed")
+        js.update(job_id, status="error", error=str(e))
+    finally:
+        _review_cancel_events.pop(job_id, None)
+        js.close()
+
+
+def _score_override(grade: dict, body) -> tuple[int, dict, list[dict]]:
+    """Validate a per-criterion override against `grade` and compute the human score.
+
+    Returns (score, diff vs the AI's verdicts, manual deductions). Re-scores with the ruleset
+    that produced the grade, not the one the agent would get today — otherwise moving an agent
+    into the VIP group would change the points under their already-graded history. Shared by
+    the live override and the calibration review, so both score a human verdict identically.
+    """
+    from intercom_summary.qa.rulesets import get_ruleset
+    from intercom_summary.qa.schema import score_from_verdicts
+
+    ruleset_id = grade.get("ruleset_id") or "default"
+    manual_deduction_ids = get_ruleset(ruleset_id).manual_deduction_ids
+    ai_verdicts = {r["rule_id"]: r["verdict"] for r in grade.get("rule_results", [])}
+    # A QC manager reviewing a v4.1 grade can leave a verdict at cannot_determine — the
+    # manual's whole point is that "I could not check this" is a legitimate answer, so the
+    # override form must be able to say it.
+    valid = {"pass", "fail", "n/a", "cannot_determine"}
+    for cid, v in (body.criteria or {}).items():
+        if cid not in ai_verdicts:
+            raise HTTPException(422, f"Unknown criterion '{cid}'")
+        if v not in valid:
+            raise HTTPException(422, f"Invalid verdict '{v}' for '{cid}'")
+    diff = {cid: v for cid, v in (body.criteria or {}).items() if ai_verdicts.get(cid) != v}
+    # Validate manual deductions (analyst-chosen points the AI can't judge).
+    deductions: list[dict] = []
+    for d in (body.manual_deductions or []):
+        if d.category not in manual_deduction_ids:
+            raise HTTPException(422, f"Unknown deduction category '{d.category}'")
+        if not (1 <= d.points <= 100):
+            raise HTTPException(422, "Deduction points must be 1–100")
+        deductions.append({"category": d.category, "points": d.points, "note": d.note.strip()})
+    if not diff and not deductions:
+        raise HTTPException(422, "No criterion changes or deductions to save")
+    effective = {**ai_verdicts, **diff}
+    extra = sum(d["points"] for d in deductions)
+    score, _band, _result = score_from_verdicts(
+        effective, extra_deduction=extra, ruleset_id=ruleset_id
+    )
+    return score, diff, deductions
 
 
 def _run_review_job(job_id: str, params: dict) -> None:

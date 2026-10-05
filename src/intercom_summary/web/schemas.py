@@ -113,6 +113,13 @@ class OverrideRequest(BaseModel):
     manual_deductions: list[ManualDeduction] | None = None
 
 
+
+class CalibrationRunRequest(BaseModel):
+    """Grade a frozen calibration sample into a new run (never into live grades)."""
+    ruleset_id: str = "kb-v41"
+    batch: bool = False
+    pilot_only: bool = False
+
 class ScorePreviewRequest(BaseModel):
     """Ask the server what a set of verdicts would score, before saving an override."""
     ruleset_id: str | None = None

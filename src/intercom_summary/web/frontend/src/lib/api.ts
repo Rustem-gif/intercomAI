@@ -551,3 +551,80 @@ export interface EvalStats {
     cancellable: boolean;
   } | null;
 }
+
+// ── Calibration (temporary tab: AI vs QA managers on a frozen sample) ────────
+export interface CalibrationSample {
+  id: string;
+  name: string;
+  size: number;
+  pilot_size: number;
+  missing: number;
+  trashed: number;
+}
+
+export interface CalibrationRun {
+  id: string;
+  sample_id: string;
+  ruleset_id: string;
+  model: string | null;
+  effort: string | null;
+  started_at: string;
+  finished_at: string | null;
+  cost_usd: number | null;
+  created_by: string;
+}
+
+export interface CalibrationRow {
+  seq: number;
+  conversation_id: string;
+  chat_date: string | null;
+  agent_name: string | null;
+  category: string | null;
+  pilot: boolean;
+  status: "graded" | "failed" | "not_found" | "ticket" | null;
+  source: "cache" | "intercom" | null;
+  error: string | null;
+  ai_score: number | null;
+  band: string | null;
+  severity: string | null;
+  overall_result: string | null;
+  outcome_status: string | null;
+  critical_fail: boolean;
+  catastrophic: boolean;
+  manual_review_needed: boolean;
+  summary: string | null;
+  human_score: number | null;
+  human_note: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  delta: number | null;
+  disagreed: number | null;
+  criteria: { id: string; title: string; ai: string; human: string }[];
+  live_score: number | null;
+  live_ruleset_id: string | null;
+}
+
+export interface CalibrationSummary {
+  members: number;
+  graded: number;
+  reviewed: number;
+  status: Record<string, number>;
+  mean_ai: number | null;
+  mean_ai_reviewed: number | null;
+  mean_human: number | null;
+  mean_abs_delta: number | null;
+  mean_delta: number | null;
+  criteria_agreement: number | null;
+  manual_review: number;
+  critical_fail: number;
+  catastrophic: number;
+}
+
+export interface CalibrationResults {
+  sample: CalibrationSample;
+  run: CalibrationRun | null;
+  runs: CalibrationRun[];
+  rows: CalibrationRow[];
+  summary: CalibrationSummary | null;
+  active_job: Job | null;
+}

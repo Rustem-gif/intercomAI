@@ -1036,3 +1036,55 @@ def test_calibration_samples_report_what_cannot_be_graded(client):
 
     listed = client.get("/api/conversations?sample=s1").json()
     assert [c["id"] for c in listed["items"]] == ["42"]
+
+
+def test_calibration_tab_endpoints(client):
+    """Results list, drawer detail and the QA manager's verdict — all off the run, never `grades`."""
+    from intercom_summary.qa.schema import ConversationGrade, RuleResult
+    from intercom_summary.storage.calibration_store import CalibrationStore
+
+    _seed_grade()  # live grade on 42 (80) that must not move
+    cal = CalibrationStore(settings.db_path)
+    cal.create("s1", "Sample")
+    cal.replace_items("s1", [{"conversation_id": "42", "seq": 1, "pilot": True},
+                             {"conversation_id": "77", "seq": 2}])
+    run = cal.start_run("s1", "default")
+    convo = ConversationsStore(settings.db_path)
+    c42 = convo.get("42")
+    convo.close()
+    cal.save_result(run, "42", "graded", source="cache", conversation=c42, grade=ConversationGrade(
+        conversation_id="42", agent_name="Ada", overall_score=85, summary="ai",
+        rule_results=[RuleResult("res-no-fake-close", "No Fake Closure", "fail", "x")],
+        rules_version="v1", model="claude", graded_at="2026-10-05T00:00:00+00:00",
+    ))
+    cal.save_result(run, "77", "not_found", source="intercom")
+    cal.close()
+
+    _login(client, "ana", "pw")
+    body = client.get("/api/calibration/samples/s1/results").json()
+    assert body["run"]["id"] == run
+    assert [r["status"] for r in body["rows"]] == ["graded", "not_found"]
+    assert body["rows"][0]["ai_score"] == 85 and body["rows"][0]["live_score"] == 80
+    assert body["summary"]["graded"] == 1 and body["summary"]["reviewed"] == 0
+
+    detail = client.get(f"/api/calibration/runs/{run}/conversations/42").json()
+    assert detail["grade"]["overall_score"] == 85
+    assert "Hi" in detail["transcript"]
+
+    r = client.post(f"/api/calibration/runs/{run}/conversations/42/review", json={
+        "criteria": {"res-no-fake-close": "pass"}, "reason": "resolved in chat"})
+    assert r.status_code == 200 and r.json()["human_score"] == 100
+
+    row = client.get("/api/calibration/samples/s1/results").json()["rows"][0]
+    assert row["human_score"] == 100 and row["delta"] == 15 and row["disagreed"] == 1
+    # The live grade did not take the calibration verdict.
+    live = client.get("/api/conversations/42").json()["grade"]
+    assert live["overall_score"] == 80 and live["human_score"] is None
+
+    x = client.get("/api/calibration/samples/s1/export.xlsx")
+    assert x.status_code == 200 and x.content[:2] == b"PK"
+
+    _login(client, "looker", "pw")
+    r = client.post(f"/api/calibration/runs/{run}/conversations/42/review",
+                    json={"score": 50, "reason": "x"})
+    assert r.status_code == 403

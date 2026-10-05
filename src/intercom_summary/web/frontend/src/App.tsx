@@ -9,6 +9,7 @@ import Agents from "./pages/Agents";
 import Accuracy from "./pages/Accuracy";
 import Ruleset from "./pages/Ruleset";
 import Evaluation from "./pages/Evaluation";
+import Calibration from "./pages/Calibration";
 import NeedsAttention from "./pages/NeedsAttention";
 import Disputes from "./pages/Disputes";
 import KnowledgeBase from "./pages/KnowledgeBase";
@@ -38,6 +39,7 @@ function AuthenticatedApp() {
         <Route path="/accuracy" element={<Accuracy />} />
         <Route path="/ruleset" element={<Ruleset />} />
         <Route path="/evaluation" element={<Evaluation />} />
+        <Route path="/calibration" element={<Calibration />} />
         <Route path="/needs-attention" element={<NeedsAttention />} />
         <Route path="/disputes" element={<Disputes />} />
         <Route path="/knowledge-base" element={<KnowledgeBase />} />
