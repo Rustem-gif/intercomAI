@@ -135,7 +135,10 @@ def test_the_v41_prompt_judges_accuracy_against_the_kb():
 
     text = get_ruleset("kb-v41").prompt_text
     assert "## ACCURACY" in text
-    assert "never mark accuracy cannot_determine because of it" in text
+    # Client calibration, point 6: account facts need admin data the grader cannot see, so
+    # they are cannot_determine — the opposite of what PR #40 told the model.
+    assert "depends on admin-panel data you cannot see" in text
+    assert "never mark accuracy cannot_determine because of it" not in text
     assert "Accuracy needs the transcript plus approved KB/T&C or policy. Without it" not in text
 
 

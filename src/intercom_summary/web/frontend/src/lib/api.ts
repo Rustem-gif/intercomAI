@@ -591,6 +591,7 @@ export interface CalibrationRow {
   outcome_status: string | null;
   critical_fail: boolean;
   catastrophic: boolean;
+  major: boolean;
   manual_review_needed: boolean;
   summary: string | null;
   human_score: number | null;
@@ -618,6 +619,8 @@ export interface CalibrationSummary {
   manual_review: number;
   critical_fail: number;
   catastrophic: number;
+  major: number;
+  results: Record<"PASS" | "FAIL" | "CANNOT DETERMINE", number>;
 }
 
 export interface CalibrationResults {

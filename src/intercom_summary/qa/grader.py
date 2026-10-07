@@ -27,6 +27,7 @@ from anthropic import Anthropic
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.qa import knowledge_base
+from intercom_summary.qa.gated_rules import check_verdicts
 from intercom_summary.qa.grading_common import GradeParseError, is_valid_grade, trim_transcript
 from intercom_summary.qa.jev_verifier import (
     JevVerifier,
@@ -39,7 +40,6 @@ from intercom_summary.qa.pricing import UsageMeter
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
 from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset, strict_schema, validate_ruleset
 from intercom_summary.qa.schema import ConversationGrade
-from intercom_summary.qa.verdict_guard import apply_guards
 from intercom_summary.settings import settings
 
 log = get_logger(__name__)
@@ -219,12 +219,13 @@ class Grader:
             f"No usable grade for conversation {conversation.id} after {_MAX_ATTEMPTS} attempts"
         )
 
-    @staticmethod
-    def _guard(conversation: Conversation, data: dict) -> None:
-        # Overturn verdicts the transcript contradicts BEFORE the grade is built —
-        # from_model_output computes the score from these same criteria entries.
-        if guard_flags := apply_guards(conversation, data):
-            data["flags"] = [*(data.get("flags") or []), *guard_flags]
+    def _guard(self, conversation: Conversation, data: dict) -> None:
+        # Overturn verdicts the transcript contradicts, and derive the ones the model's own
+        # problem/request lists decide, BEFORE the grade is built — from_model_output computes
+        # the score from these same criteria entries.
+        if flags := check_verdicts(conversation, data, self._ruleset,
+                                   has_kb=self.knowledge_for(conversation) is not None):
+            data["flags"] = [*(data.get("flags") or []), *flags]
 
     def _reconcile(self, conversation: Conversation, messages: list[dict], data: dict,
                    served_by: str, jev: dict, meter: UsageMeter) -> tuple[dict, str, dict]:

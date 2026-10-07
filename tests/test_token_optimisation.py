@@ -107,8 +107,9 @@ def test_live_requests_go_out_with_the_cached_system_prompt():
 
 
 def test_v41_prompt_asks_for_no_evidence_on_passes():
+    """Except on the five criteria whose pass needs a source (qa/gated_rules.py)."""
     text = get_ruleset("kb-v41").prompt_text
-    assert 'pass and n/a — an empty string ""' in text
+    assert 'every other pass, and n/a — an empty string ""' in text
 
 
 def test_an_empty_evidence_on_a_pass_is_a_valid_grade():

@@ -70,6 +70,7 @@ intercomSummary/
     │   ├── casino_prompt.py  ← The scoring rubric + JSON schema the AI must fill in. ⚠️ delicate.
     │   ├── schema.py          ← Turns the AI's answer into a score (does the math itself).
     │   ├── verdict_guard.py  ← Overturns greeting/name verdicts the transcript contradicts.
+    │   ├── gated_rules.py    ← v4.1: turns detected problems / requests / notes into verdicts by rule.
     │   ├── agent.py / chat.py ← The "Ask Qwen" chat assistant in the UI.
     │   └── rules.py          ← Loads/versions the rulebook.
     │
@@ -245,6 +246,37 @@ status) is not in the data. Only `cannot_determine` sets `manual_review_needed` 
 to a QC manager, so collapsing the two buries the question instead of asking it. Both cost zero
 points. `verdict_guard` enforces this for `tag-chat`, which has no honest `n/a`.
 
+**The result is a rule, and so are the verdicts it reads (client calibration, 2026-10-08).**
+The model used to decide pass/fail per criterion on its own, and two runs on the same chats
+disagreed — Excellent in one, Major in the other — while some grades described a problem and
+still scored 100. The chain is now *detected problem → fail → severity (the criterion's gate) →
+score → result*:
+- The model writes `problems` (`[{id, ev}]`) **before** any verdict, and `summary` **last**.
+  `violations` is no longer asked for; `qa/schema.py` builds it, and the first sentence of the
+  summary (e.g. `FAIL · Major: Request Coverage. Cannot determine: Material Accuracy.`), from the
+  verdicts alone.
+- `qa/gated_rules.py` (`check_verdicts`, run by both graders before scoring) applies, in order:
+  a. every listed problem → `fail` on its criterion (then `verdict_guard` still drops bot/player quotes);
+  b. a material request marked `unresolved` → `resp-no-ghost` fail;
+  c. outcome Unresolved/Abandoned with no Major → `resp-no-ghost` cannot_determine (or
+     `res-no-fake-close` fail when the agent closed it);
+  d. an escalation (expected handling, a request, or the outcome says so) with **no internal note**
+     → `action-escalation-missed` cannot_determine — the agent's words are not a trace;
+  e. a pass on `accuracy-*`, `action-escalation-missed`, `financial-case-abandoned`,
+     `severe-business-trust` must cite its source in `ev`, else cannot_determine;
+  f. no knowledge base for the brand → an accuracy pass becomes cannot_determine.
+  Every change is a `rule:` flag in `signal_flags`. Tests: `tests/test_gated_rules.py`.
+- Result (`score_gated`): Critical → **FAIL 0**; any Major → **FAIL**, `major_outcome_failure`,
+  capped 75, whatever `pass_threshold` says; otherwise **any** `cannot_determine` or
+  `data_sufficiency` Insufficient → **`CANNOT DETERMINE`** (band "Cannot Determine", score kept as
+  provisional, manual review forced); otherwise PASS at ≥ 85. An analyst re-score runs the same
+  rule, so resolving every undetermined criterion is what turns CANNOT DETERMINE into PASS/FAIL.
+- Accuracy statements about *this player's account* (status, balance, KYC, why a payment is held)
+  are cannot_determine — the grader cannot see admin data. This was the client's explicit call, and
+  it means most chats come out CANNOT DETERMINE / manual review.
+- Consistency check after any grader change: run the sample twice and
+  `python scripts/compare_calibration_runs.py RUN_A RUN_B [--list]`.
+
 **v4.1 is live for standard chats — by date.** `GROUP_RULESETS[GROUP_STANDARD]` is `kb-v41`, but
 only for conversations **created on or after `QA_V41_EFFECTIVE_FROM`** (`.env`, a `YYYY-MM-DD`
 date, judged in UTC). Older standard chats keep `default`. That is manual §9 ("a historical chat is
@@ -270,9 +302,10 @@ every resolver call passes the chat's `created_at`.
   so it only changes — and only re-writes the prompt cache — when an article does. Every grade
   records the snapshot it used: `kb_version` (`Betncare:<hash>`). `KB_ENABLED=0` switches it off.
 - The rule (prompt section `## ACCURACY`): a general rule/fact the agent states is checked against
-  the KB and the transcript (fail if contradicted, pass if it agrees, n/a if no such statement);
-  what the agent reports about *this player's own account* is not an accuracy question; and
-  `cannot_determine` is only for a decisive rule the KB does not cover. Measured on 30 reviewed chats:
+  the KB and the transcript (fail if contradicted, pass if it agrees and `ev` names the article, n/a
+  if no such statement); `cannot_determine` for a rule the KB does not cover. Since 2026-10-08, what
+  the agent reports about *this player's own account* is cannot_determine too (it needs admin
+  data) — this reverses part of the measurement below. Measured on 30 reviewed chats:
   `accuracy-material` undetermined 20 → 6, chats sent to manual review 29 → 22.
 - Cost: ~15k more cached tokens per request (+~$0.004/chat live, +~$0.0025 batch). Batch runs grade
   one chat per brand live first (`batch.warm_up_set`) so the batch reads the cache instead of every

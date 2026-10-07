@@ -2277,6 +2277,7 @@ def _calibration_row(r: dict, ruleset_id: str) -> dict:
         "overall_result": p.get("overall_result"), "outcome_status": p.get("outcome_status"),
         "critical_fail": bool(p.get("critical_fail")),
         "catastrophic": bool(p.get("catastrophic_service_failure")),
+        "major": bool(p.get("major_outcome_failure")),
         "manual_review_needed": bool(p.get("manual_review_needed")),
         "summary": p.get("summary"),
         "human_score": r.get("human_score"), "human_note": r.get("human_note"),
@@ -2317,6 +2318,10 @@ def _calibration_summary(rows: list[dict]) -> dict:
         "manual_review": sum(r["manual_review_needed"] for r in graded),
         "critical_fail": sum(r["critical_fail"] for r in graded),
         "catastrophic": sum(r["catastrophic"] for r in graded),
+        "major": sum(r["major"] for r in graded),
+        # PASS / FAIL / CANNOT DETERMINE — the rule-decided result, not a score threshold.
+        "results": {res: sum(r["overall_result"] == res for r in graded)
+                    for res in ("PASS", "FAIL", "CANNOT DETERMINE")},
     }
 
 

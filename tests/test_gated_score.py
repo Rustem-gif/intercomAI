@@ -131,9 +131,15 @@ def test_a_criterion_the_ruleset_does_not_define_is_ignored(rs):
 
 
 def test_only_fail_costs_anything(rs):
+    """cannot_determine costs no points — but it does stop the chat passing (below)."""
     r = score_gated([
         {"id": "resp-no-ghost", "v": "cannot_determine", "ev": "no CRM data"},
         {"id": "tag-chat", "v": "cannot_determine", "ev": "tags not visible"},
+        {"id": "res-no-fake-close", "v": "n/a", "ev": ""},
+        {"id": "comm-tone", "v": "pass", "ev": ""},
+    ], rs)
+    assert r.score == 100
+    r = score_gated([
         {"id": "res-no-fake-close", "v": "n/a", "ev": ""},
         {"id": "comm-tone", "v": "pass", "ev": ""},
     ], rs)

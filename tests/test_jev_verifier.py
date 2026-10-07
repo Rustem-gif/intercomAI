@@ -200,7 +200,10 @@ def test_reconcile_asks_the_grader_once_to_re_examine_the_disputed_criteria():
     revised = _v41(criteria=[
         {"id": "resp-no-ghost", "v": "pass", "ev": "answered"},
         {"id": "comm-tone", "v": "fail", "ev": AGENT_LINE},
-    ], outcome_status="Resolved")
+    ], outcome_status="Resolved",
+        # Consistent with the revision: a request still marked unresolved would re-fail
+        # resp-no-ghost by rule (qa/gated_rules.py), whatever the criterion verdict says.
+        requests=[{"text": "Where is my withdrawal?", "status": "answered", "material": True}])
 
     class TwoStep(FakeJev):
         def system_one(self, *, state, questions, model):

@@ -117,13 +117,17 @@ def score_from_verdicts(
         # themselves. The analyst's extra deduction comes off the finished score: it is an
         # explicit human judgement about something the AI could not see, so it is allowed to
         # take a chat below the model's own no-Major floor.
-        from intercom_summary.qa.gated_scoring import score_gated
+        from intercom_summary.qa.gated_scoring import RESULT_CANNOT_DETERMINE, score_gated
 
         criteria = [{"id": cid, "v": v} for cid, v in verdicts.items()]
         r = score_gated(criteria, rs)
         if extra_deduction and not r.critical_fail:
             score = max(0, r.score - abs(extra_deduction))
-            result = "PASS" if score >= rs.pass_threshold else "FAIL"
+            # Only a plain PASS/FAIL moves with the points: a Major stays FAIL, and an
+            # undetermined criterion stays CANNOT DETERMINE until the analyst resolves it.
+            result = r.result
+            if not r.major_outcome_failure and result != RESULT_CANNOT_DETERMINE:
+                result = "PASS" if score >= rs.pass_threshold else "FAIL"
             return score, r.band, result
         return r.score, r.band, r.result
 
@@ -155,6 +159,56 @@ def _as_text(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return "; ".join(_as_text(v) for v in value)
     return str(value)
+
+
+# Worst first: the order failures are listed in, and the label the verdict line gives them.
+_GATE_ORDER = (("critical", "Critical"), ("major", "Major"), ("minor", "Minor"))
+
+
+def _failed_in_order(criteria: list[dict], ruleset) -> list[dict]:
+    """The ruleset's failed criteria, worst severity first (Gate 1 → Gate 2 Major → the rest),
+    each once, in the model's order within a severity."""
+    severities = ruleset.severities
+    seen: set[str] = set()
+    failed = []
+    for c in criteria or []:
+        cid = c.get("id", "")
+        if c.get("v") == "fail" and cid in ruleset.deductions and cid not in seen:
+            seen.add(cid)
+            failed.append(c)
+    rank = {sev: i for i, (sev, _label) in enumerate(_GATE_ORDER)}
+    return sorted(failed, key=lambda c: rank.get(severities.get(c["id"], "minor"), 2))
+
+
+def _violations_from_verdicts(criteria: list[dict], ruleset) -> list[str]:
+    titles = ruleset.titles
+    out = []
+    for c in _failed_in_order(criteria, ruleset):
+        title = titles.get(c["id"], c["id"])
+        ev = _as_text(c.get("ev", "")).strip()
+        out.append(f"{title} — {ev}" if ev else title)
+    return out
+
+
+def _verdict_line(gated, criteria: list[dict], ruleset) -> str:
+    """One sentence stating the result and what decided it, built only from the verdicts —
+    e.g. "FAIL · Major: Request Coverage. Cannot determine: Material Accuracy." It leads the
+    summary so the model's narrative can never stand in for, or contradict, the verdict."""
+    titles = ruleset.titles
+    severities = ruleset.severities
+    failed = _failed_in_order(criteria, ruleset)
+    parts = [gated.result]
+    for sev, label in _GATE_ORDER:
+        names = [titles.get(c["id"], c["id"]) for c in failed
+                 if severities.get(c["id"], "minor") == sev]
+        if names:
+            parts.append(f"{label}: {', '.join(names)}")
+    line = " · ".join(parts) + "."
+    undetermined = [titles.get(c.get("id", ""), c.get("id", "")) for c in criteria or []
+                    if c.get("v") == "cannot_determine" and c.get("id") in ruleset.deductions]
+    if undetermined:
+        line += f" Cannot determine: {', '.join(undetermined)}."
+    return line
 
 
 @dataclass
@@ -202,6 +256,7 @@ class ConversationGrade:
     outcome_status: str = ""                 # what became of the case, separate from the score
     severity: str = ""                       # Critical / Major / Minor — the worst thing that failed
     catastrophic_service_failure: bool = False   # NOT critical_fail; see qa/gated_scoring.py
+    major_outcome_failure: bool = False      # any Gate 2 Major fail — always FAIL, capped at 75
     critical_fail: bool = False
     manual_review_needed: bool = False
     manual_review_reason: str = ""
@@ -285,9 +340,12 @@ class ConversationGrade:
         # v4.1 ruleset is gated (caps and floors, which no sum can express).
         gated = None
         if ruleset.scoring_model == SCORING_GATED:
-            from intercom_summary.qa.gated_scoring import score_gated
+            from intercom_summary.qa.gated_scoring import RESULT_CANNOT_DETERMINE, score_gated
 
-            gated = score_gated(criteria, ruleset)
+            gated = score_gated(
+                criteria, ruleset,
+                insufficient=_as_text(data.get("data_sufficiency", "")) == "Insufficient",
+            )
             score, band, result = gated.score, gated.band, gated.result
         else:
             score, band, result = _compute_score(
@@ -315,6 +373,14 @@ class ConversationGrade:
             grade.severity = gated.severity
             grade.critical_fail = gated.critical_fail
             grade.catastrophic_service_failure = gated.catastrophic_service_failure
+            grade.major_outcome_failure = gated.major_outcome_failure
+            # What went wrong is read off the verdicts, not taken from the model's prose: a
+            # problem the model only mentioned in passing cannot appear here without the
+            # criterion that scores it, and a failed criterion cannot be missing from here.
+            grade.violations = _violations_from_verdicts(criteria, ruleset)
+            grade.summary = " ".join(
+                p for p in (_verdict_line(gated, criteria, ruleset), grade.summary) if p
+            )
             grade.case_type = _as_text(data.get("case_type", ""))
             grade.risk_flag = _as_text(data.get("risk_flag", ""))
             grade.expected_handling = _as_text(data.get("expected_handling", ""))
@@ -334,10 +400,13 @@ class ConversationGrade:
             grade.manual_review_needed = bool(
                 data.get("manual_review_needed") or undetermined
                 or _as_text(data.get("data_sufficiency", "")) == "Insufficient"
+                or gated.result == RESULT_CANNOT_DETERMINE
             )
             reason = _as_text(data.get("manual_review_reason", ""))
             if not reason and undetermined:
                 reason = "Cannot determine: " + ", ".join(sorted(undetermined))
+            if not reason and grade.manual_review_needed:
+                reason = "Insufficient data to judge the chat"
             grade.manual_review_reason = reason
         else:
             grade.critical_fail = bool(critical_fail and score == 0)
@@ -373,6 +442,7 @@ class ConversationGrade:
         g.outcome_status = d.get("outcome_status", "")
         g.severity = d.get("severity", "")
         g.catastrophic_service_failure = bool(d.get("catastrophic_service_failure"))
+        g.major_outcome_failure = bool(d.get("major_outcome_failure"))
         g.critical_fail = bool(d.get("critical_fail"))
         g.manual_review_needed = bool(d.get("manual_review_needed"))
         g.manual_review_reason = d.get("manual_review_reason", "")

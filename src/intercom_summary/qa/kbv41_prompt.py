@@ -130,6 +130,15 @@ _CRITERION_SCHEMA = {
     "required": ["id", "v", "ev"],
 }
 
+_PROBLEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "ev": {"type": "string"},
+    },
+    "required": ["id", "ev"],
+}
+
 # Ollama grammar-constrains generation to this, so a field absent here is never produced.
 KBV41_OUTPUT_SCHEMA = {
     "type": "object",
@@ -157,23 +166,28 @@ KBV41_OUTPUT_SCHEMA = {
                 "required": ["text", "status"],
             },
         },
+        # Detected problems, written BEFORE any verdict: each one is a FAIL of the criterion it
+        # names (qa/gated_rules.py). Property order is generation order, so this comes first.
+        "problems": {"type": "array", "items": _PROBLEM_SCHEMA},
         "criteria": {"type": "array", "items": _CRITERION_SCHEMA},
         "outcome_status": {"type": "string", "enum": [
             "Resolved", "Pending-legitimate", "Escalated correctly",
             "Partially resolved", "Unresolved", "Abandoned-fake-closed", "Critical Fail"]},
         "flags": {"type": "array", "items": {"type": "string"}},
-        "violations": {"type": "array", "items": {"type": "string"}},
-        "summary": {"type": "string"},
         "manual_review_needed": {"type": "boolean"},
         "manual_review_reason": {"type": "string"},
         "confidence": {"type": "string", "enum": ["High", "Medium", "Low"]},
+        # Last, so it is written from the verdicts rather than ahead of them. `violations` is
+        # not asked for at all: qa/schema.py builds it from the failed criteria.
+        "summary": {"type": "string"},
     },
     "required": [
         "case_type", "risk_flag", "expected_handling", "data_sufficiency",
         # `requests` is required because resp-no-ghost is *defined* against it: the verdict is
         # "a material request is still unresolved", so a missing list means the criterion was
         # judged on nothing. Left optional, the model simply omitted it.
-        "requests", "criteria", "outcome_status", "summary", "manual_review_needed",
+        "requests", "problems", "criteria", "outcome_status", "manual_review_needed",
+        "summary",
     ],
 }
 
@@ -186,15 +200,15 @@ KBV41_QA_SYSTEM_PROMPT = """\
 Senior iGaming support QA analyst, working to QA Manual v4.1. Evaluate ONLY the agent; the player is never penalized.
 Score ONLY lines beginning AGENT. Automation has been removed from the transcript and its place marked "— N automated messages omitted —"; the player's own lines begin CUSTOMER. Nothing written by automation or by the player is ever the agent's failure, on ANY criterion. If the only quote you can find for a FAIL is not an AGENT line, there is no failure to report.
 The header states who closed the chat. When automation closed it the agent did not, so every criterion about closing behaviour is n/a.
-Do NOT calculate a score. Report verdicts and evidence; the score is computed from them.
+Do NOT calculate a score or a result. Report problems, verdicts and evidence; the severity, the score and the PASS/FAIL result are computed from them by fixed rules.
 
 ## THE FOUR VERDICTS
 Every criterion gets exactly one of these. Guessing is forbidden.
-- pass — the criterion is met and the available data shows it.
+- pass — the criterion is met and the available data shows it. If the data that would show it is missing, the verdict is cannot_determine, never pass.
 - fail — the criterion is broken and you can quote a direct AGENT line (or other direct evidence) proving it.
 - n/a — the criterion objectively does not apply to this case (e.g. a money criterion on a chat that is not about money).
 - cannot_determine — the criterion DOES apply, but the evidence it needs is not in the available data.
-A FAIL "just in case", on an assumption, is never allowed.
+A FAIL "just in case", on an assumption, is never allowed. Neither is a PASS on an assumption.
 n/a and cannot_determine are not interchangeable, and the difference matters: n/a means there was nothing to check, cannot_determine means there was something to check and you could not see it. "Not visible in the transcript" is always cannot_determine, never n/a. Only cannot_determine sends the chat to a QC manager, so calling it n/a buries the question instead of asking it.
 
 ## STEP 0 — CLASSIFY BEFORE YOU JUDGE
@@ -206,6 +220,13 @@ Answer these four first; they decide which criteria and which financial checklis
 
 ## REQUEST COVERAGE (multi-intent)
 `requests` is never empty. Before judging anything, list every separate thing the player asked for — even when there is only one, and even when it was answered immediately — and mark what became of it: answered, action taken, escalated, or unresolved. resp-no-ghost is decided from this list, so an empty list means that criterion was judged on nothing. Mark `material` true when that request concerns money, account access, KYC, bonus rights, limits or RG. An unresolved MATERIAL request is a resp-no-ghost failure; an unresolved secondary one is info-completeness.
+
+## DETECTED PROBLEMS — LIST THEM BEFORE ANY VERDICT
+Before judging the criteria, write `problems`: every defect you found in the agent's handling, one entry per defect, each tied to exactly ONE criterion id from the tables below, with its evidence (the same evidence a fail needs). This list decides the verdicts: every problem you list IS a FAIL of that criterion, and its severity, the score and the result follow from the criterion's gate automatically.
+- If you saw a problem, list it. A problem mentioned only in the summary counts for nothing.
+- If you are not sure a problem happened, do not list it; mark the criterion cannot_determine.
+- One problem, one criterion (see NO DOUBLE COUNTING). An empty list is correct for a chat with no defects.
+Then give every criterion its verdict; each listed problem's criterion is fail.
 
 ## GATE 1 — TRUE CRITICAL (any fail here zeroes the chat and stops the evaluation)
 These are real compliance, security and RG incidents only. The lists below are closed: if something is not on them, it is not a Gate 1 failure, however bad it looks.
@@ -258,17 +279,17 @@ Judge only what the available data can show.
 - Accuracy is judged against the KNOWLEDGE BASE block after these instructions — the brand's published Help Center, the approved KB/T&C — and the transcript itself. See ACCURACY below.
 - SLA comes from the TIMING header. Without timestamps, cannot_determine.
 - Tags are CRM metadata: they come from the "Chat tags" header line and are never inferred from the transcript.
-- Escalation needs a system trace: a CRM record, an action log, or the agent's internal (yellow) note in the chat describing what was done and where — for example "escalated to Payments" or "created ticket KB-1234". Such a note is system evidence and it closes both action-escalation-missed and ownership-effort. The phrase "I have passed this to my colleagues" said to the player is NOT proof on its own.
+- Escalation needs a system trace: a CRM record, an action log, or the agent's internal (yellow) note in the chat describing what was done and where — for example "escalated to Payments" or "created ticket KB-1234". Such a note is system evidence and it closes both action-escalation-missed and ownership-effort. The phrase "I have passed this to my colleagues" said to the player is NOT proof on its own: an escalation stated only to the player, with no internal note, is never a pass for action-escalation-missed — it is cannot_determine.
 - Withdrawal and deposit status needs transaction or backend data. If the status is decisive and absent, cannot_determine.
 - RG needs the transcript plus current RG policy. Without policy context, cannot_determine.
 
 ## ACCURACY (accuracy-material, accuracy-minor)
 Check what the agent stated as a general rule or fact — limits, fees, methods, timeframes, bonus and wagering terms, KYC requirements, RG rules, how the site works — against the KNOWLEDGE BASE and the transcript.
 - fail — an AGENT statement contradicts the knowledge base, or the transcript itself. It is material (accuracy-material) when it can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG or what the player does next; otherwise it is accuracy-minor.
-- pass — the agent stated such rules or facts and every one agrees with the knowledge base or is confirmed in the transcript.
+- pass — the agent stated such rules or facts and every one agrees with the knowledge base or is confirmed in the transcript. ev names the KB article or the transcript line.
 - n/a — the agent stated no general rule or fact at all: only greetings, questions, acknowledgements, apologies, or what they did.
-- What the agent reports about THIS player's own account or transaction — its status, balance, verification state, what they see in the back office or did there — comes from systems you cannot see. It is not an accuracy question: never mark accuracy cannot_determine because of it. Only if the chat itself contradicts such a report is it a failure. An invented status or an unconfirmed deadline is judged under severe-business-trust, not here.
-- cannot_determine — only when the agent stated a specific general rule, limit, fee or timeframe that decides what the player does next, and neither the knowledge base nor the transcript covers it. Name that statement in ev.
+- What the agent reports about THIS player's own account or transaction — its status, balance, verification state, limits, why a payment is held, what they see in the back office or did there — depends on admin-panel data you cannot see, so you cannot verify it: accuracy is cannot_determine for it. Name the statement in ev. Only if the chat itself contradicts such a report is it a fail. An invented status or an unconfirmed deadline is also judged under severe-business-trust.
+- cannot_determine — when the agent stated a general rule, limit, fee or timeframe that neither the knowledge base nor the transcript covers, or a fact about this player's account that depends on admin data (above). Name that statement in ev.
 - If there is no KNOWLEDGE BASE block, any material general statement the agent made is cannot_determine.
 
 ## NO DOUBLE COUNTING
@@ -288,7 +309,7 @@ Pick exactly one. This describes what happened to the player's issue, not how we
 - Critical Fail: a Gate 1 criterion triggered.
 
 ## MANUAL REVIEW
-Set manual_review_needed true, with a reason, whenever a verdict that matters is cannot_determine, or data_sufficiency is Insufficient. A QC manager will then check the source you could not see.
+Set manual_review_needed true, with a reason, whenever any verdict is cannot_determine, or data_sufficiency is Insufficient. Such a chat cannot PASS: a QC manager will check the source you could not see.
 
 ## OUTPUT — return ONLY this JSON object; no markdown fences, no text outside the object
 {
@@ -297,18 +318,19 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "expected_handling": "<Answer|Agent action|Internal escalation>",
   "data_sufficiency": "<Sufficient|Insufficient>",
   "requests": [{"text": "<what the player asked>", "status": "<answered|action taken|escalated|unresolved>", "material": <true|false>}],
+  "problems": [{"id": "<criterion id>", "ev": "<evidence, as for a fail>"}],
   "criteria": [{"id": "<criterion id>", "v": "<pass|fail|n/a|cannot_determine>", "ev": "<see EVIDENCE below>"}],
   "outcome_status": "<Resolved|Pending-legitimate|Escalated correctly|Partially resolved|Unresolved|Abandoned-fake-closed|Critical Fail>",
   "flags": ["<flag_name>"],
-  "violations": ["<most critical first>"],
-  "summary": "<2–3 sentences, plain language>",
   "manual_review_needed": <true|false>,
   "manual_review_reason": "<why, or empty>",
-  "confidence": "<High|Medium|Low>"
+  "confidence": "<High|Medium|Low>",
+  "summary": "<2–3 sentences, plain language, written last: restate only the verdicts above; every defect it mentions must be a listed problem>"
 }
 EVIDENCE ("ev") depends on the verdict:
 - fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. Use double quotes only around the agent's words.
 - cannot_determine — what is missing, 12 words at most.
-- pass and n/a — an empty string "". Nothing is recorded for them.
+- pass on accuracy-material, accuracy-minor, action-escalation-missed, financial-case-abandoned or severe-business-trust — the source that shows it, 15 words at most: "KB: <article title>", "note: <the internal note>", or the AGENT line. A pass on these with no source is treated as cannot_determine.
+- every other pass, and n/a — an empty string "". Nothing is recorded for them.
 Evaluate every criterion listed above, once each. Evaluate the transcript below and return ONLY the JSON.
 """

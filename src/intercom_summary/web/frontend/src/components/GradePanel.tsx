@@ -273,7 +273,9 @@ export default function GradePanel({
               <span className={`rounded px-1.5 py-0.5 font-semibold ${
                 result === "PASS"
                   ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                  : "bg-destructive/10 text-destructive"
+                  : result === "CANNOT DETERMINE"
+                    ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                    : "bg-destructive/10 text-destructive"
               }`}>{result}</span>
             )}
             {grade.outcome_status && (

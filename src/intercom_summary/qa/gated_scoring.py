@@ -10,6 +10,17 @@ for — they are not decoration on a sum, they are the model.
     Gate 2  the player did not get their outcome         → cap 75 (flat: one Major == three)
     Gate 3  process and tone                             → ordinary deductions off the cap
 
+The result is a rule over the verdicts, never the model's call, in this order:
+
+    any Critical fail                  → FAIL (score 0)
+    any Major fail                     → FAIL (major_outcome_failure, score ≤ cap)
+    any cannot_determine / no data     → CANNOT DETERMINE (score kept as provisional)
+    otherwise                          → PASS at ≥ pass_threshold, else FAIL
+
+A chat whose evidence was not available can therefore never PASS: it goes to a QC manager,
+and the analyst's re-score (which runs through here too) turns it into PASS or FAIL once every
+undetermined criterion is resolved.
+
 Two guardrails from the flat model are kept deliberately, because they were written against
 real misbehaviour: a `fail` on an id the catalogue does not define is ignored (the model
 invents criteria), and the points always come from the catalogue, never from the model.
@@ -28,15 +39,21 @@ SEVERITY_CRITICAL = "Critical"
 SEVERITY_MAJOR = "Major"
 SEVERITY_MINOR = "Minor"
 
+RESULT_PASS = "PASS"
+RESULT_FAIL = "FAIL"
+RESULT_CANNOT_DETERMINE = "CANNOT DETERMINE"
+BAND_CANNOT_DETERMINE = "Cannot Determine"
+
 
 @dataclass
 class GatedResult:
     score: int
     band: str
-    result: str                            # "PASS" | "FAIL"
+    result: str                            # "PASS" | "FAIL" | "CANNOT DETERMINE"
     severity: str = ""                     # Critical | Major | Minor | "" when nothing failed
     critical_fail: bool = False
     catastrophic_service_failure: bool = False
+    major_outcome_failure: bool = False    # any Gate 2 Major fail — always FAIL, capped
 
 
 def _failed_ids(criteria: list[dict], known: set[str]) -> set[str]:
@@ -57,10 +74,20 @@ def _failed_ids(criteria: list[dict], known: set[str]) -> set[str]:
     return out
 
 
-def score_gated(criteria: list[dict], ruleset: QaRuleset) -> GatedResult:
-    """Compute the v4.1 score from the criterion verdicts. See the module docstring."""
+def _undetermined_ids(criteria: list[dict], known: set[str]) -> set[str]:
+    return {c.get("id", "") for c in criteria or []
+            if c.get("v") == "cannot_determine" and c.get("id", "") in known}
+
+
+def score_gated(criteria: list[dict], ruleset: QaRuleset,
+                insufficient: bool = False) -> GatedResult:
+    """Compute the v4.1 score and result from the criterion verdicts. See the module docstring.
+
+    `insufficient` is the grade's data_sufficiency == "Insufficient": with no data to judge
+    by, the chat cannot PASS whatever the individual verdicts say."""
     deductions = ruleset.deductions
     failed = _failed_ids(criteria, set(deductions))
+    undetermined = _undetermined_ids(criteria, set(deductions)) - failed
 
     scoring = ruleset.scoring
     pass_threshold = int(scoring.get("pass_threshold", 85))
@@ -72,11 +99,12 @@ def score_gated(criteria: list[dict], ruleset: QaRuleset) -> GatedResult:
     # Derived from the verdicts, never from the model's own critical_fail boolean: it sets
     # that flag on its own initiative (24 of 30 zeroed grades had no critical criterion
     # failing at all), so the flag is not evidence of anything.
+    major_ids = set(ruleset.ids_in_gate(2, "major"))
     if failed & ruleset.critical:
-        return GatedResult(0, "Critical", "FAIL", SEVERITY_CRITICAL, critical_fail=True)
+        return GatedResult(0, "Critical", RESULT_FAIL, SEVERITY_CRITICAL, critical_fail=True,
+                           major_outcome_failure=bool(failed & major_ids))
 
     groups = ruleset.groups
-    major_ids = set(ruleset.ids_in_gate(2, "major"))
     quality_ids = set(ruleset.ids_in_gate(2, "minor"))
     gate3 = ruleset.ids_in_gate(3)
     process_ids = {cid for cid in gate3 if cid not in groups}
@@ -104,8 +132,8 @@ def score_gated(criteria: list[dict], ruleset: QaRuleset) -> GatedResult:
     # same score of 0. Only the complete combination qualifies; a partial one scores normally.
     if major and process_ids and process_ids <= failed and style_maxed:
         return GatedResult(
-            catastrophic_score, "Catastrophic", "FAIL", SEVERITY_MAJOR,
-            catastrophic_service_failure=True,
+            catastrophic_score, "Catastrophic", RESULT_FAIL, SEVERITY_MAJOR,
+            catastrophic_service_failure=True, major_outcome_failure=True,
         )
 
     score = cap - quality - process - style
@@ -122,12 +150,18 @@ def score_gated(criteria: list[dict], ruleset: QaRuleset) -> GatedResult:
     else:
         severity = ""
 
-    result = "PASS" if score >= pass_threshold else "FAIL"
     if major:
-        band = "Major Failure"
-    elif score >= 95:
+        # The hard rule: a failed outcome is a FAIL however the threshold is configured.
+        return GatedResult(score, "Major Failure", RESULT_FAIL, severity,
+                           major_outcome_failure=True)
+    if undetermined or insufficient:
+        # Something that had to be checked could not be. Never a PASS — a QC manager decides.
+        return GatedResult(score, BAND_CANNOT_DETERMINE, RESULT_CANNOT_DETERMINE, severity)
+
+    result = RESULT_PASS if score >= pass_threshold else RESULT_FAIL
+    if score >= 95:
         band = "Excellent"
-    elif result == "PASS":
+    elif result == RESULT_PASS:
         band = "Good"
     else:
         band = "Needs Work"
