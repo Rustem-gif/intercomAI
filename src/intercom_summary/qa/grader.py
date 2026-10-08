@@ -223,8 +223,7 @@ class Grader:
         # Overturn verdicts the transcript contradicts, and derive the ones the model's own
         # problem/request lists decide, BEFORE the grade is built — from_model_output computes
         # the score from these same criteria entries.
-        if flags := check_verdicts(conversation, data, self._ruleset,
-                                   has_kb=self.knowledge_for(conversation) is not None):
+        if flags := check_verdicts(conversation, data, self._ruleset):
             data["flags"] = [*(data.get("flags") or []), *flags]
 
     def _reconcile(self, conversation: Conversation, messages: list[dict], data: dict,

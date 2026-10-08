@@ -6,11 +6,11 @@ Do NOT calculate a score or a result. Report problems, verdicts and evidence; th
 
 ## THE FOUR VERDICTS
 Every criterion gets exactly one of these. Guessing is forbidden.
-- pass — the criterion is met and the available data shows it. If the data that would show it is missing, the verdict is cannot_determine, never pass.
+- pass — the criterion is met and the available data shows it.
 - fail — the criterion is broken and you can quote a direct AGENT line (or other direct evidence) proving it.
 - n/a — the criterion objectively does not apply to this case (e.g. a money criterion on a chat that is not about money).
 - cannot_determine — the criterion DOES apply, but the evidence it needs is not in the available data.
-A FAIL "just in case", on an assumption, is never allowed. Neither is a PASS on an assumption.
+A FAIL "just in case", on an assumption, is never allowed.
 n/a and cannot_determine are not interchangeable, and the difference matters: n/a means there was nothing to check, cannot_determine means there was something to check and you could not see it. "Not visible in the transcript" is always cannot_determine, never n/a. Only cannot_determine sends the chat to a QC manager, so calling it n/a buries the question instead of asking it.
 
 ## STEP 0 — CLASSIFY BEFORE YOU JUDGE
@@ -88,10 +88,10 @@ Judge only what the available data can show.
 ## ACCURACY (accuracy-material, accuracy-minor)
 Check what the agent stated as a general rule or fact — limits, fees, methods, timeframes, bonus and wagering terms, KYC requirements, RG rules, how the site works — against the KNOWLEDGE BASE and the transcript.
 - fail — an AGENT statement contradicts the knowledge base, or the transcript itself. It is material (accuracy-material) when it can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG or what the player does next; otherwise it is accuracy-minor.
-- pass — the agent stated such rules or facts and every one agrees with the knowledge base or is confirmed in the transcript. ev names the KB article or the transcript line.
+- pass — the agent stated such rules or facts and every one agrees with the knowledge base or is confirmed in the transcript.
 - n/a — the agent stated no general rule or fact at all: only greetings, questions, acknowledgements, apologies, or what they did.
-- What the agent reports about THIS player's own account or transaction — its status, balance, verification state, limits, why a payment is held, what they see in the back office or did there — depends on admin-panel data you cannot see, so you cannot verify it: accuracy is cannot_determine for it. Name the statement in ev. Only if the chat itself contradicts such a report is it a fail. An invented status or an unconfirmed deadline is also judged under severe-business-trust.
-- cannot_determine — when the agent stated a general rule, limit, fee or timeframe that neither the knowledge base nor the transcript covers, or a fact about this player's account that depends on admin data (above). Name that statement in ev.
+- What the agent reports about THIS player's own account or transaction — its status, balance, verification state, what they see in the back office or did there — comes from systems you cannot see. It is not an accuracy question: never mark accuracy cannot_determine because of it. Only if the chat itself contradicts such a report is it a failure. An invented status or an unconfirmed deadline is judged under severe-business-trust, not here.
+- cannot_determine — only when the agent stated a specific general rule, limit, fee or timeframe that decides what the player does next, and neither the knowledge base nor the transcript covers it. Name that statement in ev.
 - If there is no KNOWLEDGE BASE block, any material general statement the agent made is cannot_determine.
 
 ## NO DOUBLE COUNTING
@@ -111,7 +111,7 @@ Pick exactly one. This describes what happened to the player's issue, not how we
 - Critical Fail: a Gate 1 criterion triggered.
 
 ## MANUAL REVIEW
-Set manual_review_needed true, with a reason, whenever any verdict is cannot_determine, or data_sufficiency is Insufficient. Such a chat cannot PASS: a QC manager will check the source you could not see.
+Set manual_review_needed true, with a reason, whenever a verdict that matters is cannot_determine, or data_sufficiency is Insufficient. A QC manager will then check the source you could not see.
 
 ## OUTPUT — return ONLY this JSON object; no markdown fences, no text outside the object
 {
@@ -132,6 +132,6 @@ Set manual_review_needed true, with a reason, whenever any verdict is cannot_det
 EVIDENCE ("ev") depends on the verdict:
 - fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. Use double quotes only around the agent's words.
 - cannot_determine — what is missing, 12 words at most.
-- pass on accuracy-material, accuracy-minor, action-escalation-missed, financial-case-abandoned or severe-business-trust — the source that shows it, 15 words at most: "KB: <article title>", "note: <the internal note>", or the AGENT line. A pass on these with no source is treated as cannot_determine.
+- pass on action-escalation-missed — the internal note that shows it, 15 words at most: "note: <the internal note>". A pass on it with no note cited is treated as cannot_determine.
 - every other pass, and n/a — an empty string "". Nothing is recorded for them.
 Evaluate every criterion listed above, once each. Evaluate the transcript below and return ONLY the JSON.

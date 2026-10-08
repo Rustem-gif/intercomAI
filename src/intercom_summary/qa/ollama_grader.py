@@ -170,8 +170,7 @@ class OllamaGrader:
 
         # Overturn verdicts the transcript contradicts and derive the rule-decided ones, BEFORE
         # the grade is built — from_model_output computes the score from these same entries.
-        # This backend never sends a knowledge base.
-        if guard_flags := check_verdicts(conversation, data, self._ruleset, has_kb=False):
+        if guard_flags := check_verdicts(conversation, data, self._ruleset):
             data["flags"] = [*(data.get("flags") or []), *guard_flags]
 
         grade = ConversationGrade.from_model_output(

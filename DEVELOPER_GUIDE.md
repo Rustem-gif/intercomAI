@@ -262,18 +262,19 @@ score → result*:
      `res-no-fake-close` fail when the agent closed it);
   d. an escalation (expected handling, a request, or the outcome says so) with **no internal note**
      → `action-escalation-missed` cannot_determine — the agent's words are not a trace;
-  e. a pass on `accuracy-*`, `action-escalation-missed`, `financial-case-abandoned`,
-     `severe-business-trust` must cite its source in `ev`, else cannot_determine;
-  f. no knowledge base for the brand → an accuracy pass becomes cannot_determine.
+  e. a pass on `action-escalation-missed` must cite the internal note in `ev`, else cannot_determine.
   Every change is a `rule:` flag in `signal_flags`. Tests: `tests/test_gated_rules.py`.
 - Result (`score_gated`): Critical → **FAIL 0**; any Major → **FAIL**, `major_outcome_failure`,
-  capped 75, whatever `pass_threshold` says; otherwise **any** `cannot_determine` or
-  `data_sufficiency` Insufficient → **`CANNOT DETERMINE`** (band "Cannot Determine", score kept as
-  provisional, manual review forced); otherwise PASS at ≥ 85. An analyst re-score runs the same
-  rule, so resolving every undetermined criterion is what turns CANNOT DETERMINE into PASS/FAIL.
-- Accuracy statements about *this player's account* (status, balance, KYC, why a payment is held)
-  are cannot_determine — the grader cannot see admin data. This was the client's explicit call, and
-  it means most chats come out CANNOT DETERMINE / manual review.
+  capped 75, whatever `pass_threshold` says; otherwise PASS at ≥ 85. `cannot_determine` costs
+  nothing and does not block a PASS; it (or Insufficient data) only sets `manual_review_needed`.
+- **Withdrawn the same day (client points 4 and 6).** The first cut also had a `CANNOT DETERMINE`
+  result (any cannot_determine or Insufficient data → never PASS), required every
+  `accuracy-*`/`financial-case-abandoned`/`severe-business-trust` pass to cite a source, made
+  accuracy cannot_determine with no KB, and made the agent's statements about *this player's
+  account* (admin data) cannot_determine. On the 180-chat sample that put ~85% of chats in CANNOT
+  DETERMINE (runs `7c39f98ace17`, `95a0886c9af4`), and QA asked for exactly those points to go.
+  Don't reintroduce them without a fresh calibration. Old runs still store `CANNOT DETERMINE`, so
+  the UI badge and the calibration counts keep handling it.
 - Consistency check after any grader change: run the sample twice and
   `python scripts/compare_calibration_runs.py RUN_A RUN_B [--list]`.
 
@@ -302,10 +303,9 @@ every resolver call passes the chat's `created_at`.
   so it only changes — and only re-writes the prompt cache — when an article does. Every grade
   records the snapshot it used: `kb_version` (`Betncare:<hash>`). `KB_ENABLED=0` switches it off.
 - The rule (prompt section `## ACCURACY`): a general rule/fact the agent states is checked against
-  the KB and the transcript (fail if contradicted, pass if it agrees and `ev` names the article, n/a
-  if no such statement); `cannot_determine` for a rule the KB does not cover. Since 2026-10-08, what
-  the agent reports about *this player's own account* is cannot_determine too (it needs admin
-  data) — this reverses part of the measurement below. Measured on 30 reviewed chats:
+  the KB and the transcript (fail if contradicted, pass if it agrees, n/a if no such statement);
+  what the agent reports about *this player's own account* is not an accuracy question; and
+  `cannot_determine` is only for a decisive rule the KB does not cover. Measured on 30 reviewed chats:
   `accuracy-material` undetermined 20 → 6, chats sent to manual review 29 → 22.
 - Cost: ~15k more cached tokens per request (+~$0.004/chat live, +~$0.0025 batch). Batch runs grade
   one chat per brand live first (`batch.warm_up_set`) so the batch reads the cache instead of every

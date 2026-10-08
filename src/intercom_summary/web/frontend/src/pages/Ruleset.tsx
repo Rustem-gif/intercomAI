@@ -168,8 +168,8 @@ function Editor({
                   many of them there are — and is always a FAIL.
                 </li>
                 <li>
-                  Any criterion the AI could not determine, or insufficient data, makes the result{" "}
-                  <b>CANNOT DETERMINE</b> (never PASS) and sends the chat to manual review.
+                  A criterion the AI could not determine costs nothing, but sends the chat to
+                  manual review.
                 </li>
                 <li>
                   Without a Major the score never falls below <b>{ruleset.scoring.no_major_floor}</b>,

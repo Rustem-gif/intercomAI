@@ -117,16 +117,15 @@ def score_from_verdicts(
         # themselves. The analyst's extra deduction comes off the finished score: it is an
         # explicit human judgement about something the AI could not see, so it is allowed to
         # take a chat below the model's own no-Major floor.
-        from intercom_summary.qa.gated_scoring import RESULT_CANNOT_DETERMINE, score_gated
+        from intercom_summary.qa.gated_scoring import score_gated
 
         criteria = [{"id": cid, "v": v} for cid, v in verdicts.items()]
         r = score_gated(criteria, rs)
         if extra_deduction and not r.critical_fail:
             score = max(0, r.score - abs(extra_deduction))
-            # Only a plain PASS/FAIL moves with the points: a Major stays FAIL, and an
-            # undetermined criterion stays CANNOT DETERMINE until the analyst resolves it.
+            # The result moves with the points, except that a Major stays FAIL.
             result = r.result
-            if not r.major_outcome_failure and result != RESULT_CANNOT_DETERMINE:
+            if not r.major_outcome_failure:
                 result = "PASS" if score >= rs.pass_threshold else "FAIL"
             return score, r.band, result
         return r.score, r.band, r.result
@@ -340,12 +339,9 @@ class ConversationGrade:
         # v4.1 ruleset is gated (caps and floors, which no sum can express).
         gated = None
         if ruleset.scoring_model == SCORING_GATED:
-            from intercom_summary.qa.gated_scoring import RESULT_CANNOT_DETERMINE, score_gated
+            from intercom_summary.qa.gated_scoring import score_gated
 
-            gated = score_gated(
-                criteria, ruleset,
-                insufficient=_as_text(data.get("data_sufficiency", "")) == "Insufficient",
-            )
+            gated = score_gated(criteria, ruleset)
             score, band, result = gated.score, gated.band, gated.result
         else:
             score, band, result = _compute_score(
@@ -400,13 +396,10 @@ class ConversationGrade:
             grade.manual_review_needed = bool(
                 data.get("manual_review_needed") or undetermined
                 or _as_text(data.get("data_sufficiency", "")) == "Insufficient"
-                or gated.result == RESULT_CANNOT_DETERMINE
             )
             reason = _as_text(data.get("manual_review_reason", ""))
             if not reason and undetermined:
                 reason = "Cannot determine: " + ", ".join(sorted(undetermined))
-            if not reason and grade.manual_review_needed:
-                reason = "Insufficient data to judge the chat"
             grade.manual_review_reason = reason
         else:
             grade.critical_fail = bool(critical_fail and score == 0)

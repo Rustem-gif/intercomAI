@@ -14,12 +14,11 @@ The result is a rule over the verdicts, never the model's call, in this order:
 
     any Critical fail                  → FAIL (score 0)
     any Major fail                     → FAIL (major_outcome_failure, score ≤ cap)
-    any cannot_determine / no data     → CANNOT DETERMINE (score kept as provisional)
     otherwise                          → PASS at ≥ pass_threshold, else FAIL
 
-A chat whose evidence was not available can therefore never PASS: it goes to a QC manager,
-and the analyst's re-score (which runs through here too) turns it into PASS or FAIL once every
-undetermined criterion is resolved.
+`cannot_determine` costs nothing and does not block a PASS; it sends the chat to manual review
+(qa/schema.py). Making it block a PASS (a "CANNOT DETERMINE" result) was tried on 2026-10-08 and
+withdrawn at the client's request the same day: it put ~85% of the calibration sample there.
 
 Two guardrails from the flat model are kept deliberately, because they were written against
 real misbehaviour: a `fail` on an id the catalogue does not define is ignored (the model
@@ -41,15 +40,15 @@ SEVERITY_MINOR = "Minor"
 
 RESULT_PASS = "PASS"
 RESULT_FAIL = "FAIL"
+# Only grades stored during the withdrawn 2026-10-08 trial carry this; nothing produces it now.
 RESULT_CANNOT_DETERMINE = "CANNOT DETERMINE"
-BAND_CANNOT_DETERMINE = "Cannot Determine"
 
 
 @dataclass
 class GatedResult:
     score: int
     band: str
-    result: str                            # "PASS" | "FAIL" | "CANNOT DETERMINE"
+    result: str                            # "PASS" | "FAIL"
     severity: str = ""                     # Critical | Major | Minor | "" when nothing failed
     critical_fail: bool = False
     catastrophic_service_failure: bool = False
@@ -74,20 +73,10 @@ def _failed_ids(criteria: list[dict], known: set[str]) -> set[str]:
     return out
 
 
-def _undetermined_ids(criteria: list[dict], known: set[str]) -> set[str]:
-    return {c.get("id", "") for c in criteria or []
-            if c.get("v") == "cannot_determine" and c.get("id", "") in known}
-
-
-def score_gated(criteria: list[dict], ruleset: QaRuleset,
-                insufficient: bool = False) -> GatedResult:
-    """Compute the v4.1 score and result from the criterion verdicts. See the module docstring.
-
-    `insufficient` is the grade's data_sufficiency == "Insufficient": with no data to judge
-    by, the chat cannot PASS whatever the individual verdicts say."""
+def score_gated(criteria: list[dict], ruleset: QaRuleset) -> GatedResult:
+    """Compute the v4.1 score and result from the criterion verdicts. See the module docstring."""
     deductions = ruleset.deductions
     failed = _failed_ids(criteria, set(deductions))
-    undetermined = _undetermined_ids(criteria, set(deductions)) - failed
 
     scoring = ruleset.scoring
     pass_threshold = int(scoring.get("pass_threshold", 85))
@@ -154,9 +143,6 @@ def score_gated(criteria: list[dict], ruleset: QaRuleset,
         # The hard rule: a failed outcome is a FAIL however the threshold is configured.
         return GatedResult(score, "Major Failure", RESULT_FAIL, severity,
                            major_outcome_failure=True)
-    if undetermined or insufficient:
-        # Something that had to be checked could not be. Never a PASS — a QC manager decides.
-        return GatedResult(score, BAND_CANNOT_DETERMINE, RESULT_CANNOT_DETERMINE, severity)
 
     result = RESULT_PASS if score >= pass_threshold else RESULT_FAIL
     if score >= 95:

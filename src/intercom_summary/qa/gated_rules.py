@@ -9,7 +9,7 @@ verdicts feeding it were. So the chain is now:
 
 and the rules below enforce it against the model's own lower-level answers (its problem list,
 its request list, its outcome status) and against facts code can see (internal notes, who
-closed the chat, whether a knowledge base was supplied). Like `verdict_guard`, every change
+closed the chat). Like `verdict_guard`, every change
 returns a flag that ends up in `flags`, so nothing is corrected silently.
 
 Order matters. `problems_to_fails` runs BEFORE `verdict_guard.apply_guards`, so a problem whose
@@ -26,14 +26,12 @@ from intercom_summary.logging_setup import get_logger
 
 log = get_logger(__name__)
 
-# Criteria whose PASS depends on evidence outside the conversation's words — the knowledge
-# base, an internal note, backend data. A pass on one of these must name its source; a pass
-# with nothing behind it is a guess, and the manual forbids guessing (point 4).
-SOURCED_PASS_CRITERIA: frozenset[str] = frozenset({
-    "accuracy-material", "accuracy-minor", "action-escalation-missed",
-    "financial-case-abandoned", "severe-business-trust",
-})
-ACCURACY_CRITERIA: frozenset[str] = frozenset({"accuracy-material", "accuracy-minor"})
+# Criteria whose PASS must name the system trace behind it (client point 5: an escalation is
+# proven by an internal note, never by the agent's word). This once also covered accuracy,
+# financial-case-abandoned and severe-business-trust, and accuracy went cannot_determine with no
+# knowledge base (client points 4 and 6); both were withdrawn on 2026-10-08 because they sent
+# ~85% of the calibration sample to CANNOT DETERMINE.
+SOURCED_PASS_CRITERIA: frozenset[str] = frozenset({"action-escalation-missed"})
 
 # Outcome statuses that say the player's issue was not dealt with.
 _UNRESOLVED_OUTCOMES = frozenset({"Unresolved", "Abandoned-fake-closed"})
@@ -92,8 +90,8 @@ def _claims_escalation(data: dict[str, Any]) -> bool:
                    for r in data.get("requests") or []))
 
 
-def derive_after_guards(conversation: Conversation, data: dict[str, Any], major: set[str],
-                        has_kb: bool) -> list[str]:
+def derive_after_guards(conversation: Conversation, data: dict[str, Any],
+                        major: set[str]) -> list[str]:
     """The rules that read the model's request list and outcome, and the facts code can see.
     `major` is the ruleset's Gate 2 Major ids."""
     flags: list[str] = []
@@ -134,23 +132,15 @@ def derive_after_guards(conversation: Conversation, data: dict[str, Any], major:
                "Escalation only stated to the player; no internal note",
                "escalation claimed with no internal note in the chat")
 
-    # e. A pass that depends on outside evidence must name it.
+    # e. A pass that depends on a system trace must name it.
     for cid in sorted(SOURCED_PASS_CRITERIA):
         if verdict(cid) == "pass" and not str(crit[cid].get("ev") or "").strip():
             change(cid, "cannot_determine", "Pass with no source cited",
                    "a pass on this criterion must cite its source")
-
-    # f. Accuracy cannot pass with nothing to check it against.
-    if not has_kb:
-        for cid in sorted(ACCURACY_CRITERIA):
-            if verdict(cid) == "pass":
-                change(cid, "cannot_determine", "No knowledge base for this brand",
-                       "no knowledge base to verify accuracy against")
     return flags
 
 
-def check_verdicts(conversation: Conversation, data: dict[str, Any], ruleset,
-                   has_kb: bool) -> list[str]:
+def check_verdicts(conversation: Conversation, data: dict[str, Any], ruleset) -> list[str]:
     """The whole correction pass a grader runs on a raw response, in place, before the grade
     is built: problems → fails, the transcript guards, then the derivation rules. A flat
     ruleset gets the guards only. Returns every flag raised."""
@@ -161,6 +151,5 @@ def check_verdicts(conversation: Conversation, data: dict[str, Any], ruleset,
         return apply_guards(conversation, data)
     flags = problems_to_fails(data, set(ruleset.deductions))
     flags += apply_guards(conversation, data)
-    flags += derive_after_guards(conversation, data, set(ruleset.ids_in_gate(2, "major")),
-                                 has_kb)
+    flags += derive_after_guards(conversation, data, set(ruleset.ids_in_gate(2, "major")))
     return flags

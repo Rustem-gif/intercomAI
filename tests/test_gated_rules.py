@@ -57,8 +57,8 @@ def _verdicts(data) -> dict:
     return {c["id"]: c["v"] for c in data["criteria"]}
 
 
-def _run(rs, data, convo=None, has_kb=True):
-    flags = check_verdicts(convo or _convo(), data, rs, has_kb=has_kb)
+def _run(rs, data, convo=None):
+    flags = check_verdicts(convo or _convo(), data, rs)
     return flags, _verdicts(data)
 
 
@@ -85,7 +85,7 @@ def test_a_problem_on_an_unknown_criterion_is_ignored(rs):
 def test_a_grade_that_lists_a_major_problem_cannot_score_100(rs):
     """The calibration bug: the problem was written down, every verdict said pass."""
     data = _data(problems=[{"id": "severe-business-trust", "ev": AGENT_LINE}])
-    check_verdicts(_convo(), data, rs, has_kb=True)
+    check_verdicts(_convo(), data, rs)
     g = ConversationGrade.from_model_output("7", "Ada", data, ruleset_id="kb-v41")
     assert (g.overall_score, g.overall_result) == (75, "FAIL")
     assert g.major_outcome_failure is True
@@ -137,28 +137,29 @@ def test_an_escalation_with_an_internal_note_keeps_its_pass(rs):
     assert v["action-escalation-missed"] == "pass"
 
 
-# ── e. f. a pass that needs outside evidence ───────────────────────────────────────────
-def test_a_sourced_criterion_cannot_pass_without_a_source(rs):
-    data = _data(criteria=[{"id": "financial-case-abandoned", "v": "pass", "ev": ""},
+# ── e. an escalation pass must cite its note ───────────────────────────────────────────
+def test_an_escalation_pass_must_cite_its_note(rs):
+    data = _data(criteria=[{"id": "action-escalation-missed", "v": "pass", "ev": ""},
                            {"id": "comm-tone", "v": "pass", "ev": ""}])
     _, v = _run(rs, data)
-    assert v["financial-case-abandoned"] == "cannot_determine"
+    assert v["action-escalation-missed"] == "cannot_determine"
     assert v["comm-tone"] == "pass"          # ordinary criteria still pass with no ev
 
 
-def test_accuracy_cannot_pass_without_a_knowledge_base(rs):
-    data = _data(criteria=[{"id": "accuracy-material", "v": "pass", "ev": "KB: Withdrawals"}])
-    _, v = _run(rs, data, has_kb=False)
-    assert v["accuracy-material"] == "cannot_determine"
-    data = _data(criteria=[{"id": "accuracy-material", "v": "pass", "ev": "KB: Withdrawals"}])
-    _, v = _run(rs, data, has_kb=True)
-    assert v["accuracy-material"] == "pass"
+def test_other_passes_need_no_source(rs):
+    # Client points 4 and 6 (no data / no KB / admin data → cannot_determine) were withdrawn
+    # on 2026-10-08: accuracy and the money criteria keep a pass that cites nothing.
+    data = _data(criteria=[{"id": cid, "v": "pass", "ev": ""} for cid in (
+        "accuracy-material", "accuracy-minor", "financial-case-abandoned",
+        "severe-business-trust")])
+    flags, v = _run(rs, data)
+    assert set(v.values()) == {"pass"} and not flags
 
 
 def test_flat_rulesets_get_only_the_guards():
     data = {"criteria": [{"id": "cf-friendly", "v": "pass", "ev": ""}],
             "problems": [{"id": "cf-friendly", "ev": AGENT_LINE}]}
-    check_verdicts(_convo(), data, get_ruleset("default"), has_kb=False)
+    check_verdicts(_convo(), data, get_ruleset("default"))
     assert data["criteria"][0]["v"] == "pass"
 
 
@@ -171,18 +172,9 @@ def _all_pass(rs, **over):
     return criteria
 
 
-def test_cannot_determine_never_passes(rs):
+def test_cannot_determine_does_not_block_a_pass(rs):
     r = score_gated(_all_pass(rs, **{"accuracy-material": "cannot_determine"}), rs)
-    assert (r.score, r.result, r.band) == (100, "CANNOT DETERMINE", "Cannot Determine")
-
-
-def test_any_cannot_determine_counts_even_in_gate_three(rs):
-    r = score_gated(_all_pass(rs, **{"tag-chat": "cannot_determine"}), rs)
-    assert r.result == "CANNOT DETERMINE"
-
-
-def test_insufficient_data_never_passes(rs):
-    assert score_gated(_all_pass(rs), rs, insufficient=True).result == "CANNOT DETERMINE"
+    assert (r.score, r.result, r.band) == (100, "PASS", "Excellent")
 
 
 def test_a_proven_major_beats_an_undetermined_criterion(rs):
@@ -204,21 +196,26 @@ def test_a_critical_reports_the_major_too(rs):
     assert (r.score, r.critical_fail, r.major_outcome_failure) == (0, True, True)
 
 
-def test_cannot_determine_always_goes_to_manual_review():
-    data = _data(data_sufficiency="Insufficient", manual_review_needed=False)
+def test_cannot_determine_passes_but_goes_to_manual_review(rs):
+    data = _data(criteria=_all_pass(rs, **{"accuracy-material": "cannot_determine"}),
+                 manual_review_needed=False)
     g = ConversationGrade.from_model_output("7", "Ada", data, ruleset_id="kb-v41")
-    assert g.overall_result == "CANNOT DETERMINE"
-    assert g.manual_review_needed is True and g.manual_review_reason
+    assert g.overall_result == "PASS"
+    assert g.manual_review_needed is True and "accuracy-material" in g.manual_review_reason
 
 
-def test_the_analyst_rescore_resolves_cannot_determine(rs):
+def test_insufficient_data_goes_to_manual_review_without_blocking_the_result(rs):
+    data = _data(criteria=_all_pass(rs), data_sufficiency="Insufficient",
+                 manual_review_needed=False)
+    g = ConversationGrade.from_model_output("7", "Ada", data, ruleset_id="kb-v41")
+    assert g.overall_result == "PASS" and g.manual_review_needed is True
+
+
+def test_the_analyst_rescore_follows_the_points(rs):
     verdicts = {c["id"]: "pass" for c in rs.criteria}
     verdicts["accuracy-material"] = "cannot_determine"
-    assert score_from_verdicts(verdicts, ruleset_id="kb-v41")[2] == "CANNOT DETERMINE"
-    assert score_from_verdicts(verdicts, extra_deduction=30,
-                               ruleset_id="kb-v41")[2] == "CANNOT DETERMINE"
-    verdicts["accuracy-material"] = "pass"
     assert score_from_verdicts(verdicts, ruleset_id="kb-v41")[2] == "PASS"
+    assert score_from_verdicts(verdicts, extra_deduction=30, ruleset_id="kb-v41")[2] == "FAIL"
 
 
 def test_an_analysts_deduction_never_turns_a_major_into_a_pass(rs):
