@@ -267,6 +267,10 @@ score → result*:
 - Result (`score_gated`): Critical → **FAIL 0**; any Major → **FAIL**, `major_outcome_failure`,
   capped 75, whatever `pass_threshold` says; otherwise PASS at ≥ 85. `cannot_determine` costs
   nothing and does not block a PASS; it (or Insufficient data) only sets `manual_review_needed`.
+- **`churn-rg-signal-ignored` (QA, 2026-10-08).** The trigger includes open dissatisfaction with the
+  terms, the bonuses or the casino, not only "I'm leaving". Answering the main request is not a
+  reaction: the agent must calm, empathise, offer a solution or escalate. A fail is a Major and
+  always sets `manual_review_needed` (`MANUAL_REVIEW_ON_FAIL` in `qa/gated_rules.py`).
 - **Withdrawn the same day (client points 4 and 6).** The first cut also had a `CANNOT DETERMINE`
   result (any cannot_determine or Insufficient data → never PASS), required every
   `accuracy-*`/`financial-case-abandoned`/`severe-business-trust` pass to cite a source, made

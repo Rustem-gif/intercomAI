@@ -48,7 +48,7 @@ action-escalation-missed | A required action or escalation that was the agent's 
 financial-case-abandoned | A deposit, withdrawal or bonus case was left without proper handling — judge against the financial checklist below
 accuracy-material | Wrong information that can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG, or what the player does next
 severe-business-trust | Agent invents a transaction status; states a financial deadline nothing confirms; or promises a refund or bonus beyond their authority with no system or policy backing
-churn-rg-signal-ignored | An explicit commercial-churn or RG signal was ignored completely — the agent neither acknowledged nor responded to it
+churn-rg-signal-ignored | The player said plainly that they want to leave the casino or stop playing here, or that they are unhappy with its terms, its bonuses or the casino as a whole (or showed an RG signal), and the agent did not react to it. Answering the player's main request is NOT a reaction to it; a reaction is an attempt to calm the player, show empathy, offer a possible solution, or escalate the case to the right department. Ignoring the complaint, changing the subject, or closing the chat without trying anything is a fail. n/a when the player gave no such signal
 
 ## GATE 2B — QUALITY DEFECT (fixed deduction, no cap; only when the main outcome WAS achieved)
 ID | Ded | FAIL when
@@ -69,6 +69,7 @@ If the agent refused the player strictly by the casino's terms but did it drily 
 
 ## CHURN VERSUS RG
 Commercial churn is the player leaving over service, trust, terms or a competitor — judge it as service recovery, and the absence of a bonus or retention offer is NOT a failure by itself. An RG signal is gambling harm, loss of control, an inability to stop, or self-exclusion. When an RG signal is present the case is judged through crit-rg-care, never as an ordinary retention case.
+A churn signal is not only a stated wish to leave: open dissatisfaction with the casino's terms, its bonuses or the casino as a whole is one too. When there is one, risk_flag is Churn.
 
 ## FINANCIAL CHECKLISTS — apply only the relevant part
 - Withdrawal: confirmed current status where available; reason where known and disclosable; what the casino has already done; whether the player must act; what happens next, with a timeframe only if policy or the system confirms it; an escalation or reference where the process requires one.
@@ -130,7 +131,7 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "summary": "<2–3 sentences, plain language, written last: restate only the verdicts above; every defect it mentions must be a listed problem>"
 }
 EVIDENCE ("ev") depends on the verdict:
-- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. Use double quotes only around the agent's words.
+- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. For a churn-rg-signal-ignored fail: the player's words in double quotes, then what the agent did instead (e.g. answered only the withdrawal question, closed the chat). Use double quotes only around those words.
 - cannot_determine — what is missing, 12 words at most.
 - pass on action-escalation-missed — the internal note that shows it, 15 words at most: "note: <the internal note>". A pass on it with no note cited is treated as cannot_determine.
 - every other pass, and n/a — an empty string "". Nothing is recorded for them.

@@ -33,6 +33,11 @@ log = get_logger(__name__)
 # ~85% of the calibration sample to CANNOT DETERMINE.
 SOURCED_PASS_CRITERIA: frozenset[str] = frozenset({"action-escalation-missed"})
 
+# Criteria whose FAIL always goes to a QC manager, whatever the model said about manual review.
+# QA (2026-10-08): a churn signal the agent did not react to is exactly the case they want to see
+# by hand — the player said they are unhappy or leaving and nobody tried to keep them.
+MANUAL_REVIEW_ON_FAIL: frozenset[str] = frozenset({"churn-rg-signal-ignored"})
+
 # Outcome statuses that say the player's issue was not dealt with.
 _UNRESOLVED_OUTCOMES = frozenset({"Unresolved", "Abandoned-fake-closed"})
 

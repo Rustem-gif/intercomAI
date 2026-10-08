@@ -393,11 +393,18 @@ class ConversationGrade:
             undetermined = [
                 c.get("id", "") for c in criteria if c.get("v") == "cannot_determine"
             ]
+            # Some failures are always confirmed by a person (qa/gated_rules.py).
+            from intercom_summary.qa.gated_rules import MANUAL_REVIEW_ON_FAIL
+
+            must_review = sorted({c.get("id", "") for c in criteria if c.get("v") == "fail"}
+                                 & MANUAL_REVIEW_ON_FAIL)
             grade.manual_review_needed = bool(
-                data.get("manual_review_needed") or undetermined
+                data.get("manual_review_needed") or undetermined or must_review
                 or _as_text(data.get("data_sufficiency", "")) == "Insufficient"
             )
             reason = _as_text(data.get("manual_review_reason", ""))
+            if not reason and must_review:
+                reason = "Churn signal ignored — confirm"
             if not reason and undetermined:
                 reason = "Cannot determine: " + ", ".join(sorted(undetermined))
             grade.manual_review_reason = reason

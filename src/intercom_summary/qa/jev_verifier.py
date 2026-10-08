@@ -107,8 +107,12 @@ FAIL_DEFINITIONS: dict[str, str] = {
         "confirmed, or promised a refund or bonus beyond their authority without confirmation "
         "from the system or policy."),
     "churn-rg-signal-ignored": (
-        "The player clearly said they would leave or stop playing, or showed a gambling-harm "
-        "signal, and the agent ignored it completely: no acknowledgement and no response."),
+        "The player clearly said they would leave or stop playing, or that they are unhappy with "
+        "the casino's terms, its bonuses or the casino as a whole, or showed a gambling-harm "
+        "signal, and the agent did not react to it. Answering only the player's main request is "
+        "not a reaction; a reaction is calming the player, showing empathy, offering a possible "
+        "solution or escalating the case. Ignoring the complaint, changing the subject or closing "
+        "the chat without trying anything counts."),
     # Deductions that can double-count a Major (§7 note, §10)
     "ownership-effort": (
         "The agent did not do everything available to them, made the player repeat information "

@@ -204,6 +204,21 @@ def test_cannot_determine_passes_but_goes_to_manual_review(rs):
     assert g.manual_review_needed is True and "accuracy-material" in g.manual_review_reason
 
 
+def test_an_ignored_churn_signal_is_a_major_and_always_goes_to_manual_review(rs):
+    criteria = _all_pass(rs, **{"churn-rg-signal-ignored": "fail"})
+    data = _data(criteria=criteria, manual_review_needed=False, manual_review_reason="")
+    g = ConversationGrade.from_model_output("7", "Ada", data, ruleset_id="kb-v41")
+    assert (g.overall_result, g.overall_score, g.major_outcome_failure) == ("FAIL", 75, True)
+    assert g.manual_review_needed is True
+    assert g.manual_review_reason == "Churn signal ignored — confirm"
+
+
+def test_the_churn_criterion_counts_only_a_real_reaction(rs):
+    text = rs.prompt_text
+    assert "Answering the player's main request is NOT a reaction" in text
+    assert "unhappy with its terms, its bonuses or the casino as a whole" in text
+
+
 def test_insufficient_data_goes_to_manual_review_without_blocking_the_result(rs):
     data = _data(criteria=_all_pass(rs), data_sufficiency="Insufficient",
                  manual_review_needed=False)
