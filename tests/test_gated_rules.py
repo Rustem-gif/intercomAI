@@ -183,6 +183,27 @@ def test_a_request_the_agents_own_failure_left_open_stays_unresolved(rs, failed)
     assert data["requests"][0]["status"] == "unresolved"
 
 
+def test_a_material_request_the_agent_skipped_is_a_major_not_a_minor(rs):
+    """"I cannot get promo bonus" never addressed: the model filed it as info-completeness."""
+    data = _data(requests=[{"text": "Cannot get promo bonus", "status": "unresolved",
+                            "material": True}],
+                 problems=[{"id": "info-completeness", "ev": AGENT_LINE}])
+    _, v = _run(rs, data, _agent_last())
+    assert v["resp-no-ghost"] == "fail"
+
+
+def test_a_skipped_request_already_covered_by_a_major_is_not_penalised_twice(rs):
+    data = _data(requests=[{"text": "VIP manager request", "status": "unresolved",
+                            "material": True}],
+                 problems=[{"id": "action-escalation-missed", "ev": AGENT_LINE}])
+    _, v = _run(rs, data, _agent_last())
+    assert v["resp-no-ghost"] == "pass"
+
+
+def test_a_policy_refusal_of_a_bonus_is_not_an_escalation_case(rs):
+    assert "is NOT an escalation case (see T&C COMPLIANCE)" in rs.prompt_text
+
+
 def test_a_ghosting_fail_may_quote_the_player(rs):
     data = _data(problems=[{"id": "resp-no-ghost",
                             "ev": "Are you still there? I sent the statement."}])

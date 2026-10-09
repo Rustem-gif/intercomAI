@@ -177,6 +177,15 @@ def derive_after_guards(conversation: Conversation, data: dict[str, Any],
                 r["status"] = "pending"
                 flags.append(f"rule:requests \"{str(r.get('text') or '')[:60]}\" unresolved → "
                              f"pending — the agent wrote last; the player did not reply")
+        else:
+            # Something the agent did (or skipped) leaves the request open. A MATERIAL request
+            # left open is resp-no-ghost by the criterion's own wording, however the model filed
+            # it — unless a Major already covers it (one mistake, one penalty).
+            material = [str(r.get("text") or "") for r in unresolved if r.get("material")]
+            if material and not any(verdict(cid) == "fail" for cid in major):
+                change("resp-no-ghost", "fail",
+                       "Unresolved material request: " + "; ".join(material)[:200],
+                       "a material request is marked unresolved and the agent left it open")
 
     # c. The model's outcome says the issue was not dealt with, but no verdict says so.
     outcome = data.get("outcome_status")

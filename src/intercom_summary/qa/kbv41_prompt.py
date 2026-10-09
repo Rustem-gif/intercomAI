@@ -247,7 +247,7 @@ In these cases the agent must pass the case to the named team; answering it them
 1. The player asks for a VIP manager, a personal manager, a supervisor or another department — including a menu choice such as "VIP manager request". The agent passes the request on; they never answer in that team's place and close.
 2. A deposit was charged but not credited — once the player has supplied proof, or when the agent cannot see the payment → Finance. While the agent is still waiting for proof they asked for, no escalation is due yet.
 3. A withdrawal is pending beyond the Help Center term, rejected without a reason the agent can give, or its status is unclear → Finance.
-4. A bonus or free spins were not credited although the player appears to qualify, or the player asks for a bonus the agent cannot grant themselves → the bonus or VIP team.
+4. A bonus or free spins the player appears to qualify for were not credited, and the agent cannot fix it themselves → the bonus or VIP team. A refusal strictly by the terms — the player does not qualify, or asks for a bonus the casino does not offer, such as a no-deposit bonus — is NOT an escalation case (see T&C COMPLIANCE).
 5. A KYC document was declined without a reason, or verification is pending beyond the Help Center term → KYC.
 6. A change of personal data (address, name, email, phone) → forwarded by the established process.
 7. Any RG signal → the RG procedure.
