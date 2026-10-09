@@ -61,6 +61,9 @@ PLAYER_EVIDENCED_CRITERIA: frozenset[str] = frozenset({
     "pay_withdrawal_sensitivity", "crit-rg-care",
     # v4.1 merges churn and RG into one criterion; its trigger is still a player statement.
     "churn-rg-signal-ignored",
+    # Ghosting: the evidence for "the player's last messages got no reply" is those messages
+    # (QA, 2026-10-09). Quoting the player there is the point, not a mis-attribution.
+    "resp-no-ghost",
 })
 
 # How much of the cited evidence has to appear in the transcript. The model paraphrases tails

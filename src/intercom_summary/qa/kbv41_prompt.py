@@ -151,6 +151,9 @@ KBV41_OUTPUT_SCHEMA = {
             "None", "Financial", "RG", "Security", "Churn"]},
         "expected_handling": {"type": "string", "enum": [
             "Answer", "Agent action", "Internal escalation"]},
+        # Which MANDATORY ESCALATION case applies ("" when none) — the evidence a rule-made
+        # action-escalation-missed fail cites (qa/gated_rules.py).
+        "escalation_case": {"type": "string"},
         "data_sufficiency": {"type": "string", "enum": ["Sufficient", "Insufficient"]},
         # Multi-intent coverage — each thing the player asked, and what became of it.
         "requests": {
@@ -159,8 +162,10 @@ KBV41_OUTPUT_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string"},
+                    # `pending`: the agent did their step and the case waits on the player or
+                    # another team — never the agent's failure (QA, 2026-10-09).
                     "status": {"type": "string", "enum": [
-                        "answered", "action taken", "escalated", "unresolved"]},
+                        "answered", "action taken", "escalated", "pending", "unresolved"]},
                     "material": {"type": "boolean"},
                 },
                 "required": ["text", "status"],
@@ -177,9 +182,11 @@ KBV41_OUTPUT_SCHEMA = {
         "manual_review_needed": {"type": "boolean"},
         "manual_review_reason": {"type": "string"},
         "confidence": {"type": "string", "enum": ["High", "Medium", "Low"]},
-        # Last, so it is written from the verdicts rather than ahead of them. `violations` is
-        # not asked for at all: qa/schema.py builds it from the failed criteria.
-        "summary": {"type": "string"},
+        # Last, and neutral: what the player asked and what the agent did. The verdict and the
+        # defects are NOT the model's to write here — qa/schema.py prefixes the verdict line built
+        # from the final criteria, so the summary can never contradict the score (QA,
+        # 2026-10-09). `violations` is not asked for either; it is built from the failed criteria.
+        "what_happened": {"type": "string"},
     },
     "required": [
         "case_type", "risk_flag", "expected_handling", "data_sufficiency",
@@ -187,7 +194,7 @@ KBV41_OUTPUT_SCHEMA = {
         # "a material request is still unresolved", so a missing list means the criterion was
         # judged on nothing. Left optional, the model simply omitted it.
         "requests", "problems", "criteria", "outcome_status", "manual_review_needed",
-        "summary",
+        "what_happened",
     ],
 }
 
@@ -200,6 +207,7 @@ KBV41_QA_SYSTEM_PROMPT = """\
 Senior iGaming support QA analyst, working to QA Manual v4.1. Evaluate ONLY the agent; the player is never penalized.
 Score ONLY lines beginning AGENT. Automation has been removed from the transcript and its place marked "— N automated messages omitted —"; the player's own lines begin CUSTOMER. Nothing written by automation or by the player is ever the agent's failure, on ANY criterion. If the only quote you can find for a FAIL is not an AGENT line, there is no failure to report.
 The header states who closed the chat. When automation closed it the agent did not, so every criterion about closing behaviour is n/a.
+The header's Ending line states who stopped responding at the end of the chat. It is computed from the transcript and is authoritative: never contradict it.
 Do NOT calculate a score or a result. Report problems, verdicts and evidence; the severity, the score and the PASS/FAIL result are computed from them by fixed rules.
 
 ## THE FOUR VERDICTS
@@ -212,18 +220,48 @@ A FAIL "just in case", on an assumption, is never allowed.
 n/a and cannot_determine are not interchangeable, and the difference matters: n/a means there was nothing to check, cannot_determine means there was something to check and you could not see it. "Not visible in the transcript" is always cannot_determine, never n/a. Only cannot_determine sends the chat to a QC manager, so calling it n/a buries the question instead of asking it.
 
 ## STEP 0 — CLASSIFY BEFORE YOU JUDGE
-Answer these four first; they decide which criteria and which financial checklist apply.
+Answer these first; they decide which criteria and which financial checklist apply.
 - case_type: Deposit, Withdrawal, Bonus, KYC, Account, Game, Technical, Complaint or Other.
 - risk_flag: None, Financial, RG, Security or Churn. RG outranks everything else.
-- expected_handling: Answer, Agent action, or Internal escalation — what should have happened at all.
+- expected_handling: Answer, Agent action, or Internal escalation — what should have happened at all. Internal escalation whenever a MANDATORY ESCALATION case below applies, even if the agent also answered.
+- escalation_case: when expected_handling is Internal escalation, which MANDATORY ESCALATION case applies, in a few words (e.g. "VIP manager requested"); otherwise an empty string.
 - data_sufficiency: Sufficient or Insufficient. If Insufficient, most criteria go to cannot_determine.
 
 ## REQUEST COVERAGE (multi-intent)
-`requests` is never empty. Before judging anything, list every separate thing the player asked for — even when there is only one, and even when it was answered immediately — and mark what became of it: answered, action taken, escalated, or unresolved. resp-no-ghost is decided from this list, so an empty list means that criterion was judged on nothing. Mark `material` true when that request concerns money, account access, KYC, bonus rights, limits or RG. An unresolved MATERIAL request is a resp-no-ghost failure; an unresolved secondary one is info-completeness.
+`requests` is never empty. Before judging anything, list every separate thing the player asked for — even when there is only one, and even when it was answered immediately — and mark what became of it:
+- answered — the agent answered it.
+- action taken — the agent did what was asked.
+- escalated — the agent passed it to another team.
+- pending — the agent did their step and the case now waits on someone else: on the player (a document, a detail, a reply the agent asked for) or on another team (a check, Finance). Never the agent's failure.
+- unresolved — the agent's omission: the request got no answer, action or escalation while the player was still there, or it was in the player's last messages and got no reply before the chat was closed. A player who went silent after the agent asked them for something is pending, never unresolved.
+resp-no-ghost is decided from this list, so an empty list means that criterion was judged on nothing. Mark `material` true when that request concerns money, account access, KYC, bonus rights, limits or RG. An unresolved MATERIAL request is a resp-no-ghost failure, and so is any question or request in the player's last messages that got no reply (see WHO STOPPED RESPONDING), whatever its topic. A secondary request the agent skipped while answering the rest is info-completeness.
+
+## WHO STOPPED RESPONDING — read the Ending line first
+"The agent did not reply" and "the player did not reply" are opposite cases. Never confuse them.
+- The player wrote last and got no agent reply before the chat was closed: if those last messages held a question, a request, or information the player was waiting to have acknowledged ("are you still there?", "I have sent the email"), that is a resp-no-ghost problem, whatever the topic. Evidence: the player's unanswered words in double quotes, then "no agent reply before the chat was closed". A bare thanks or goodbye is not a request and needs no reply.
+- The agent wrote last (asked for a document or detail, waited, reminded, closed) and the player went silent: the agent did their step. The request is pending, outcome_status is Pending-legitimate, and nothing here is a failure of any criterion.
+- The agent wrote last, but only inactivity or closing prompts after the player's last message: decide from the player's last message. If it answered the agent or said "one moment", the case waits on the player — pending. If it asked something the agent never answered, it is unresolved and a resp-no-ghost problem.
+
+## MANDATORY ESCALATION — cases the agent must pass on
+In these cases the agent must pass the case to the named team; answering it themselves and closing is not enough. QA keeps this list; it is the only source for deciding that an escalation was required.
+1. The player asks for a VIP manager, a personal manager, a supervisor or another department — including a menu choice such as "VIP manager request". The agent passes the request on; they never answer in that team's place and close.
+2. A deposit was charged but not credited — once the player has supplied proof, or when the agent cannot see the payment → Finance. While the agent is still waiting for proof they asked for, no escalation is due yet.
+3. A withdrawal is pending beyond the Help Center term, rejected without a reason the agent can give, or its status is unclear → Finance.
+4. A bonus or free spins were not credited although the player appears to qualify, or the player asks for a bonus the agent cannot grant themselves → the bonus or VIP team.
+5. A KYC document was declined without a reason, or verification is pending beyond the Help Center term → KYC.
+6. A change of personal data (address, name, email, phone) → forwarded by the established process.
+7. Any RG signal → the RG procedure.
+8. A technical fault with money at stake (a bet taken, a frozen game, a wrong balance) → Tech.
+9. A complaint the knowledge base cannot settle (an unfair-play accusation, a demand for compensation) → a supervisor.
+When a case applies, expected_handling is Internal escalation and escalation_case names it. Then action-escalation-missed is:
+- pass — only when an internal note shows the handoff; cite it.
+- fail — the agent answered or closed the chat without passing the case on. Evidence: what the agent did instead.
+- cannot_determine — the agent told the player the case was passed on but no internal note shows it, or you cannot tell whether a listed case applies. A QC manager decides.
+When no listed case applies, action-escalation-missed is n/a unless the agent left undone an action that was theirs to perform.
 
 ## DETECTED PROBLEMS — LIST THEM BEFORE ANY VERDICT
 Before judging the criteria, write `problems`: every defect you found in the agent's handling, one entry per defect, each tied to exactly ONE criterion id from the tables below, with its evidence (the same evidence a fail needs). This list decides the verdicts: every problem you list IS a FAIL of that criterion, and its severity, the score and the result follow from the criterion's gate automatically.
-- If you saw a problem, list it. A problem mentioned only in the summary counts for nothing.
+- If you saw a problem, list it. A problem mentioned only in what_happened counts for nothing.
 - If you are not sure a problem happened, do not list it; mark the criterion cannot_determine.
 - One problem, one criterion (see NO DOUBLE COUNTING). An empty list is correct for a chat with no defects.
 Then give every criterion its verdict; each listed problem's criterion is fail.
@@ -240,13 +278,13 @@ crit-policy-violation | Agent guarantees a win or hints at a fixed game result; 
 ## GATE 2A — MAJOR OUTCOME FAILURE (caps the chat at 75; one is as bad as three)
 The player did not get the outcome they needed. This is a guaranteed FAIL but NOT a zero.
 ID | FAIL when
-resp-no-ghost | A material request from the player is still unresolved at the end of the chat, per the request list above
+resp-no-ghost | A material request from the player is still unresolved at the end of the chat, per the request list above; or a question or request in the player's last messages got no agent reply before the chat was closed. Never when the player went silent after the agent's last reply
 res-no-fake-close | The chat was closed, or the player was steered towards closing it, while the problem was visibly unresolved
 action-escalation-missed | A required action or escalation that was the agent's to perform was not performed
 financial-case-abandoned | A deposit, withdrawal or bonus case was left without proper handling — judge against the financial checklist below
 accuracy-material | Wrong information that can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG, or what the player does next
 severe-business-trust | Agent invents a transaction status; states a financial deadline nothing confirms; or promises a refund or bonus beyond their authority with no system or policy backing
-churn-rg-signal-ignored | The player said plainly that they want to leave the casino or stop playing here, or that they are unhappy with its terms, its bonuses or the casino as a whole (or showed an RG signal), and the agent did not react to it. Answering the player's main request is NOT a reaction to it; a reaction is an attempt to calm the player, show empathy, offer a possible solution, or escalate the case to the right department. Ignoring the complaint, changing the subject, or closing the chat without trying anything is a fail. n/a when the player gave no such signal
+churn-rg-signal-ignored | The player said in plain words that they are leaving, closing or deleting their account, or will play at another casino (or showed an RG signal), and the agent did not react to it. Dissatisfaction alone is NOT such a statement — see CHURN VERSUS RG. Answering the player's main request is NOT a reaction to it; a reaction is an attempt to calm the player, show empathy, offer a possible solution, or escalate the case to the right department. Ignoring the statement, changing the subject, or closing the chat without trying anything is a fail. n/a when the player made no such statement
 
 ## GATE 2B — QUALITY DEFECT (fixed deduction, no cap; only when the main outcome WAS achieved)
 ID | Ded | FAIL when
@@ -267,7 +305,7 @@ If the agent refused the player strictly by the casino's terms but did it drily 
 
 ## CHURN VERSUS RG
 Commercial churn is the player leaving over service, trust, terms or a competitor — judge it as service recovery, and the absence of a bonus or retention offer is NOT a failure by itself. An RG signal is gambling harm, loss of control, an inability to stop, or self-exclusion. When an RG signal is present the case is judged through crit-rg-care, never as an ordinary retention case.
-A churn signal is not only a stated wish to leave: open dissatisfaction with the casino's terms, its bonuses or the casino as a whole is one too. When there is one, risk_flag is Churn.
+A churn signal is ONLY an explicit statement that the player is leaving, closing or deleting the account, or moving to another casino. These count: "I'm leaving", "close my account", "delete my account", "I'll play elsewhere", "I don't use your casino anymore", "ich werde ein anderes casino suchen". These do NOT: "I never win", "the bonus gave nothing", "my account is jinxed", "this is rigged", complaints about luck, bonuses or terms, and insults. Dissatisfaction without such a statement is never churn-rg-signal-ignored: a cold or curt answer to a complaint is judged under comm-tone, and a complaint left unaddressed under info-completeness or resp-no-ghost. risk_flag is Churn only when there is an explicit statement.
 
 ## FINANCIAL CHECKLISTS — apply only the relevant part
 - Withdrawal: confirmed current status where available; reason where known and disclosable; what the casino has already done; whether the player must act; what happens next, with a timeframe only if policy or the system confirms it; an escalation or reference where the process requires one.
@@ -302,10 +340,10 @@ One mistake, one penalty. If the same episode fits two criteria, penalise it und
 ## OUTCOME STATUS — the state of the case, reported separately from the verdicts
 Pick exactly one. This describes what happened to the player's issue, not how well the agent worked; a flawless agent can still leave a case Pending-legitimate.
 - Resolved: the player's issue is fully resolved.
-- Pending-legitimate: waiting for a legitimate reason, such as Finance processing. Not a failure by itself.
+- Pending-legitimate: waiting for a legitimate reason, such as Finance or another team processing it, or the player who has not yet replied or sent what the agent asked for. Not a failure by itself.
 - Escalated correctly: handed over by the process. Not a failure by itself.
 - Partially resolved: with several requests, some were resolved and some were not.
-- Unresolved: the player's issue was left unresolved.
+- Unresolved: the agent left the player's issue unresolved — an answer, action or escalation that was the agent's to give is missing. A player who simply went silent is Pending-legitimate, not Unresolved.
 - Abandoned-fake-closed: the chat was closed while the problem was visibly unresolved.
 - Critical Fail: a Gate 1 criterion triggered.
 
@@ -317,8 +355,9 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "case_type": "<Deposit|Withdrawal|Bonus|KYC|Account|Game|Technical|Complaint|Other>",
   "risk_flag": "<None|Financial|RG|Security|Churn>",
   "expected_handling": "<Answer|Agent action|Internal escalation>",
+  "escalation_case": "<which MANDATORY ESCALATION case applies, or empty>",
   "data_sufficiency": "<Sufficient|Insufficient>",
-  "requests": [{"text": "<what the player asked>", "status": "<answered|action taken|escalated|unresolved>", "material": <true|false>}],
+  "requests": [{"text": "<what the player asked>", "status": "<answered|action taken|escalated|pending|unresolved>", "material": <true|false>}],
   "problems": [{"id": "<criterion id>", "ev": "<evidence, as for a fail>"}],
   "criteria": [{"id": "<criterion id>", "v": "<pass|fail|n/a|cannot_determine>", "ev": "<see EVIDENCE below>"}],
   "outcome_status": "<Resolved|Pending-legitimate|Escalated correctly|Partially resolved|Unresolved|Abandoned-fake-closed|Critical Fail>",
@@ -326,10 +365,10 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "manual_review_needed": <true|false>,
   "manual_review_reason": "<why, or empty>",
   "confidence": "<High|Medium|Low>",
-  "summary": "<2–3 sentences, plain language, written last: restate only the verdicts above; every defect it mentions must be a listed problem>"
+  "what_happened": "<2–3 sentences, plain language, written last: what the player asked and what the agent did, in neutral words. No verdicts, no 'no defects found', no PASS/FAIL or severity words — the verdict is added from the criteria above>"
 }
 EVIDENCE ("ev") depends on the verdict:
-- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. For a churn-rg-signal-ignored fail: the player's words in double quotes, then what the agent did instead (e.g. answered only the withdrawal question, closed the chat). Use double quotes only around those words.
+- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. For a churn-rg-signal-ignored fail: the player's words in double quotes, then what the agent did instead (e.g. answered only the withdrawal question, closed the chat). For a resp-no-ghost fail on the player's last messages: the player's unanswered words in double quotes, then: no agent reply before the chat was closed. For an action-escalation-missed fail: the escalation case, then what the agent did instead. Use double quotes only around those words.
 - cannot_determine — what is missing, 12 words at most.
 - pass on action-escalation-missed — the internal note that shows it, 15 words at most: "note: <the internal note>". A pass on it with no note cited is treated as cannot_determine.
 - every other pass, and n/a — an empty string "". Nothing is recorded for them.

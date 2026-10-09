@@ -190,9 +190,13 @@ def _violations_from_verdicts(criteria: list[dict], ruleset) -> list[str]:
 
 
 def _verdict_line(gated, criteria: list[dict], ruleset) -> str:
-    """One sentence stating the result and what decided it, built only from the verdicts —
-    e.g. "FAIL · Major: Request Coverage. Cannot determine: Material Accuracy." It leads the
-    summary so the model's narrative can never stand in for, or contradict, the verdict."""
+    """One sentence stating the result and what decided it, built only from the final verdicts —
+    e.g. "FAIL · Major: Request Coverage · Minor: Response SLA." It leads the summary so the
+    model's narrative can never stand in for, or contradict, the verdict.
+
+    Undetermined criteria are deliberately NOT listed here (QA, 2026-10-09): on a PASS a list of
+    "Cannot determine: …" titles read as a list of defects. They are a question for the QC
+    manager and live in `manual_review_reason`."""
     titles = ruleset.titles
     severities = ruleset.severities
     failed = _failed_in_order(criteria, ruleset)
@@ -202,12 +206,7 @@ def _verdict_line(gated, criteria: list[dict], ruleset) -> str:
                  if severities.get(c["id"], "minor") == sev]
         if names:
             parts.append(f"{label}: {', '.join(names)}")
-    line = " · ".join(parts) + "."
-    undetermined = [titles.get(c.get("id", ""), c.get("id", "")) for c in criteria or []
-                    if c.get("v") == "cannot_determine" and c.get("id") in ruleset.deductions]
-    if undetermined:
-        line += f" Cannot determine: {', '.join(undetermined)}."
-    return line
+    return " · ".join(parts) + "."
 
 
 @dataclass
@@ -374,8 +373,12 @@ class ConversationGrade:
             # problem the model only mentioned in passing cannot appear here without the
             # criterion that scores it, and a failed criterion cannot be missing from here.
             grade.violations = _violations_from_verdicts(criteria, ruleset)
+            # The model writes only a neutral narrative (`what_happened`); the verdict comes
+            # from the final criteria, after every rule has run. `summary` is read as a fallback
+            # for responses produced under the earlier grammar.
+            narrative = _as_text(data.get("what_happened") or data.get("summary") or "")
             grade.summary = " ".join(
-                p for p in (_verdict_line(gated, criteria, ruleset), grade.summary) if p
+                p for p in (_verdict_line(gated, criteria, ruleset), narrative) if p
             )
             grade.case_type = _as_text(data.get("case_type", ""))
             grade.risk_flag = _as_text(data.get("risk_flag", ""))

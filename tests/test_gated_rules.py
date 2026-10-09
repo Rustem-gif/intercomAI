@@ -94,10 +94,99 @@ def test_a_grade_that_lists_a_major_problem_cannot_score_100(rs):
 
 
 # ── b. requests decide resp-no-ghost ────────────────────────────────────────────────────
-def test_an_unresolved_material_request_fails_resp_no_ghost(rs):
+def _player_last(*extra: Message) -> Conversation:
+    """The agent answered once, then the player's last questions got no reply; the bot closed."""
+    return _convo(*extra, Message(5, "user", "Kim", datetime(2026, 10, 6, 12, 5, tzinfo=timezone.utc),
+                                  "Are you still there? I sent the statement."),
+                  closed_by="bot")
+
+
+def _agent_last() -> Conversation:
+    """The agent asked for a document, reminded, closed; the player never answered."""
+    t = lambda m: datetime(2026, 10, 6, 12, m, tzinfo=timezone.utc)  # noqa: E731
+    return _convo(
+        Message(5, "user", "Kim", t(1), "One moment"),
+        Message(6, "admin", "Ada", t(2), "Can you please provide the bank statement?"),
+        Message(7, "admin", "Ada", t(5), "Are we still connected?"),
+        Message(8, "admin", "Ada", t(8), "I see no reply from your side and I will close the chat."),
+        closed_by="admin",
+    )
+
+
+def test_an_unresolved_material_request_fails_resp_no_ghost_when_the_player_was_ghosted(rs):
     data = _data(requests=[{"text": "Where is my withdrawal?", "status": "unresolved",
                             "material": True}])
-    _, v = _run(rs, data)
+    flags, v = _run(rs, data, _player_last())
+    assert v["resp-no-ghost"] == "fail"
+    ev = next(c["ev"] for c in data["criteria"] if c["id"] == "resp-no-ghost")
+    assert "12:05:00" in ev and "automation closed the chat" in ev
+
+
+def test_ghosting_the_players_last_messages_is_a_major_whatever_the_topic(rs):
+    """№103: the player's last two messages got no reply; the model called them secondary."""
+    data = _data(requests=[{"text": "Confirm the agent is still connected",
+                            "status": "unresolved", "material": False}])
+    _, v = _run(rs, data, _player_last())
+    assert v["resp-no-ghost"] == "fail"
+
+
+def test_an_unanswered_thanks_is_not_ghosting(rs):
+    convo = _convo(Message(5, "user", "Kim", None, "ok thanks!"), closed_by="bot")
+    data = _data(requests=[{"text": "Small talk", "status": "unresolved", "material": False}])
+    _, v = _run(rs, data, convo)
+    assert v["resp-no-ghost"] == "pass"
+
+
+def test_a_stray_message_the_agent_never_saw_is_left_to_the_model(rs):
+    convo = Conversation(
+        id="8", created_at=datetime(2026, 10, 6, tzinfo=timezone.utc), updated_at=None,
+        state="closed", messages=[Message(0, "user", "Lead", None, "123456 is your code")])
+    data = _data(requests=[{"text": "No real request", "status": "unresolved",
+                            "material": False}])
+    _, v = _run(rs, data, convo)
+    assert v["resp-no-ghost"] == "pass"
+
+
+def test_a_player_who_went_silent_after_the_agents_request_is_pending_not_a_fail(rs):
+    """№116: the agent asked for a bank statement, waited, reminded and closed."""
+    data = _data(requests=[{"text": "Credit the missing deposit", "status": "unresolved",
+                            "material": True}], outcome_status="Pending-legitimate")
+    flags, v = _run(rs, data, _agent_last())
+    assert v["resp-no-ghost"] == "pass"
+    assert data["requests"][0]["status"] == "pending"
+    assert any("unresolved → pending" in f for f in flags)
+
+
+def test_an_unresolved_outcome_still_goes_to_a_person_when_the_player_went_silent(rs):
+    data = _data(requests=[{"text": "Credit the missing deposit", "status": "unresolved",
+                            "material": True}], outcome_status="Unresolved")
+    _, v = _run(rs, data, _agent_last())
+    assert v["resp-no-ghost"] == "cannot_determine"
+
+
+def test_a_ghosting_fail_the_model_listed_is_kept_when_the_agent_wrote_last(rs):
+    data = _data(requests=[{"text": "Where is my withdrawal?", "status": "unresolved",
+                            "material": True}],
+                 problems=[{"id": "resp-no-ghost", "ev": AGENT_LINE}])
+    _, v = _run(rs, data, _agent_last())
+    assert v["resp-no-ghost"] == "fail"
+    assert data["requests"][0]["status"] == "unresolved"
+
+
+@pytest.mark.parametrize("failed", ["action-escalation-missed", "info-completeness"])
+def test_a_request_the_agents_own_failure_left_open_stays_unresolved(rs, failed):
+    """A VIP-manager request answered in that team's place is open because of the agent."""
+    data = _data(requests=[{"text": "VIP manager request", "status": "unresolved",
+                            "material": True}],
+                 problems=[{"id": failed, "ev": AGENT_LINE}])
+    _run(rs, data, _agent_last())
+    assert data["requests"][0]["status"] == "unresolved"
+
+
+def test_a_ghosting_fail_may_quote_the_player(rs):
+    data = _data(problems=[{"id": "resp-no-ghost",
+                            "ev": "Are you still there? I sent the statement."}])
+    _, v = _run(rs, data, _player_last())
     assert v["resp-no-ghost"] == "fail"
 
 
@@ -216,7 +305,16 @@ def test_an_ignored_churn_signal_is_a_major_and_always_goes_to_manual_review(rs)
 def test_the_churn_criterion_counts_only_a_real_reaction(rs):
     text = rs.prompt_text
     assert "Answering the player's main request is NOT a reaction" in text
-    assert "unhappy with its terms, its bonuses or the casino as a whole" in text
+
+
+def test_churn_is_only_an_explicit_statement(rs):
+    """QA, 2026-10-09: "my account is jinxed" is a complaint, not a threat to leave. The 10-08
+    widening to "open dissatisfaction" is reversed."""
+    text = rs.prompt_text
+    assert "A churn signal is ONLY an explicit statement" in text
+    assert '"my account is jinxed"' in text
+    assert "unhappy with its terms, its bonuses or the casino as a whole" not in text
+    assert "open dissatisfaction" not in text
 
 
 def test_insufficient_data_goes_to_manual_review_without_blocking_the_result(rs):
@@ -244,7 +342,98 @@ def test_problems_come_before_verdicts_and_the_summary_comes_last(rs):
     schema = strict_schema(rs)
     keys = list(schema["properties"])
     assert keys.index("problems") < keys.index("criteria")
-    assert keys[-1] == "summary"
+    assert keys[-1] == "what_happened" and "summary" not in keys
     assert "violations" not in keys
     ids = schema["properties"]["problems"]["items"]["properties"]["id"]["enum"]
     assert set(ids) == set(rs.deductions)
+
+
+# ── f. a mandatory escalation that never happened (QA, 2026-10-09) ─────────────────────
+def test_a_required_escalation_never_performed_or_claimed_fails(rs):
+    """№132: "VIP manager request" answered by the agent and closed — no handoff at all."""
+    data = _data(expected_handling="Internal escalation", escalation_case="VIP manager requested",
+                 criteria=[{"id": "action-escalation-missed", "v": "n/a", "ev": ""}])
+    flags, v = _run(rs, data)
+    assert v["action-escalation-missed"] == "fail"
+    ev = next(c["ev"] for c in data["criteria"] if c["id"] == "action-escalation-missed")
+    assert "VIP manager requested" in ev
+    g = ConversationGrade.from_model_output("7", "Ada", data, ruleset_id="kb-v41")
+    assert (g.overall_result, g.overall_score) == ("FAIL", 75)
+
+
+@pytest.mark.parametrize("claim", [
+    {"requests": [{"text": "Check my deposit", "status": "escalated", "material": True}]},
+    {"outcome_status": "Escalated correctly"},
+    {"outcome_status": "Pending-legitimate"},
+])
+def test_a_required_escalation_the_agent_claimed_without_a_note_cannot_be_determined(rs, claim):
+    data = _data(expected_handling="Internal escalation",
+                 criteria=[{"id": "action-escalation-missed", "v": "pass", "ev": ""}], **claim)
+    _, v = _run(rs, data)
+    assert v["action-escalation-missed"] == "cannot_determine"
+
+
+def test_the_models_own_cannot_determine_on_a_required_escalation_is_left_alone(rs):
+    data = _data(expected_handling="Internal escalation",
+                 criteria=[{"id": "action-escalation-missed", "v": "cannot_determine",
+                            "ev": "unsure whether a listed case applies"}])
+    _, v = _run(rs, data)
+    assert v["action-escalation-missed"] == "cannot_determine"
+
+
+def test_no_escalation_expected_and_none_claimed_changes_nothing(rs):
+    data = _data(expected_handling="Answer", outcome_status="Pending-legitimate",
+                 criteria=[{"id": "action-escalation-missed", "v": "n/a", "ev": ""}])
+    flags, v = _run(rs, data)
+    assert v["action-escalation-missed"] == "n/a" and not flags
+
+
+def test_a_pass_with_no_source_cites_the_internal_note_when_there_is_one(rs):
+    note = Message(3, "admin", "Ada", None, "forwarded to finance, waiting for reply",
+                   part_type="note")
+    data = _data(expected_handling="Internal escalation",
+                 criteria=[{"id": "action-escalation-missed", "v": "pass", "ev": ""}])
+    _, v = _run(rs, data, _convo(note))
+    assert v["action-escalation-missed"] == "pass"
+    ev = next(c["ev"] for c in data["criteria"] if c["id"] == "action-escalation-missed")
+    assert ev == "note: forwarded to finance, waiting for reply"
+
+
+def test_a_model_fail_is_not_overturned_by_a_note(rs):
+    note = Message(3, "admin", "Ada", None, "notifications are broken", part_type="note")
+    data = _data(expected_handling="Internal escalation",
+                 problems=[{"id": "action-escalation-missed", "ev": AGENT_LINE}])
+    _, v = _run(rs, data, _convo(note))
+    assert v["action-escalation-missed"] == "fail"
+
+
+def test_the_prompt_carries_the_mandatory_escalation_list(rs):
+    assert "## MANDATORY ESCALATION" in rs.prompt_text
+    assert "VIP manager request" in rs.prompt_text
+    assert "escalation_case" in strict_schema(rs)["properties"]
+
+
+# ── the summary cannot contradict the score (QA, 2026-10-09) ───────────────────────────
+def test_the_summary_is_the_verdict_line_then_the_models_neutral_narrative(rs):
+    data = _data(problems=[{"id": "severe-business-trust", "ev": AGENT_LINE}],
+                 what_happened="The player asked about a withdrawal and the agent replied.")
+    data.pop("summary")
+    check_verdicts(_convo(), data, rs)
+    g = ConversationGrade.from_model_output("7", "Ada", data, ruleset_id="kb-v41")
+    assert g.summary == ("FAIL · Major: Business Trust Breach. "
+                         "The player asked about a withdrawal and the agent replied.")
+
+
+def test_a_pass_summary_lists_no_undetermined_criteria(rs):
+    data = _data(criteria=_all_pass(rs, **{"accuracy-material": "cannot_determine"}),
+                 what_happened="Answered.", manual_review_reason="")
+    g = ConversationGrade.from_model_output("7", "Ada", data, ruleset_id="kb-v41")
+    assert g.summary == "PASS. Answered."
+    assert "Cannot determine" not in g.summary
+    assert "accuracy-material" in g.manual_review_reason
+
+
+def test_a_grade_from_the_old_grammar_still_reads_its_summary(rs):
+    g = ConversationGrade.from_model_output("7", "Ada", _data(criteria=_all_pass(rs)),
+                                            ruleset_id="kb-v41")
+    assert g.summary == "PASS. All good."
