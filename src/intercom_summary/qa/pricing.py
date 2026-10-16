@@ -10,6 +10,7 @@ PRICES: dict[str, dict[str, float]] = {
     "claude-sonnet-5-5": {"in": 2.00, "write_5m": 2.50, "write_1h": 4.00, "read": 0.20, "out": 10.00},
     "claude-sonnet-5":   {"in": 2.00, "write_5m": 2.50, "write_1h": 4.00, "read": 0.20, "out": 10.00},
     "claude-opus-5-5":   {"in": 4.00, "write_5m": 5.00, "write_1h": 8.00, "read": 0.20, "out": 20.00},
+    "claude-haiku-5-5":  {"in": 0.10, "write_5m": 0.125, "write_1h": 0.20, "read": 0.01, "out": 0.50},
     "claude-haiku-4-5":  {"in": 1.00, "write_5m": 1.25, "write_1h": 2.00, "read": 0.10, "out": 5.00},
 }
 BATCH_DISCOUNT = 0.5

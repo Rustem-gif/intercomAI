@@ -1368,6 +1368,85 @@ def create_app() -> FastAPI:
         return FileResponse(out, filename=out.name,
                             background=BackgroundTask(shutil.rmtree, tmpdir, True))
 
+    # ── VIP chats (the VIP managers' email threads; see vip.py) ───────────────────────
+    @app.get("/api/vip/conversations")
+    def vip_conversations(include_excluded: bool = False, agent: str | None = None,
+                          brand: str | None = None, search: str | None = None,
+                          user: dict = Depends(auth.current_user)):
+        from intercom_summary.storage.vip_store import VipStore
+
+        store = VipStore()
+        try:
+            return {"items": store.query(include_excluded=include_excluded, agent=agent,
+                                         brand=brand, search=search),
+                    "summary": store.summary()}
+        finally:
+            store.close()
+
+    @app.get("/api/vip/conversations/{conversation_id}")
+    def vip_conversation_detail(conversation_id: str, user: dict = Depends(auth.current_user)):
+        """The thread in the shape of /api/conversations/{id}, so the drawer reuses it."""
+        from intercom_summary.intercom.models import Conversation
+        from intercom_summary.storage.vip_store import VipStore
+
+        store = VipStore()
+        try:
+            row = store.get(conversation_id)
+        finally:
+            store.close()
+        if row is None:
+            raise HTTPException(404, "VIP thread not found")
+        convo = Conversation.from_dict(row["payload"])
+        convo_dict = convo.to_dict()
+        convo_dict["custom_tags"] = ""
+        return {
+            "conversation": convo_dict,
+            "transcript": convo.transcript_text(),
+            "grade": None,
+            "grade_history": [],
+            "sla": convo.sla_summary(settings.sla_first_response_sec, settings.sla_followup_sec),
+            "iconic": None,
+            "grade_dispute": None,
+            "vip": {k: row[k] for k in ("keep", "filter_stage", "reason", "topic", "delivered_as")},
+        }
+
+    @app.get("/api/vip/export.xlsx")
+    def vip_export(user: dict = Depends(auth.current_user)):
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font
+
+        from intercom_summary.intercom.models import Conversation
+        from intercom_summary.storage.vip_store import VipStore
+
+        store = VipStore()
+        try:
+            rows = store.kept_with_payload()
+        finally:
+            store.close()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "VIP chats"
+        ws.append(["Conversation ID", "Date", "VIP manager", "Player", "Player email", "Brand",
+                   "Started by", "Topic", "Messages", "Subject", "Transcript"])
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for r in rows:
+            convo = Conversation.from_dict(r["payload"])
+            ws.append([r["id"], (r["created_at"] or "")[:16].replace("T", " "), r["agent_name"],
+                       r["customer_name"], r["customer_email"], r["brand"],
+                       "player" if r["delivered_as"] == "customer_initiated" else "manager",
+                       r["topic"], r["message_count"], r["subject"],
+                       # Excel caps a cell at 32,767 characters.
+                       convo.transcript_text()[:32000]])
+            ws.cell(row=ws.max_row, column=11).alignment = Alignment(wrap_text=True, vertical="top")
+        ws.column_dimensions["K"].width = 120
+        ws.freeze_panes = "B2"
+        tmpdir = tempfile.mkdtemp()
+        out = Path(tmpdir) / "vip_chats.xlsx"
+        wb.save(out)
+        return FileResponse(out, filename=out.name,
+                            background=BackgroundTask(shutil.rmtree, tmpdir, True))
+
     @app.get("/api/rulesets/{ruleset_id}/prompt")
     def get_ruleset_prompt(ruleset_id: str, user: dict = Depends(auth.current_user)):
         from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset

@@ -264,6 +264,32 @@ CREATE TABLE IF NOT EXISTS grade_disputes (
 );
 CREATE INDEX IF NOT EXISTS idx_disputes_status ON grade_disputes(status);
 CREATE INDEX IF NOT EXISTS idx_disputes_agent  ON grade_disputes(agent_name);
+
+-- Conversations of the Intercom "VIP managers" team (the VIP chats tab, see vip.py). They are
+-- all email, so they live here rather than in `conversations`, which is chats-only: nothing
+-- here reaches the Overview, the grading queue or agent stats. Every fetched thread is kept,
+-- the filtered-out ones too, with the reason, so the tab can show what was dropped and why.
+CREATE TABLE IF NOT EXISTS vip_conversations (
+    id             TEXT PRIMARY KEY,
+    agent_name     TEXT,
+    agent_email    TEXT,
+    customer_name  TEXT,
+    customer_email TEXT,
+    brand          TEXT NOT NULL DEFAULT '',
+    subject        TEXT,
+    created_at     TEXT,                 -- ISO timestamp
+    delivered_as   TEXT,                 -- 'customer_initiated' | 'admin_initiated'
+    message_count  INTEGER,
+    customer_msgs  INTEGER,
+    agent_replies  INTEGER,
+    keep           INTEGER,              -- 1 = a real dialogue; NULL = not classified yet
+    filter_stage   TEXT,                 -- 'rule' | 'ai': which stage decided
+    reason         TEXT,
+    topic          TEXT,
+    payload_json   TEXT NOT NULL,        -- full normalised Conversation
+    fetched_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vip_created ON vip_conversations(created_at);
 """
 
 

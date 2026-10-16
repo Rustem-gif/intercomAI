@@ -201,6 +201,18 @@ async def _calibrate(args: argparse.Namespace):
              result["unavailable"], result["failed"], (result.get("usage") or {}).get("cost_usd", 0))
 
 
+async def _vip_collect(args: argparse.Namespace):
+    """Fetch the VIP managers' threads for a date range and keep only the real dialogues."""
+    settings.require_intercom()
+    from intercom_summary import vip
+
+    s = await vip.collect(args.since, args.until, reclassify=args.reclassify)
+    log.info("VIP %s..%s: %d fetched, %d kept; dropped by rules %s, by AI %d "
+             "(%d AI-checked, %d reused); $%.4f",
+             args.since, args.until, s["fetched"], s["kept"], s["excluded_rule"] or "{}",
+             s["excluded_ai"], s["ai_checked"], s["reused"], s["cost_usd"])
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="intercom-summary", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -233,6 +245,14 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--batch", action="store_true", help="Message Batches API: half price, slower.")
     c.add_argument("--pilot", action="store_true", help="Only the sample's Pilot-20 members.")
     c.set_defaults(func=_calibrate)
+
+    v = sub.add_parser("vip-collect",
+                       help="Fetch the VIP managers' threads into the VIP chats tab.")
+    v.add_argument("--since", required=True, help="First day, YYYY-MM-DD (UTC).")
+    v.add_argument("--until", required=True, help="Last day, inclusive, YYYY-MM-DD (UTC).")
+    v.add_argument("--reclassify", action="store_true",
+                   help="Re-run the AI check on threads that already have a verdict.")
+    v.set_defaults(func=_vip_collect)
 
     k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
     k.set_defaults(func=_sync_kb)
