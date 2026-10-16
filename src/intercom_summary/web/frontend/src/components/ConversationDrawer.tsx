@@ -24,10 +24,12 @@ interface DrawerProps {
    *  live grade, and the actions that act on the live conversation are hidden. */
   overrideUrl?: string;
   onOverridden?: () => void;
+  /** Passed to the grade panel when the conversation has no grade. */
+  noGradeText?: string;
 }
 
 export default function ConversationDrawer({
-  id, onClose, readOnly = false, detailUrl, disputeUrl, overrideUrl, onOverridden,
+  id, onClose, readOnly = false, detailUrl, disputeUrl, overrideUrl, onOverridden, noGradeText,
 }: DrawerProps) {
   const { user, displayName } = useAuth();
   const qc = useQueryClient();
@@ -403,6 +405,7 @@ export default function ConversationDrawer({
                       disputeUrl={disputeUrl}
                       readOnly={readOnly}
                       overrideUrl={overrideUrl}
+                      emptyText={noGradeText}
                       onDisputeChange={afterDisputeChange}
                       onOverridden={() => {
                         onOverridden?.();

@@ -50,11 +50,13 @@ interface Props {
   /** Where the override form saves. Defaults to the live grade's override endpoint; the
    *  Calibration tab points it at the run so a manager's verdict never touches live grades. */
   overrideUrl?: string;
+  /** What to say when there is no grade (the VIP tab's threads are never graded). */
+  emptyText?: string;
 }
 
 export default function GradePanel({
   grade, conversationId, canOverride, onOverridden,
-  dispute, history, disputeUrl, readOnly, onDisputeChange, overrideUrl,
+  dispute, history, disputeUrl, readOnly, onDisputeChange, overrideUrl, emptyText,
 }: Props) {
   const displayName = useDisplayName();
   const [editing, setEditing] = useState(false);
@@ -104,7 +106,7 @@ export default function GradePanel({
   if (!grade) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
-        Not graded yet. Use "Run QA" to grade this conversation.
+        {emptyText ?? 'Not graded yet. Use "Run QA" to grade this conversation.'}
       </div>
     );
   }

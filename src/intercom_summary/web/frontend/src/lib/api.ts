@@ -628,3 +628,39 @@ export interface CalibrationResults {
   summary: CalibrationSummary | null;
   active_job: Job | null;
 }
+
+// ── VIP chats (the VIP managers' email threads; not graded) ─────────────────
+export interface VipRow {
+  id: string;
+  agent_name: string;
+  agent_email: string;
+  customer_name: string;
+  customer_email: string;
+  brand: string;
+  subject: string;
+  created_at: string | null;
+  delivered_as: string;          // "customer_initiated" | "admin_initiated"
+  message_count: number;
+  customer_msgs: number;
+  agent_replies: number;
+  keep: number | null;
+  filter_stage: "rule" | "ai" | null;
+  reason: string;
+  topic: string;
+}
+
+export interface VipSummary {
+  total: number;
+  kept: number;
+  excluded: number;
+  first: string | null;
+  last: string | null;
+  excluded_by_rule: { reason: string; n: number }[];
+  excluded_by_ai: number;
+  managers: { agent_name: string; total: number; kept: number }[];
+}
+
+export interface VipList {
+  items: VipRow[];
+  summary: VipSummary;
+}

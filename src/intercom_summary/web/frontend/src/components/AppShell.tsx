@@ -11,7 +11,7 @@ import {
   BookOpen,
   GraduationCap,
   HardDrive,
-  FlaskConical,
+  Crown,
   Moon,
   Sun,
   LogOut,
@@ -31,8 +31,10 @@ const nav = [
   { to: "/disputes", label: "Grade Disputes", icon: Scale },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/evaluation", label: "Evaluation", icon: ClipboardCheck },
-  // Temporary: the v4.1 calibration sample (AI vs QA managers). Remove with pages/Calibration.
-  { to: "/calibration", label: "Calibration 180", icon: FlaskConical },
+  // The VIP managers' email threads (not graded; see vip.py).
+  { to: "/vip", label: "VIP chats", icon: Crown },
+  // "Calibration 180" (/calibration) is hidden from the menu since 2026-10-16; the route and its
+  // data stay. To bring it back: { to: "/calibration", label: "Calibration 180", icon: FlaskConical }.
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
   { to: "/coaching", label: "Coaching", icon: GraduationCap },

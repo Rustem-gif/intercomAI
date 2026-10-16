@@ -102,7 +102,8 @@ intercomSummary/
 | Needs Attention (`/needs-attention`) | `pages/NeedsAttention.tsx` | Flagged low scores |
 | Agents (`/agents`) | `pages/Agents.tsx` | Per-agent performance |
 | Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress (Ollama restart only when Qwen is picked) |
-| Calibration 180 (`/calibration`) — **temporary** | `pages/Calibration.tsx` | Claude's v4.1 grades of a calibration sample next to the QA managers' own verdicts |
+| Calibration 180 (`/calibration`) — **temporary, hidden from the menu since 2026-10-16** (URL still works) | `pages/Calibration.tsx` | Claude's v4.1 grades of a calibration sample next to the QA managers' own verdicts |
+| VIP chats (`/vip`) | `pages/Vip.tsx` | The VIP managers' email threads, filtered to real dialogues; read-only, not graded |
 | AI Accuracy (`/accuracy`) | `pages/Accuracy.tsx` | AI-vs-human override stats |
 | Knowledge Base (`/knowledge-base`) | `pages/KnowledgeBase.tsx` | Reference content |
 | Coaching (`/coaching`) | `pages/Coaching.tsx` | Coaching sessions |
@@ -293,6 +294,32 @@ are one mistake counted twice (manual §10), and Step 0. One request per chat, ~
 - Findings are stored in `payload_json["jev"]` and shown in the grade panel as "Jev check".
 - Try it on live chats without saving: `scripts/dry_run_grades.py -n 10 --jev shadow`.
 - Tests run offline: `tests/conftest.py` switches Jev off unless a test injects a fake.
+
+### VIP chats tab (the VIP managers' email threads)
+The VIP managers (Alisa, Jasmine, Eric, Taylor, Victoria, Walter, Sam) are not tracked agents. Their
+work lives in the Intercom teams **VIP managers** (`50006396`) and **pre-VIP** (`50006577`), listed in
+`vip.VIP_TEAM_IDS`. "VIP Players Chats" / "(DE)" hold no conversations, so ignore them.
+**Every one of these threads is an email**, so they are stored in their own table,
+`vip_conversations` (`storage/vip_store.py`), and never in `conversations`. Nothing there reaches
+the Overview, the grading queue or agent stats, and nothing is graded.
+
+- Collect a range: `intercom-summary vip-collect --since 2026-10-01 --until 2026-10-14` (UTC, end
+  inclusive). It is safe to re-run: rows are upserted, and the AI verdicts already given are reused
+  unless you pass `--reclassify`.
+- Filtering is in two stages, in `vip.py`. Every fetched thread is stored, the dropped ones with
+  their reason, and the tab's "show filtered-out" box shows them.
+  1. **Rules (free).** A thread is dropped for one of these reasons:
+     - `duplicate thread`: one email often becomes several conversations. The manager answers in
+       one of them and leaves a note with that thread's id on each copy.
+     - `no player message`: an outbound offer nobody answered.
+     - `one-word reply`: the player wrote under 3 words beyond pleasantries and signatures.
+       Quoted reply text does not count.
+     - `only internal notes` / `no manager reply`: the latter is mostly system mail, e.g. Plane or
+       Calendar notifications.
+  2. **Meaning (Claude Haiku 5.5, `vip.CLASSIFIER_MODEL`).** Is this a genuine player ↔ manager
+     exchange? The check also returns a topic label. It costs about $0.11 for 550 threads.
+- 1–14 Oct 2026: 916 fetched, **538 kept**. Rules dropped 185 duplicates, 115 with no player
+  message, 31 one-word replies and 36 with no manager reply. The AI dropped 11.
 
 ### Calibration samples (measuring the AI against human graders)
 A **calibration sample** is a frozen list of conversations. Frozen is the point: two measurement
