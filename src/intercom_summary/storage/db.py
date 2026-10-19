@@ -290,7 +290,70 @@ CREATE TABLE IF NOT EXISTS vip_conversations (
     fetched_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vip_created ON vip_conversations(created_at);
+-- ── Historical context for the grader (qa/history_context.py) ─────────────────────────────
+-- One AI label per chat: the structured, English, searchable digest the grader's history
+-- context is built from. Rows come from the conversations cache ('cache') and from the raw
+-- client archives under data/exports ('archive' — chats older than the cache holds, which are
+-- labelled but deliberately NOT imported into `conversations`, so they never reach the
+-- dashboards or the grading queue). Re-labelled when label_version changes.
+CREATE TABLE IF NOT EXISTS chat_labels (
+    conversation_id TEXT PRIMARY KEY,
+    source          TEXT NOT NULL,              -- 'cache' | 'archive'
+    brand           TEXT NOT NULL DEFAULT '',
+    contact_id      TEXT NOT NULL DEFAULT '',
+    agent_name      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT,                       -- the chat's own date (ISO)
+    tags            TEXT NOT NULL DEFAULT '',   -- Intercom tags, comma-separated
+    language        TEXT,
+    case_type       TEXT,                       -- the v4.1 Step-0 enum (qa/kbv41_prompt.py)
+    subtype         TEXT,
+    risk_flag       TEXT,                       -- v4.1 enum
+    outcome         TEXT,                       -- v4.1 outcome_status enum
+    player_state    TEXT,
+    summary_short   TEXT NOT NULL DEFAULT '',   -- <=60 words, English, no names
+    label_json      TEXT NOT NULL,              -- the full label (requests, actions, errors, ...)
+    label_version   TEXT NOT NULL,              -- prompt+schema hash the label was made with
+    model           TEXT,
+    cost_usd        REAL,
+    labelled_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_labels_contact ON chat_labels(contact_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_labels_case    ON chat_labels(brand, case_type, created_at);
+
+-- Full-text index over the searchable label text. Kept in step on every save and rebuilt
+-- whole on a refresh (20k rows take well under a second), so there are no triggers to drift.
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_labels_fts USING fts5(
+    conversation_id UNINDEXED,
+    text,
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+-- Every human verdict on a chat, wherever it was recorded, in one shape: live overrides,
+-- Calibration-tab verdicts, analyst comments, resolved disputes. Rebuilt on every refresh from
+-- those tables — this is a view materialised for the join, never the source of truth.
+CREATE TABLE IF NOT EXISTS case_verdicts (
+    conversation_id TEXT NOT NULL,
+    source          TEXT NOT NULL,              -- 'override' | 'calibration' | 'comment' | 'dispute'
+    source_ref      TEXT NOT NULL DEFAULT '',   -- run id / comment id / ''
+    ruleset_id      TEXT,
+    ai_score        INTEGER,
+    human_score     INTEGER,
+    criteria_json   TEXT,                       -- {criterion_id: verdict}, the human's changes
+    note            TEXT NOT NULL DEFAULT '',
+    reviewed_by     TEXT,
+    reviewed_at     TEXT,
+    PRIMARY KEY (conversation_id, source, source_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_verdicts_convo ON case_verdicts(conversation_id);
+
+-- Small key/value store for process state (last history refresh, index version).
+CREATE TABLE IF NOT EXISTS meta (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TEXT
+);
 """
+
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -441,6 +504,26 @@ def _migrate(conn: sqlite3.Connection) -> None:
             )""")
         conn.execute("CREATE INDEX idx_agent_groups_group ON agent_groups(group_id)")
         conn.commit()
+
+    # The player behind a conversation, mirrored out of payload_json ($.contact.id) so the
+    # grader's history context can find their earlier chats with an index instead of a scan
+    # (added with the historical context, 2026-10). Backfilled from the payload in place.
+    convo_cols = {row[1] for row in conn.execute("PRAGMA table_info(conversations)").fetchall()}
+    if "contact_id" not in convo_cols:
+        conn.execute("ALTER TABLE conversations ADD COLUMN contact_id TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE conversations SET contact_id = "
+                     "COALESCE(json_extract(payload_json, '$.contact.id'), '')")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_convo_contact ON conversations(contact_id)")
+    conn.commit()
+
+    # Which historical-context mode a calibration run was graded with ('off' | 'shadow' | 'on')
+    # and the index snapshot it read, so two runs that differ only in the context can be told
+    # apart in the Calibration tab.
+    run_cols = {row[1] for row in conn.execute("PRAGMA table_info(calibration_runs)").fetchall()}
+    for col in ("history_context", "history_index_version"):
+        if col not in run_cols:
+            conn.execute(f"ALTER TABLE calibration_runs ADD COLUMN {col} TEXT")
+    conn.commit()
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:

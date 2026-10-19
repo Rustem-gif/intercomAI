@@ -57,20 +57,26 @@ def warm_up_set(grader, conversations: list) -> list:
     return picked
 
 
+def submit_requests(client, requests: list[dict], label: str = "") -> list[str]:
+    """Submit ready-made `{custom_id, params}` requests, 10k per batch; returns the batch ids."""
+    ids: list[str] = []
+    for start in range(0, len(requests), MAX_PER_BATCH):
+        chunk = requests[start:start + MAX_PER_BATCH]
+        batch = client.beta.messages.batches.create(requests=chunk)
+        ids.append(batch.id)
+        log.info("Submitted batch %s: %d requests%s", batch.id, len(chunk),
+                 f" [{label}]" if label else "")
+    return ids
+
+
 def submit(grader, conversations: Iterable) -> list[str]:
     requests = [
         {"custom_id": c.id,
          "params": grader.request_params(c, batch=True)}
         for c in conversations
     ]
-    ids: list[str] = []
-    for start in range(0, len(requests), MAX_PER_BATCH):
-        chunk = requests[start:start + MAX_PER_BATCH]
-        batch = grader.client.beta.messages.batches.create(requests=chunk)
-        ids.append(batch.id)
-        log.info("Submitted batch %s: %d chats [%s ruleset %s]",
-                 batch.id, len(chunk), grader.ruleset_id, grader.rules_version)
-    return ids
+    return submit_requests(grader.client, requests,
+                           f"{grader.ruleset_id} ruleset {grader.rules_version}")
 
 
 def wait(client, batch_ids: list[str], cancel_event: threading.Event | None = None,

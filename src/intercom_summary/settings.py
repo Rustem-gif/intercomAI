@@ -39,6 +39,13 @@ def _jev_mode(value: str) -> str:
     return value
 
 
+def _history_mode(value: str) -> str:
+    value = value.lower()
+    if value not in ("off", "shadow", "on"):
+        raise ValueError(f"HISTORY_CONTEXT must be off, shadow or on (got {value!r}).")
+    return value
+
+
 def _effort(value: str) -> str:
     value = value.lower()
     if value not in QA_EFFORT_LEVELS:
@@ -97,6 +104,29 @@ class Settings:
         default_factory=lambda: float(_env("KB_MAX_AGE_HOURS", "24") or "24")
     )
     kb_dir: Path = field(default_factory=lambda: Path(_env("KB_DIR", "./data/kb")))
+
+    # Historical context for the grader (qa/history_context.py): the player's earlier chats and
+    # QA-confirmed precedents, retrieved from the labelled chat history (qa/history_labeller.py)
+    # and put into the grading prompt.
+    #   off · shadow (retrieve and record what would have been sent, send nothing) · on
+    history_context: str = field(
+        default_factory=lambda: _history_mode(_env("HISTORY_CONTEXT", "off"))
+    )
+    # How far back the player's own chats are looked up, and how many of each kind are sent.
+    history_days: int = field(default_factory=lambda: int(_env("HISTORY_DAYS", "180") or "180"))
+    history_max_prior: int = field(default_factory=lambda: int(_env("HISTORY_MAX_PRIOR", "5") or "5"))
+    history_max_precedents: int = field(
+        default_factory=lambda: int(_env("HISTORY_MAX_PRECEDENTS", "3") or "3")
+    )
+    # The model that labels chats for the history index. Haiku: ~$0.0002 a chat in a batch.
+    history_label_model: str = field(
+        default_factory=lambda: _env("HISTORY_LABEL_MODEL", "claude-haiku-5-5")
+    )
+    # The web app refreshes the index (labels new chats, regathers verdicts) every this many
+    # days; 0 = never on its own, only on "Refresh now" or `intercom-summary history refresh`.
+    history_refresh_days: int = field(
+        default_factory=lambda: int(_env("HISTORY_REFRESH_DAYS", "14") or "14")
+    )
 
     # Ollama local inference backend (Qwen)
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://localhost:11434"))

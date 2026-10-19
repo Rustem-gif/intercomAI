@@ -5,7 +5,9 @@ instead of each re-implementing it.
 """
 from __future__ import annotations
 
+import asyncio
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 import threading
 from typing import Any, Callable
 
@@ -779,3 +781,119 @@ def build_overview(agents_scope: list[str] | None = None,
         "agent_leaderboard": leaderboard,
         "worst_conversations": worst_list,
     }
+
+
+# ── Historical context: labels, verdicts, index (qa/history_context.py) ───────────────────
+# Labelling is a batch of cheap Haiku calls; above this many chats it goes through the Message
+# Batches API (half price, results in minutes to an hour) unless the caller says otherwise.
+_HISTORY_BATCH_THRESHOLD = 200
+
+
+def label_history(*, source: str = "cache", since: str | None = None,
+                  limit: int | None = None, batch: bool | None = None, relabel: bool = False,
+                  on_progress: Callable[[int, int], None] | None = None,
+                  on_status: Callable[[dict], None] | None = None,
+                  cancel_event: threading.Event | None = None) -> dict[str, Any]:
+    """Label chats for the history index (qa/history_labeller.py).
+
+    `source`: "cache" labels cached conversations that have no label at the current
+    LABEL_VERSION; "archive" labels chats from the raw client archives under EXPORT_DIR that
+    are neither cached nor labelled; "all" does both. Archive chats are labelled but never
+    imported into `conversations`. Runs synchronously (call it off the event loop).
+    """
+    from anthropic import Anthropic, AsyncAnthropic
+
+    from intercom_summary.intercom.archive import find_archives, iter_archive
+    from intercom_summary.qa.history_labeller import LABEL_VERSION, label_batch, label_live
+    from intercom_summary.storage.history_store import HistoryStore
+
+    settings.require_anthropic()
+    store = HistoryStore()
+    try:
+        wanted: list[tuple[str, list]] = []
+        if source in ("cache", "all"):
+            ids = store.unlabelled_cache_ids("" if relabel else LABEL_VERSION, since, limit)
+            wanted.append(("cache", store.load_conversations(ids)))
+        if source in ("archive", "all"):
+            skip = store.cached_ids()
+            if not relabel:
+                skip |= store.labelled_ids(LABEL_VERSION)
+            convos = []
+            for c in iter_archive(find_archives(settings.export_dir), skip_ids=skip):
+                if tags_are_ignored(c.tags) or not c.messages:
+                    continue
+                if since and c.created_at and c.created_at.isoformat() < since:
+                    continue
+                convos.append(c)
+                if limit and len(convos) >= limit:
+                    break
+            wanted.append(("archive", convos))
+
+        result: dict[str, Any] = {"label_version": LABEL_VERSION, "candidates": 0,
+                                  "labelled": 0, "failed": 0, "cost_usd": 0.0,
+                                  "batch_ids": [], "by_source": {}}
+        for src, convos in wanted:
+            result["candidates"] += len(convos)
+            if not convos:
+                result["by_source"][src] = {"labelled": 0, "failed": 0, "cost_usd": 0.0}
+                continue
+            use_batch = len(convos) > _HISTORY_BATCH_THRESHOLD if batch is None else batch
+            log.info("Labelling %d %s chat(s) %s", len(convos), src, "in a batch" if use_batch else "live")
+            if use_batch:
+                st = label_batch(Anthropic(api_key=settings.anthropic_api_key), convos, store,
+                                 source=src, on_status=on_status, cancel_event=cancel_event)
+            else:
+                st = asyncio.run(label_live(
+                    AsyncAnthropic(api_key=settings.anthropic_api_key), convos, store,
+                    source=src, on_progress=on_progress, cancel_event=cancel_event))
+            result["by_source"][src] = st
+            result["labelled"] += st["labelled"]
+            result["failed"] += st["failed"]
+            result["cost_usd"] = round(result["cost_usd"] + st["cost_usd"], 4)
+            result["batch_ids"] += st.get("batch_ids", [])
+        store.set_meta("history.last_label_at", datetime.now(timezone.utc).isoformat())
+        return result
+    finally:
+        store.close()
+
+
+def refresh_history(*, batch: bool | None = None,
+                    on_progress: Callable[[int, int], None] | None = None,
+                    on_status: Callable[[dict], None] | None = None,
+                    cancel_event: threading.Event | None = None) -> dict[str, Any]:
+    """The periodic refresh: label the cached chats that are new since the last one, regather
+    every human verdict, rebuild the text index, and stamp the index version."""
+    from intercom_summary.storage.history_store import HistoryStore
+
+    result = label_history(source="cache", batch=batch, on_progress=on_progress,
+                           on_status=on_status, cancel_event=cancel_event)
+    store = HistoryStore()
+    try:
+        result["verdicts"] = store.rebuild_verdicts()
+        result["indexed"] = store.rebuild_fts()
+        result["index_version"] = store.index_version()
+        store.set_meta("history.last_refresh_at", datetime.now(timezone.utc).isoformat())
+        store.set_meta("history.index_version", result["index_version"])
+    finally:
+        store.close()
+    log.info("History refreshed: %d labelled (%d failed, $%.4f), %d indexed, verdicts %s, index %s",
+             result["labelled"], result["failed"], result["cost_usd"], result["indexed"],
+             result["verdicts"], result["index_version"])
+    return result
+
+
+def history_stats() -> dict[str, Any]:
+    from intercom_summary.intercom.archive import find_archives
+    from intercom_summary.qa.history_labeller import LABEL_VERSION
+    from intercom_summary.storage.history_store import HistoryStore
+
+    store = HistoryStore()
+    try:
+        out = store.stats()
+        out["label_version"] = LABEL_VERSION
+        out["unlabelled_cache"] = len(store.unlabelled_cache_ids(LABEL_VERSION))
+    finally:
+        store.close()
+    out["archives"] = [str(p.parent.name) for p in find_archives(settings.export_dir)]
+    out["mode"] = settings.history_context
+    return out

@@ -4,6 +4,9 @@
   intercom-summary review --agent ada@co.com --since 2026-05-01 --out qa_report.xlsx
   intercom-summary collect-batch msgbatch_01...   # save a Claude batch whose run died
   intercom-summary sync-kb                        # refresh the Help Center knowledge base now
+  intercom-summary history label --source all --batch   # label chats for the history index
+  intercom-summary history refresh                # the biweekly refresh, by hand
+  intercom-summary history stats
 """
 from __future__ import annotations
 
@@ -213,6 +216,43 @@ async def _vip_collect(args: argparse.Namespace):
              s["excluded_ai"], s["ai_checked"], s["reused"], s["cost_usd"])
 
 
+async def _history_label(args: argparse.Namespace):
+    """Label chats for the grader's historical context (qa/history_labeller.py)."""
+    settings.require_anthropic()
+    from intercom_summary import service
+
+    batch = True if args.batch else (False if args.live else None)
+    r = await asyncio.to_thread(
+        service.label_history, source=args.source, since=args.since, limit=args.limit,
+        batch=batch, relabel=args.relabel,
+        on_status=lambda st: log.info("Label batch: %s", st["counts"]),
+    )
+    log.info("History labels [%s]: %d candidate(s), %d labelled, %d failed, $%.4f%s",
+             r["label_version"], r["candidates"], r["labelled"], r["failed"], r["cost_usd"],
+             f"; batches {', '.join(r['batch_ids'])}" if r["batch_ids"] else "")
+
+
+async def _history_refresh(args: argparse.Namespace):
+    settings.require_anthropic()
+    from intercom_summary import service
+
+    batch = True if args.batch else (False if args.live else None)
+    r = await asyncio.to_thread(
+        service.refresh_history, batch=batch,
+        on_status=lambda st: log.info("Label batch: %s", st["counts"]))
+    log.info("Refreshed: %d labelled (%d failed, $%.4f), %d indexed, verdicts %s, index %s",
+             r["labelled"], r["failed"], r["cost_usd"], r["indexed"], r["verdicts"],
+             r["index_version"])
+
+
+async def _history_stats(args: argparse.Namespace):
+    import json as _json
+
+    from intercom_summary import service
+
+    print(_json.dumps(service.history_stats(), indent=2, ensure_ascii=False))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="intercom-summary", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -256,6 +296,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
     k.set_defaults(func=_sync_kb)
+
+    h = sub.add_parser("history", help="The grader's historical context: label chats, refresh "
+                                       "the index, show its state.")
+    hs = h.add_subparsers(dest="history_command", required=True)
+    hl = hs.add_parser("label", help="Label chats that have no label at the current version.")
+    hl.add_argument("--source", choices=["cache", "archive", "all"], default="cache",
+                    help="cache: the conversations table; archive: the raw client archives "
+                         "under EXPORT_DIR (labelled, never imported); all: both.")
+    hl.add_argument("--since", help="Only chats created on/after this date (YYYY-MM-DD).")
+    hl.add_argument("--limit", type=int, help="Cap the number of chats (smoke testing).")
+    hl.add_argument("--batch", action="store_true", help="Force the Message Batches API.")
+    hl.add_argument("--live", action="store_true", help="Force live calls (default: batch above 200).")
+    hl.add_argument("--relabel", action="store_true", help="Re-label chats that already have a label.")
+    hl.set_defaults(func=_history_label)
+    hr = hs.add_parser("refresh", help="Label new cached chats, regather human verdicts, rebuild the index.")
+    hr.add_argument("--batch", action="store_true")
+    hr.add_argument("--live", action="store_true")
+    hr.set_defaults(func=_history_refresh)
+    hst = hs.add_parser("stats", help="Index coverage, verdict counts, versions.")
+    hst.set_defaults(func=_history_stats)
     return parser
 
 
