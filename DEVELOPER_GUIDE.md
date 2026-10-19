@@ -60,6 +60,7 @@ intercomSummary/
     ├── intercom/             ← Talking to Intercom (downloading chats).
     │   ├── client.py         ← Raw API calls.
     │   ├── fetch.py          ← Pulling conversations.
+    │   ├── archive.py        ← Reading the raw client exports (older history, never imported).
     │   └── models.py         ← The shape of a Conversation/Message/Admin in our code.
     │
     ├── qa/                   ← The AI grading engine.
@@ -71,6 +72,8 @@ intercomSummary/
     │   ├── schema.py          ← Turns the AI's answer into a score (does the math itself).
     │   ├── verdict_guard.py  ← Overturns greeting/name verdicts the transcript contradicts.
     │   ├── gated_rules.py    ← v4.1: turns detected problems / requests / notes into verdicts by rule.
+    │   ├── history_labeller.py ← Haiku labels a chat for the history index (digest, errors, outcome…).
+    │   ├── history_context.py ← The player's earlier chats + QA precedents, put in front of the transcript.
     │   ├── agent.py / chat.py ← The "Ask Qwen" chat assistant in the UI.
     │   └── rules.py          ← Loads/versions the rulebook.
     │
@@ -78,6 +81,7 @@ intercomSummary/
     │   ├── conversations_store.py
     │   ├── grades_store.py    ← Grades + human overrides.
     │   ├── jobs_store.py      ← Background jobs (fetch/review progress).
+    │   ├── history_store.py   ← Chat labels, their text index, every human verdict in one table.
     │   └── …                  ← comments, coaching, iconic cases, agent links, etc.
     │
     ├── export/               ← XLSX + transcript file generation.
@@ -339,6 +343,31 @@ every resolver call passes the chat's `created_at`.
   request paying to write it.
 - What still fills manual review: `action-escalation-missed` / `ownership-effort` — the manual
   requires a system trace (an internal note or CRM record) and most chats have neither.
+
+### Historical context for the grader (the player's earlier chats and QA precedents)
+The grader sees one transcript; this gives it what the transcript cannot show — what the same
+player was told before, promises made, whether "I escalated" was true, and how QA ruled on
+similar cases. Full write-up: `docs/history-context.md`. Off by default.
+- **Switch:** `HISTORY_CONTEXT` in `.env`: `off` · `shadow` (retrieve and record on the grade,
+  send nothing) · `on`. Per run: `calibrate --history on`, the Calibration tab, or
+  `/api/review {"history_context": "on"}`. Every grade records what it got in
+  `payload_json["history_context"]`.
+- **The index:** `chat_labels` (one Haiku label per chat, ≈$0.0006 live / $0.0003 batch),
+  `chat_labels_fts` (SQLite full-text), `case_verdicts` (every human verdict, rebuilt on refresh).
+  Build it: `intercom-summary history label --source all --batch`; keep it fresh:
+  `intercom-summary history refresh`; look at it: `intercom-summary history stats`.
+- **Older history** lives in the raw client exports under `data/exports/*/raw/` and is labelled
+  from there (`--source archive`) — deliberately **not** imported into `conversations`, which
+  would put thousands of old ungraded chats on every dashboard and in the next grading run.
+  Fetch more with `scripts/export_client_archive.py --since … --until … --only-fetch`.
+- **Where it goes in the prompt:** the user turn, in front of the transcript (`Grader.messages_for`),
+  so the cached rules + Help Center blocks never change. Precedents are human-confirmed only;
+  a chat never sees itself or anything after its own date.
+- **A/B:** two calibration runs differing only in `--history`; compare in the tab. Needs QA
+  verdicts on the sample (none recorded as of 2026-10-19).
+- **Changing the label** (`qa/history_labeller.py` prompt or schema) changes `LABEL_VERSION`;
+  the next `history refresh`/`label` re-labels everything, so do it deliberately.
+- Tests run offline: `tests/conftest.py` keeps it off unless a test injects a `HistoryProvider`.
 
 ### Jev — a second opinion on the verdicts that matter most
 After Sonnet grades a v4.1 chat and before the score is computed, **Jev** (TypeSafe) checks the
@@ -799,6 +828,10 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
   upsert) to ask when a conversation actually arrived. Confusing the two is what made the
   September incident look like a late import when nothing had arrived late at all.
 - `grade_history` holds every superseded grade. Nothing deletes from it.
+- The history index (`chat_labels`, `chat_labels_fts`, `case_verdicts`, `meta`) is derived data:
+  `case_verdicts` is rebuilt from the human-verdict tables on every refresh, and `chat_labels`
+  can be rebuilt from the chats for the price of the labels. `conversations.contact_id` is
+  mirrored out of the payload for the player lookup.
 - It's backed up automatically into `data/backups/`.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
 - **The Trash blocks re-import.** Deleting a conversation individually moves it to
