@@ -171,6 +171,26 @@ def create_app() -> FastAPI:
         if removed:
             log.info("Trash: purged %d item(s) older than %d days.", removed, days)
 
+    @app.on_event("startup")
+    async def _history_refresh_loop() -> None:
+        """Refresh the history index (label new chats, regather verdicts) every
+        HISTORY_REFRESH_DAYS, from inside the web process. In-process rather than launchd:
+        a launchd job started from ~/Desktop is refused by macOS privacy protection (the
+        backup job fails exactly that way), and the web app is always running anyway."""
+        if settings.history_refresh_days <= 0 or settings.history_context == "off":
+            return
+
+        async def tick_forever() -> None:
+            await asyncio.sleep(300)          # let a restart settle first
+            while True:
+                try:
+                    await asyncio.to_thread(_maybe_refresh_history)
+                except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
+                    log.exception("history refresh tick failed")
+                await asyncio.sleep(3600)
+
+        asyncio.create_task(tick_forever())
+
     # ── Auth ──────────────────────────────────────────────────────────────────
     @app.post("/api/auth/login", response_model=UserOut)
     def login(body: LoginRequest, request: Request):
@@ -1375,6 +1395,32 @@ def create_app() -> FastAPI:
                             background=BackgroundTask(shutil.rmtree, tmpdir, True))
 
     # ── VIP chats (the VIP managers' email threads; see vip.py) ───────────────────────
+    # ── Historical context: the labelled chat index the grader reads ───────────
+    @app.get("/api/history/stats")
+    def history_stats(user: dict = Depends(auth.current_user)):
+        return service.history_stats()
+
+    @app.post("/api/history/refresh", response_model=JobOut)
+    def history_refresh(background: BackgroundTasks, user: dict = Depends(auth.require_write)):
+        """Label the cached chats the index lacks, regather every human verdict, rebuild the
+        text index. One job at a time, and never while a grading run is in flight — both
+        write the same database and the labels are what the run reads."""
+        try:
+            settings.require_anthropic()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        js = JobsStore()
+        try:
+            existing = _active_grading_job(js)
+            if existing:
+                return JobOut(id=existing["id"], kind=existing["kind"], status=existing["status"],
+                              result=existing["result"], error=existing["error"])
+            job_id = js.create("history_refresh", {"created_by": user["username"]})
+        finally:
+            js.close()
+        background.add_task(_run_history_refresh_job, job_id, {})
+        return JobOut(id=job_id, kind="history_refresh", status="queued")
+
     @app.get("/api/vip/conversations")
     def vip_conversations(include_excluded: bool = False, agent: str | None = None,
                           brand: str | None = None, search: str | None = None,
@@ -2231,9 +2277,65 @@ def _run_fetch_job(job_id: str, params: dict) -> None:
 
 
 def _active_grading_job(js: JobsStore) -> dict | None:
-    """The review or calibration run in flight, if any — only one grading run at a time."""
-    jobs = js.list_recent(kind="review", limit=10) + js.list_recent(kind="calibration", limit=10)
+    """The review, calibration or history-refresh run in flight, if any — one at a time. A
+    refresh counts: it writes the labels a grading run reads, and labels in a batch at that."""
+    jobs = (js.list_recent(kind="review", limit=10) + js.list_recent(kind="calibration", limit=10)
+            + js.list_recent(kind="history_refresh", limit=5))
     return next((j for j in jobs if j["status"] in ("queued", "running", "cancelling")), None)
+
+
+def _run_history_refresh_job(job_id: str, params: dict) -> None:
+    cancel_event = threading.Event()
+    _review_cancel_events[job_id] = cancel_event
+    js = JobsStore()
+    js.update(job_id, status="running")
+    try:
+        progress: dict = {"partial": True}
+
+        def on_progress(done: int, total: int) -> None:
+            progress.update(labelled=done, total=total)
+            js.update(job_id, result=progress)
+
+        def on_status(status: dict) -> None:
+            progress["batch_status"] = status
+            js.update(job_id, result=progress)
+
+        result = service.refresh_history(on_progress=on_progress, on_status=on_status,
+                                         cancel_event=cancel_event)
+        js.update(job_id, status="cancelled" if result.get("cancelled") else "done", result=result)
+    except Exception as e:
+        log.exception("history refresh job failed")
+        js.update(job_id, status="error", error=str(e))
+    finally:
+        _review_cancel_events.pop(job_id, None)
+        js.close()
+
+
+def _maybe_refresh_history() -> str | None:
+    """Start a refresh job when the last one is older than HISTORY_REFRESH_DAYS and nothing is
+    grading. Returns the job id it started, or None."""
+    from datetime import datetime, timedelta, timezone
+
+    from intercom_summary.storage.history_store import HistoryStore
+
+    hs = HistoryStore()
+    try:
+        last = hs.get_meta("history.last_refresh_at")
+    finally:
+        hs.close()
+    due = datetime.now(timezone.utc) - timedelta(days=settings.history_refresh_days)
+    if last and datetime.fromisoformat(last) > due:
+        return None
+    js = JobsStore()
+    try:
+        if _active_grading_job(js):
+            return None
+        job_id = js.create("history_refresh", {"created_by": "scheduler"})
+    finally:
+        js.close()
+    log.info("History index refresh due (last: %s) — starting job %s", last or "never", job_id)
+    _run_history_refresh_job(job_id, {})
+    return job_id
 
 
 def _calibration_grade(run_id: str, conversation_id: str) -> tuple[dict, dict | None]:

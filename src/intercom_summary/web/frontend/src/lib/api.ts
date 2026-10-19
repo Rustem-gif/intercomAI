@@ -292,6 +292,8 @@ export interface Grade {
   /** Jev's second opinion on the verdicts (v4.1 only). Advisory: it never moves the score. */
   jev?: JevCheck;
   usage?: GradeUsage;
+  /** The historical context the grader was given (or, in shadow mode, would have been given). */
+  history_context?: HistoryContextUsed;
   /** The model that produced the grade (differs from QA_MODEL when a fallback served it). */
   model?: string;
   /** Each thing the player asked for, and what became of it. */
@@ -568,6 +570,9 @@ export interface CalibrationRun {
   ruleset_id: string;
   model: string | null;
   effort: string | null;
+  /** "off" | "shadow" | "on": the historical context this run was graded with. */
+  history_context?: string | null;
+  history_index_version?: string | null;
   started_at: string;
   finished_at: string | null;
   cost_usd: number | null;
@@ -666,4 +671,40 @@ export interface VipSummary {
 export interface VipList {
   items: VipRow[];
   summary: VipSummary;
+}
+
+// ── Historical context (the labelled chat index the grader reads) ───────────
+export interface HistoryContextUsed {
+  mode: string;                 // "on" | "shadow"
+  index_version: string;
+  text: string;                 // the block, "" when nothing was known
+  contact_prior: string[];      // the player's earlier chats shown
+  precedents: string[];         // QA-confirmed similar cases shown
+  label_source: string;         // cached | haiku | fallback
+  tokens_est: number;
+}
+
+export interface HistoryCount {
+  key: string;
+  n: number;
+}
+
+export interface HistoryStats {
+  labels: number;
+  label_cost_usd: number;
+  first: string | null;
+  last: string | null;
+  contacts: number;
+  by_source: HistoryCount[];
+  by_brand: HistoryCount[];
+  by_case_type: HistoryCount[];
+  by_language: HistoryCount[];
+  verdicts: Record<string, number>;
+  verdict_chats_labelled: number;
+  index_version: string;
+  last_refresh_at: string | null;
+  label_version: string;
+  unlabelled_cache: number;
+  archives: string[];
+  mode: string;
 }

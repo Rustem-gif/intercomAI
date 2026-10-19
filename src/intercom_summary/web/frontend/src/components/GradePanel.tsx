@@ -632,6 +632,27 @@ export default function GradePanel({
         </p>
       ) : null}
 
+      {/* What the grader knew beyond this transcript: the player's earlier chats and QA precedents. */}
+      {!editing && grade.history_context?.mode ? (
+        <details className="rounded-md border p-2 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">
+            Historical context{grade.history_context.mode === "shadow" ? " (recorded only, not sent)" : ""}:{" "}
+            {grade.history_context.contact_prior.length} earlier chat(s) of this player ·{" "}
+            {grade.history_context.precedents.length} QA precedent(s)
+            {grade.history_context.tokens_est ? ` · ~${grade.history_context.tokens_est} tokens` : ""}
+          </summary>
+          {grade.history_context.text ? (
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-[11px] leading-snug text-muted-foreground">
+              {grade.history_context.text}
+            </pre>
+          ) : (
+            <p className="mt-2 text-muted-foreground">
+              Nothing was known about this player, and no similar QA-confirmed case existed, when this chat happened.
+            </p>
+          )}
+        </details>
+      ) : null}
+
       {grade.violations.length > 0 && !editing && (
         <div>
           <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">Violations</h4>
