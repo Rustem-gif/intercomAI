@@ -246,6 +246,18 @@ async def _history_refresh(args: argparse.Namespace):
              r["index_version"])
 
 
+async def _history_collect(args: argparse.Namespace):
+    """Save the labels of a labelling batch whose process died mid-wait (billed regardless)."""
+    settings.require_anthropic()
+    from intercom_summary import service
+
+    r = await asyncio.to_thread(
+        service.collect_label_batch, args.batch_id, source=args.source,
+        on_status=lambda st: log.info("Label batch: %s", st["counts"]))
+    log.info("Collected %d label(s) (%d unusable, %d unknown ids), $%.4f",
+             r["labelled"], r["failed"], r["unknown"], r["cost_usd"])
+
+
 async def _history_stats(args: argparse.Namespace):
     import json as _json
 
@@ -319,6 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
     hr.add_argument("--batch", action="store_true")
     hr.add_argument("--live", action="store_true")
     hr.set_defaults(func=_history_refresh)
+    hc = hs.add_parser("collect-batch", help="Save the labels of an interrupted labelling batch.")
+    hc.add_argument("batch_id", nargs="+", help="msgbatch_… id(s) from the interrupted run's log.")
+    hc.add_argument("--source", choices=["cache", "archive"], default="cache",
+                    help="Where the batch's chats came from (default: the conversations cache).")
+    hc.set_defaults(func=_history_collect)
     hst = hs.add_parser("stats", help="Index coverage, verdict counts, versions.")
     hst.set_defaults(func=_history_stats)
     return parser

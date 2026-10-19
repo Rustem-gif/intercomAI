@@ -934,3 +934,30 @@ def history_stats() -> dict[str, Any]:
     out["archives"] = [str(p.parent.name) for p in find_archives(settings.export_dir)]
     out["mode"] = settings.history_context
     return out
+
+
+def collect_label_batch(batch_ids: list[str], *, source: str = "cache",
+                        on_status: Callable[[dict], None] | None = None) -> dict[str, Any]:
+    """Save the labels of an interrupted labelling batch. Cache chats are looked up in
+    `conversations`; archive chats are read back from the raw client archives."""
+    from anthropic import Anthropic
+
+    from intercom_summary.intercom.archive import find_archives, iter_archive
+    from intercom_summary.qa.history_labeller import collect_label_batch as _collect
+    from intercom_summary.storage.history_store import HistoryStore
+
+    settings.require_anthropic()
+    client = Anthropic(api_key=settings.anthropic_api_key)
+    store = HistoryStore()
+    try:
+        if source == "archive":
+            convos = {c.id: c for c in iter_archive(find_archives(settings.export_dir))}
+        else:
+            ids = [r[0] for r in store._conn.execute("SELECT id FROM conversations").fetchall()]
+            convos = {c.id: c for c in store.load_conversations(ids)}
+        result = _collect(client, batch_ids, store, convos, source=source, on_status=on_status)
+        store.rebuild_fts()
+        return result
+    finally:
+        store.close()
+

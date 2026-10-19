@@ -200,3 +200,32 @@ def test_refresh_history_rebuilds_verdicts_index_and_meta(history_env):
     assert s["labels"] == 1 and s["unlabelled_cache"] == 0 and s["label_version"] == hl.LABEL_VERSION
     assert s["last_refresh_at"] and s["index_version"] == r["index_version"]
     assert s["archives"] == ["client-archive-x"] and s["mode"] == "off"
+
+
+def test_collect_label_batch_saves_an_interrupted_batch(tmp_path, monkeypatch):
+    from intercom_summary.qa import batch as batch_mod
+    monkeypatch.setattr(batch_mod, "POLL_SECONDS", 0)
+    hs = HistoryStore(tmp_path / "h.db")
+    client = FakeBatchClaude(outcomes={"2": "junk"}, data=_label())
+    convos = {c.id: c for c in (_convo("1"), _convo("2"), _convo("3"))}
+    client.beta.messages.batches.create(requests=[
+        {"custom_id": cid, "params": hl.label_request(c, batch=True)} for cid, c in convos.items()])
+    st = hl.collect_label_batch(client, ["msgbatch_1"], hs, {k: v for k, v in convos.items() if k != "3"},
+                                source="cache", poll=0)
+    assert (st["labelled"], st["failed"], st["unknown"]) == (1, 1, 1)
+    assert hs.labelled_ids(hl.LABEL_VERSION) == {"1"} and not client.live_calls
+    hs.close()
+
+
+def test_service_collect_label_batch_reads_cache_chats(history_env, monkeypatch):
+    from intercom_summary.qa import batch as batch_mod
+    monkeypatch.setattr(batch_mod, "POLL_SECONDS", 0)
+    import anthropic
+    client = FakeBatchClaude(data=_label())
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: client)
+    client.beta.messages.batches.create(requests=[
+        {"custom_id": "1", "params": hl.label_request(_convo("1"), batch=True)}])
+    r = service.collect_label_batch(["msgbatch_1"], source="cache")
+    assert r["labelled"] == 1
+    assert HistoryStore(settings.db_path).get_label("1")["source"] == "cache"
+

@@ -338,3 +338,36 @@ def label_batch(client, conversations: list[Conversation], store, *, source: str
     return {"labelled": done, "failed": failed, "cost_usd": round(total_cost, 4),
             "batch_ids": batch_ids, "fallbacks": fallbacks, "cancelled": cancelled}
 
+
+def collect_label_batch(client, batch_ids: list[str], store, conversations: dict[str, Conversation],
+                        *, source: str, model: str | None = None,
+                        on_status: Callable[[dict], None] | None = None,
+                        poll: float | None = None) -> dict:
+    """Save the labels of batches whose submitting process died (a restart mid-wait). The
+    batch ran — and was billed — regardless. `conversations` maps id → Conversation for the
+    chats the batch covered; results for ids not in it are counted as `unknown`."""
+    model = model or settings.history_label_model
+    batch_mod.wait(client, batch_ids, None, on_status, poll=poll)
+    done = failed = unknown = 0
+    total_cost = 0.0
+    for custom_id, result in batch_mod.results(client, batch_ids):
+        convo = conversations.get(custom_id)
+        if convo is None:
+            unknown += 1
+            continue
+        meter = UsageMeter()
+        label = None
+        if getattr(result, "type", None) == "succeeded":
+            meter.add(result.message.usage, model, batch=True)
+            label = parse_label(result.message)
+        if label is None:
+            failed += 1
+            continue
+        store.save_label(label_row(convo, label, source=source, model=model, cost_usd=meter.cost))
+        done += 1
+        total_cost += meter.cost
+    log.info("Collected %d label(s) from %s (%d unusable, %d unknown ids), $%.4f",
+             done, ", ".join(batch_ids), failed, unknown, total_cost)
+    return {"labelled": done, "failed": failed, "unknown": unknown,
+            "cost_usd": round(total_cost, 4), "batch_ids": batch_ids}
+
