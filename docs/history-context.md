@@ -40,7 +40,7 @@ This player's earlier chats (newest first):
 - 2026-10-01 · Withdrawal / withdrawal pending · Asked again about the withdrawal; escalated. · outcome: Pending-legitimate (AI) · QA 75 (AI 100): "fine"
 - 2026-09-20 · Withdrawal / withdrawal pending · Withdrawal pending; agent promised 1-3 days. · promised: 1-3 business days · outcome: Pending-legitimate (AI)
 QA precedents (similar cases, QA-confirmed):
-- Withdrawal / withdrawal pending · Withdrawal delayed, bank transfer pending; agent gave timeframe. · errors noted: did not confirm escalation · QA 75 (AI 100): "escalation not confirmed in a note" · criteria: action-escalation-missed=fail
+- Withdrawal / withdrawal pending · Withdrawal delayed, bank transfer pending; agent gave timeframe. · AI-labelled issues: did not confirm escalation · QA 75 (AI 100): "escalation not confirmed in a note" · criteria: action-escalation-missed=fail
 === END HISTORICAL CONTEXT ===
 ```
 

@@ -115,8 +115,9 @@ def render_precedent(row: dict, verdicts: list[dict]) -> str:
     lab = row["label"]
     bits = [" / ".join(b for b in (lab.get("case_type"), lab.get("subtype")) if b),
             _one_line(lab.get("summary_short", ""), _SUMMARY_CHARS)]
+    # The label's own view, marked as the AI's: QA may have ruled the opposite right after it.
     if lab.get("agent_errors"):
-        bits.append("errors noted: " + "; ".join(lab["agent_errors"][:2]))
+        bits.append("AI-labelled issues: " + "; ".join(lab["agent_errors"][:2]))
     bits.append(_qa_phrase(verdicts) or "QA-confirmed")
     return "- " + " · ".join(b for b in bits if b)
 

@@ -78,7 +78,7 @@ def test_context_is_the_players_earlier_chats_and_human_precedents_only(tmp_path
     assert text.startswith(hc.HEADER) and text.endswith(hc.FOOTER)
     assert "promised: 1-3 business days" in text and "outcome: Pending-legitimate (AI)" in text
     assert 'QA 75 (AI 100): "fine"' in text                  # the player's own chat, QA-scored
-    assert "errors noted: did not confirm escalation" in text
+    assert "AI-labelled issues: did not confirm escalation" in text
     assert "action-escalation-missed=fail" in text
     assert not any(line.startswith(("AGENT", "CUSTOMER")) for line in text.splitlines())
     hs.close()
