@@ -83,6 +83,7 @@ Commands:
 intercom-summary history label --source cache|archive|all [--since YYYY-MM-DD] [--limit N] [--batch|--live] [--relabel]
 intercom-summary history refresh        # label new cached chats, regather verdicts, rebuild the index
 intercom-summary history stats
+intercom-summary history collect-batch msgbatch_…   # save the labels of a batch whose process died mid-wait
 ```
 Above 200 chats labelling goes through the Message Batches API (half price). Measured:
 **≈ $0.0006 a chat live, ≈ $0.0003 in a batch** — the whole 20k-chat backlog is about $6–12.
@@ -103,6 +104,12 @@ Each run records `history_context` and `history_index_version`. On the human-rev
 chats instead, without saving:
 ```
 scripts/dry_run_grades.py --only-overridden --ruleset kb-v41 -n 144 --batch --history on
+```
+Or, on the human-re-scored live chats, both arms in one go with the comparison printed and the
+per-chat record saved to `EVAL_DIR/history_ab_<time>.json`:
+```
+scripts/history_ab.py -n 144 --ruleset kb-v41            # arms off,on · batch · nothing saved to grades
+scripts/history_ab.py --arms off,on --effort medium      # the cost question: does context let medium match high?
 ```
 Metrics: agreement with human verdicts where they exist, manual-review rate, severe flips
 between paired runs, evidence grounding (every FAIL quote found in the transcript), cost/chat.
