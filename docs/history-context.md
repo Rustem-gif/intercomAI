@@ -126,3 +126,31 @@ chats the two runs disagree on.
 - Tests: `tests/test_history_store.py`, `tests/test_history_labeller.py`,
   `tests/test_history_context.py`. `tests/conftest.py` keeps the history off unless a test
   injects a provider.
+
+## First A/B result (2026-10-19)
+
+`scripts/history_ab.py -n 144 --ruleset kb-v41`, batch, Sonnet 5.5 at `high`, rules
+`d5a9f6c8c713`, one run per arm, index `1a87890b11ea` (33,513 labels). The 144 chats are every
+kb-v41 grade a human re-scored; their human scores are lenient (mean 95.4), so this measures
+mostly whether the context stops the grader failing chats QA considered fine.
+
+| metric | history off | history on |
+|---|---|---|
+| mean / median \|Δ\| vs human score | 17.6 / 25 | 15.9 / 20 |
+| within 5 points of the human | 31% | 42% |
+| result agrees with the human (PASS ⇔ human ≥ 90) | 40% | 49% |
+| manual review flagged | 46% | 39% |
+| `cannot_determine` per chat | 0.62 | 0.43 |
+| FAIL quotes found verbatim in the transcript | 33% | 33% |
+| output tokens (thinking + JSON) | 2,361 | 1,795 |
+| cost per chat (batch) | $0.020 | $0.0148 |
+
+Between the arms: 34 result flips — 22 FAIL→PASS (21 of them chats the human scored ≥ 90) and
+12 PASS→FAIL (10 of them chats the human scored ≥ 90); 45 chats moved closer to the human
+score, 35 further. Two identical runs without context differ on ~8 of 180 chats, so 34 is well
+above noise and the direction is net positive, but one run per arm is not a verdict: repeat
+both arms once more, and get QA to adjudicate the 34 flips (`data/eval/history_ab_*.json`
+lists them). Most-flipped criteria: `info-completeness` (17 fail→pass, 13 pass→fail),
+`ownership-effort` (16 pass→fail), `accuracy-material` (15 fail→pass), `resp-no-ghost`
+(14 pass→fail, 11 fail→pass). The context also made the grader think less: −24% output tokens.
+
