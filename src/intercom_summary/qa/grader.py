@@ -20,6 +20,7 @@ batch result into a grade exactly as `grade` does for a live response.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 
 from anthropic import Anthropic
@@ -29,6 +30,7 @@ from intercom_summary.logging_setup import get_logger
 from intercom_summary.qa import knowledge_base
 from intercom_summary.qa.gated_rules import check_verdicts
 from intercom_summary.qa.grading_common import GradeParseError, is_valid_grade, trim_transcript
+from intercom_summary.qa.history_context import HistoryContext, HistoryProvider
 from intercom_summary.qa.jev_verifier import (
     JevVerifier,
     dispute_text,
@@ -61,8 +63,13 @@ class Grader:
         client: Anthropic | None = None,
         jev=None,
         knowledge: dict | None = None,
+        history=None,
+        effort: str | None = None,
     ) -> None:
         self._model = model or settings.qa_model
+        # Resolved once: a run grades every chat at one effort, and the dry-run script sets
+        # settings.qa_effort before building its grader.
+        self._effort = effort or settings.qa_effort
         self._client = client or Anthropic(
             api_key=settings.anthropic_api_key, timeout=180.0, max_retries=4
         )
@@ -94,6 +101,35 @@ class Grader:
             use = self._ruleset.scoring_model == SCORING_GATED and settings.kb_enabled
             knowledge = knowledge_base.load_all() if use else {}
         self._kb: dict = knowledge
+        # Historical context (qa/history_context.py): the player's earlier chats and QA
+        # precedents, put in front of the transcript. Pass history=False to grade without it,
+        # or a HistoryProvider to inject one (tests, a calibration run with its own mode).
+        if history is None:
+            history = HistoryProvider() if settings.history_context != "off" else None
+        self._history = history or None
+        self._history_memo: dict[str, HistoryContext | None] = {}
+        self._history_lock = threading.Lock()
+
+    @property
+    def history(self):
+        return self._history
+
+    @property
+    def effort(self) -> str:
+        return self._effort
+
+    def history_for(self, conversation: Conversation) -> HistoryContext | None:
+        """The context block for a chat, computed once per grader so the live call, a retry
+        and a batch `finish` all read the same one."""
+        if self._history is None:
+            return None
+        with self._history_lock:
+            if conversation.id in self._history_memo:
+                return self._history_memo[conversation.id]
+        ctx = self._history.context_for(conversation)
+        with self._history_lock:
+            self._history_memo[conversation.id] = ctx
+        return ctx
 
     @property
     def client(self) -> Anthropic:
@@ -110,7 +146,13 @@ class Grader:
         return self._ruleset.version
 
     def messages_for(self, conversation: Conversation) -> list[dict]:
-        return [{"role": "user", "content": trim_transcript(transcript_block(conversation))}]
+        text = trim_transcript(transcript_block(conversation))
+        ctx = self.history_for(conversation)
+        if ctx is not None and ctx.mode == "on" and ctx.text:
+            # In front of the transcript, inside the (uncached) user turn: the cached system
+            # blocks above it stay byte-identical (tests/test_token_optimisation.py).
+            text = f"{ctx.text}\n\n{text}"
+        return [{"role": "user", "content": text}]
 
     def knowledge_for(self, conversation: Conversation):
         return self._kb.get(conversation.brand or "")
@@ -135,7 +177,7 @@ class Grader:
             "system": system,
             "messages": messages if messages is not None else self.messages_for(conversation),
             "output_config": {
-                "effort": effort or settings.qa_effort,
+                "effort": effort or self._effort,
                 "format": {"type": "json_schema", "schema": self._schema},
             },
         }
@@ -235,7 +277,7 @@ class Grader:
             {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)},
             {"role": "user", "content": dispute_text(targets)},
         ]
-        effort = "high" if settings.qa_effort in ("low", "medium") else settings.qa_effort
+        effort = "high" if self._effort in ("low", "medium") else self._effort
         try:
             revised, revised_by = self._ask(conversation, follow_up, effort, meter)
         except GradeParseError as exc:
@@ -302,6 +344,8 @@ class Grader:
         grade.usage = meter.as_dict()
         kb = self.knowledge_for(conversation)
         grade.kb_version = f"{kb.brand}:{kb.version}" if kb else ""
+        ctx = self.history_for(conversation)
+        grade.history_context = ctx.as_dict() if ctx is not None else {}
         if jev is not None:
             grade.jev = jev
             # In shadow mode Jev's findings are recorded and change nothing.

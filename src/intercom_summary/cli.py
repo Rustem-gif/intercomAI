@@ -197,7 +197,8 @@ async def _calibrate(args: argparse.Namespace):
     # run_calibration drives its own event loops, so it runs off this one.
     result = await asyncio.to_thread(
         service.run_calibration, args.sample, ruleset_id=args.ruleset, batch=args.batch,
-        pilot_only=args.pilot, created_by="cli",
+        pilot_only=args.pilot, created_by="cli", history_context=args.history,
+        effort=args.effort,
     )
     log.info("Run %s: graded %d of %d member(s); %d ticket(s), %d unavailable, %d failed, $%.4f",
              result["run_id"], result["graded"], result["members"], result["tickets"],
@@ -284,6 +285,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--ruleset", default="kb-v41")
     c.add_argument("--batch", action="store_true", help="Message Batches API: half price, slower.")
     c.add_argument("--pilot", action="store_true", help="Only the sample's Pilot-20 members.")
+    c.add_argument("--history", choices=["off", "shadow", "on"],
+                   help="Historical context for this run (default: HISTORY_CONTEXT).")
+    c.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"],
+                   help="Effort for this run (default: QA_EFFORT).")
     c.set_defaults(func=_calibrate)
 
     v = sub.add_parser("vip-collect",

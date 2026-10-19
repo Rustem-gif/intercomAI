@@ -22,7 +22,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from intercom_summary import service
 from intercom_summary.logging_setup import get_logger
-from intercom_summary.settings import settings
+from intercom_summary.settings import QA_EFFORT_LEVELS, settings
 from intercom_summary.storage.agent_groups_store import AgentGroupsStore
 from intercom_summary.storage.conversations_store import ConversationsStore
 from intercom_summary.storage.grades_store import GradesStore
@@ -946,6 +946,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
         if body.batch and (body.backend or settings.qa_backend).lower() != "api":
             raise HTTPException(400, "Batch grading needs the Claude API backend.")
+        if body.history_context not in (None, "off", "shadow", "on"):
+            raise HTTPException(400, "history_context must be off, shadow or on")
         try:
             settings.require_qa(body.backend)
         except RuntimeError as exc:
@@ -1211,6 +1213,10 @@ def create_app() -> FastAPI:
 
         if body.ruleset_id not in known_ruleset_ids():
             raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
+        if body.history_context not in (None, "off", "shadow", "on"):
+            raise HTTPException(400, "history_context must be off, shadow or on")
+        if body.effort is not None and body.effort not in QA_EFFORT_LEVELS:
+            raise HTTPException(400, f"effort must be one of {', '.join(QA_EFFORT_LEVELS)}")
         cal = CalibrationStore()
         try:
             if cal.get(sample_id) is None:

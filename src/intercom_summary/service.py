@@ -222,6 +222,8 @@ def review_and_store(
     cancel_event: "threading.Event | None" = None,
     conversations: list[Any] | None = None,
     save_grade: Callable[[Any], None] | None = None,
+    history_context: str | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Grade cached conversations concurrently and persist the grades.
 
@@ -247,6 +249,10 @@ def review_and_store(
     `batch` (Claude backend only) sends the run through the Message Batches API at half price;
     results take minutes to hours. `on_batch(status)` receives the batch ids as soon as they
     exist, then the processing counts on every poll (see qa/batch.py).
+
+    `history_context` ("off" | "shadow" | "on") overrides HISTORY_CONTEXT for this run and
+    `effort` overrides QA_EFFORT — both for the Claude grader only. Left as None, the grader
+    reads the settings. That is how two calibration runs differ in one thing only.
     """
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
@@ -301,10 +307,20 @@ def review_and_store(
         # chats and emails get the VIP ruleset. Build one grader per ruleset we actually see
         # (lazily, so a run with no VIP agents never loads the VIP prompt).
         graders: dict[str, Any] = {}
+        # Only the overrides actually given are passed on: every grader test monkeypatches
+        # get_grader with a (backend, ruleset_id) lambda, and a None here means "the setting".
+        grader_kwargs: dict[str, Any] = {}
+        if history_context is not None:
+            from intercom_summary.qa.history_context import HistoryProvider
+
+            grader_kwargs["history"] = (False if history_context == "off"
+                                        else HistoryProvider(mode=history_context))
+        if effort is not None:
+            grader_kwargs["effort"] = effort
 
         def grader_for(ruleset_id: str):
             if ruleset_id not in graders:
-                graders[ruleset_id] = get_grader(backend, ruleset_id=ruleset_id)
+                graders[ruleset_id] = get_grader(backend, ruleset_id=ruleset_id, **grader_kwargs)
             return graders[ruleset_id]
 
         # Bucket by ruleset, skipping conversations whose grade is already current. Staleness
@@ -327,6 +343,12 @@ def review_and_store(
 
         pending = [c for bucket in buckets.values() for c in bucket]
         skipped = total - len(pending)
+        # Historical context: label the chats the index does not know yet, all at once and
+        # before the fan-out, so no grading thread stops to label one chat at a time.
+        for rid, bucket in buckets.items():
+            provider = getattr(grader_for(rid), "history", None)
+            if provider is not None and bucket:
+                provider.prepare(bucket)
         if len(buckets) > 1:
             log.info(
                 "Review split across rulesets: %s",
@@ -579,6 +601,8 @@ def run_calibration(
     on_batch: Callable[[dict], None] | None = None,
     cancel_event: "threading.Event | None" = None,
     fetch: Callable[[list[str]], Any] | None = None,
+    history_context: str | None = None,
+    effort: str | None = None,
 ) -> dict[str, Any]:
     """Grade every member of a calibration sample with the Claude grader into a new run.
 
@@ -598,10 +622,22 @@ def run_calibration(
         if cal.get(sample_id) is None:
             raise KeyError(f"No calibration sample {sample_id!r}")
         ids = cal.conversation_ids(sample_id, pilot_only=pilot_only)
+        # The run records the context mode and the index snapshot it read, so two runs that
+        # differ only in the context can be told apart (and compared) in the Calibration tab.
+        mode = history_context or settings.history_context
+        index_version = ""
+        if mode != "off":
+            from intercom_summary.storage.history_store import HistoryStore
+
+            hs = HistoryStore()
+            try:
+                index_version = hs.index_version()
+            finally:
+                hs.close()
         run_id = cal.start_run(
             sample_id, ruleset_id, rules_version=get_ruleset(ruleset_id).version,
-            model=settings.qa_model, effort=settings.qa_effort, job_id=job_id,
-            created_by=created_by,
+            model=settings.qa_model, effort=effort or settings.qa_effort, job_id=job_id,
+            created_by=created_by, history_context=mode, history_index_version=index_version,
         )
         convos: dict[str, Any] = {}
         source: dict[str, str] = {}
@@ -644,6 +680,7 @@ def run_calibration(
         result = review_and_store(
             conversations=to_grade, save_grade=save, ruleset_id=ruleset_id, backend="api",
             batch=batch, on_progress=on_progress, on_batch=on_batch, cancel_event=cancel_event,
+            history_context=history_context, effort=effort,
         )
         # Anything handed to the grader that did not come back graded failed in it.
         graded = {r["conversation_id"] for r in cal.results(run_id) if r["status"] == "graded"}
@@ -653,7 +690,7 @@ def run_calibration(
                                 error="grading failed or was cancelled")
         cal.finish_run(run_id, cost_usd=(result.get("usage") or {}).get("cost_usd"))
         return {**result, "run_id": run_id, "sample_id": sample_id, "members": len(ids),
-                "tickets": tickets, "unavailable": unavailable}
+                "tickets": tickets, "unavailable": unavailable, "history_context": mode}
     finally:
         cal.close()
         cstore.close()
