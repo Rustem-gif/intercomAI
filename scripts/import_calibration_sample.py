@@ -11,10 +11,19 @@ it silently blocks its own re-import from Intercom.
 
 Re-running against an existing frozen sample refuses to change it. That is deliberate — the
 comparability of two measurement runs is the only thing a calibration set is for.
+
+QA's own verdicts — the answer key the AI is measured against — come in a second pass:
+
+    python scripts/import_calibration_sample.py QA_scores.xlsx --id kb-v41-180 --labels [--dry-run]
+
+`--labels` reads a .docx table, .xlsx or .csv whose header names the columns (chat id, score,
+PASS/FAIL, comment — English, Ukrainian or Russian; see LABEL_COLUMNS) and writes them onto the
+sample's members. Membership never changes: a chat that is not in the sample is reported.
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 import sys
 import zipfile
@@ -73,23 +82,146 @@ def parse_items(rows: list[list[str]]) -> list[dict]:
     return items
 
 
+# Header words → field. Matched case-insensitively as substrings of the header cell, first hit
+# wins, so the more specific words come first.
+LABEL_COLUMNS: list[tuple[str, tuple[str, ...]]] = [
+    ("conversation_id", ("chat id", "chat_id", "conversation id", "conversation_id", "id чат",
+                         "id чату", "id чата", "айді", "id")),
+    ("human_result", ("pass/fail", "pass / fail", "result", "результат", "вердикт", "verdict")),
+    ("human_score", ("qa score", "score", "бал", "оцінка", "оценка", "%")),
+    ("human_note", ("comment", "коментар", "комментар", "примітк", "примечан", "note", "reason",
+                    "помилк", "ошибк", "feedback")),
+]
+
+
+def rows_from_any(path: str) -> list[list[str]]:
+    low = path.lower()
+    if low.endswith(".docx"):
+        return rows_from_docx(path)
+    if low.endswith(".csv"):
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            return [[c.strip() for c in row] for row in csv.reader(fh)]
+    if low.endswith((".xlsx", ".xlsm")):
+        import openpyxl
+
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        out: list[list[str]] = []
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                out.append(["" if v is None else str(v).strip() for v in row])
+        return out
+    raise SystemExit(f"Unsupported file type: {path} (use .docx, .xlsx or .csv)")
+
+
+def _header_map(row: list[str]) -> dict[str, int]:
+    found: dict[str, int] = {}
+    for field, words in LABEL_COLUMNS:
+        for i, cell in enumerate(row):
+            c = cell.lower()
+            if i in found.values():
+                continue
+            if any(w in c for w in words):
+                found[field] = i
+                break
+    return found
+
+
+def _score(text: str) -> int | None:
+    m = re.search(r"\d+(?:[.,]\d+)?", text or "")
+    if not m:
+        return None
+    v = float(m.group().replace(",", "."))
+    if 0 < v <= 1 and "." in m.group():          # 0.85 written as a fraction
+        v *= 100
+    return int(round(v)) if 0 <= v <= 100 else None
+
+
+def _result(text: str) -> str | None:
+    t = (text or "").strip().lower()
+    if t.startswith(("pass", "так", "да", "ok", "✅")):
+        return "PASS"
+    if t.startswith(("fail", "ні", "нет", "❌")):
+        return "FAIL"
+    return None
+
+
+def parse_labels(rows: list[list[str]]) -> list[dict]:
+    """QA's verdicts from any table with a recognisable header row (re-detected per table, so
+    a document with several tables works). A row counts when its id cell is a chat id."""
+    labels: list[dict] = []
+    cols: dict[str, int] = {}
+    for r in rows:
+        hm = _header_map(r)
+        if "conversation_id" in hm and len(hm) >= 2 and not any(_ID.match(c) for c in r):
+            cols = hm
+            continue
+        if not cols:
+            continue
+        cid = r[cols["conversation_id"]] if cols["conversation_id"] < len(r) else ""
+        cid = cid.split(".")[0]                   # 215561… read from Excel as a float
+        if not _ID.match(cid):
+            continue
+        cell = lambda k: r[cols[k]] if k in cols and cols[k] < len(r) else ""  # noqa: E731
+        lab = {"conversation_id": cid, "human_score": _score(cell("human_score")),
+               "human_result": _result(cell("human_result")), "human_note": cell("human_note")}
+        if lab["human_score"] is None and lab["human_result"] is None:
+            continue
+        labels.append(lab)
+    return labels
+
+
+def import_labels(args) -> int:
+    labels = parse_labels(rows_from_any(args.file))
+    if not labels:
+        print(f"No QA verdicts recognised in {args.file}. The header row must name a chat-id "
+              f"column and a score or PASS/FAIL column.", file=sys.stderr)
+        return 1
+    scored = sum(lab["human_score"] is not None for lab in labels)
+    print(f"Parsed {len(labels)} QA verdicts ({scored} with a score) from {args.file}")
+    if args.dry_run:
+        for lab in labels[:5]:
+            print(" ", lab)
+        print("  … (dry run, nothing written)")
+        return 0
+    store = CalibrationStore()
+    try:
+        if store.get(args.id) is None:
+            print(f"No calibration sample {args.id!r} — import its chat list first.", file=sys.stderr)
+            return 2
+        res = store.set_labels(args.id, labels, labelled_by=args.created_by)
+    finally:
+        store.close()
+    print(f"Labelled {res['labelled']} members of {args.id!r}")
+    if res["not_in_sample"]:
+        print(f"{len(res['not_in_sample'])} verdicts are for chats NOT in the sample (ignored):")
+        for cid in res["not_in_sample"]:
+            print(f"  {cid}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("docx", help="the .docx list of chats")
+    ap.add_argument("file", help="the .docx list of chats (or, with --labels, QA's verdicts)")
     ap.add_argument("--id", required=True, help="sample id, used to scope a review run")
-    ap.add_argument("--name", required=True)
+    ap.add_argument("--name", help="sample name (required unless --labels)")
+    ap.add_argument("--labels", action="store_true",
+                    help="import QA's verdicts onto an existing sample instead of its chat list")
     ap.add_argument("--created-by", default="import script")
     ap.add_argument("--force", action="store_true",
                     help="replace the membership of an already-frozen sample")
     ap.add_argument("--dry-run", action="store_true", help="parse and report, write nothing")
     args = ap.parse_args()
+    if args.labels:
+        return import_labels(args)
+    if not args.name:
+        ap.error("--name is required when importing a chat list")
 
-    items = parse_items(rows_from_docx(args.docx))
+    items = parse_items(rows_from_docx(args.file))
     if not items:
-        print(f"No chat rows found in {args.docx}", file=sys.stderr)
+        print(f"No chat rows found in {args.file}", file=sys.stderr)
         return 1
     pilot = sum(1 for i in items if i["pilot"])
-    print(f"Parsed {len(items)} chats ({pilot} marked pilot) from {args.docx}")
+    print(f"Parsed {len(items)} chats ({pilot} marked pilot) from {args.file}")
 
     if args.dry_run:
         for i in items[:5]:
@@ -99,7 +231,7 @@ def main() -> int:
 
     store = CalibrationStore()
     try:
-        store.create(args.id, args.name, source=args.docx, created_by=args.created_by)
+        store.create(args.id, args.name, source=args.file, created_by=args.created_by)
         try:
             n = store.replace_items(args.id, items, force=args.force)
         except SampleFrozenError as e:

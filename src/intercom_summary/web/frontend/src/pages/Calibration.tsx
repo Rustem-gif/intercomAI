@@ -24,7 +24,7 @@ const STATUS_LABEL: Record<string, string> = {
   ticket: "ticket — not graded",
 };
 
-type ReviewFilter = "all" | "reviewed" | "unreviewed" | "gap";
+type ReviewFilter = "all" | "reviewed" | "unreviewed" | "gap" | "result";
 type SortKey = "seq" | "delta" | "ai";
 
 function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
@@ -112,9 +112,10 @@ export default function Calibration() {
         (!pilotOnly || r.pilot) &&
         (!category || r.category === category) &&
         (review === "all" ||
-          (review === "reviewed" && r.human_score != null) ||
-          (review === "unreviewed" && r.status === "graded" && r.human_score == null) ||
-          (review === "gap" && r.delta != null && Math.abs(r.delta) >= 10)),
+          (review === "reviewed" && r.human_source != null) ||
+          (review === "unreviewed" && r.status === "graded" && r.human_source == null) ||
+          (review === "gap" && r.delta != null && Math.abs(r.delta) >= 10) ||
+          (review === "result" && r.result_agrees === false)),
     );
     if (sort === "delta")
       out = [...out].sort((a, b) => Math.abs(b.delta ?? -1) - Math.abs(a.delta ?? -1));
@@ -268,7 +269,7 @@ export default function Calibration() {
       ) : (
         <>
           {s && (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
               <Stat label="Graded" value={`${s.graded} / ${s.members}`}
                     hint={Object.entries(s.status).filter(([k]) => k !== "graded")
                       .map(([k, n]) => `${n} ${STATUS_LABEL[k] ?? k.replace("_", " ")}`).join(" · ")} />
@@ -277,6 +278,9 @@ export default function Calibration() {
               <Stat label="AI result" value={s.results ? `${s.results.PASS} / ${s.results.FAIL} / ${s.results["CANNOT DETERMINE"]}` : null}
                     hint={`pass / fail / cannot determine · ${s.major ?? 0} major`} />
               <Stat label="Reviewed by QA" value={`${s.reviewed} / ${s.graded}`} />
+              <Stat label="PASS/FAIL agreement"
+                    value={s.result_agreement != null ? `${s.result_agreement}%` : null}
+                    hint={s.result_compared ? `${s.result_compared} chats · target ≥ 95%` : "no QA verdicts yet"} />
               <Stat label="Mean QA score" value={s.mean_human}
                     hint={s.mean_ai_reviewed != null ? `AI on the same chats: ${s.mean_ai_reviewed}` : undefined} />
               <Stat label="Mean |Δ|" value={s.mean_abs_delta}
@@ -301,6 +305,7 @@ export default function Calibration() {
               <option value="all">All chats</option>
               <option value="unreviewed">Awaiting QA review</option>
               <option value="reviewed">Reviewed by QA</option>
+              <option value="result">PASS/FAIL differs from QA</option>
               <option value="gap">|Δ| ≥ 10</option>
             </select>
             <select className="h-8 rounded-md border bg-background px-2" value={sort}
@@ -364,8 +369,16 @@ export default function Calibration() {
                       </td>
                       <td className="px-3 py-2.5"><Flags r={r} /></td>
                       <td className={cn("px-3 py-2.5 font-bold", scoreColor(r.human_score))}
-                          title={r.human_note ? `${r.reviewed_by}: ${r.human_note}` : undefined}>
-                        {r.human_score ?? "—"}
+                          title={r.human_note ? `${r.reviewed_by ?? "QA"}: ${r.human_note}` : undefined}>
+                        {r.human_score ?? (r.human_result ?? "—")}
+                        {r.result_agrees === false && (
+                          <Badge className="ml-1 border-destructive/40 bg-destructive/10 text-destructive">
+                            {r.human_result}
+                          </Badge>
+                        )}
+                        {r.human_source === "sample" && (
+                          <span className="ml-1 text-[10px] font-normal text-muted-foreground">ref</span>
+                        )}
                       </td>
                       <td className={cn("px-3 py-2.5 font-semibold tabular-nums",
                         r.delta == null ? "text-muted-foreground"

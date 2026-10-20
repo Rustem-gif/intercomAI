@@ -448,6 +448,18 @@ It checks each failed criterion against the manual and that criterion's NOT-A-FA
 - When QA reports a new kind of false FAIL, add the boundary to `BOUNDARIES` **and** to the prompt's
   QA PRACTICE section, then re-measure with `accuracy_ab.py`.
 
+### QA lessons — the rules learn from QA's re-scores, weekly
+`qa/lessons.py`, `storage/lessons_store.py` (table `qa_lessons`), page **QA lessons** (`/lessons`).
+- **Weekly sync** (in-process loop like the history refresh; `QA_LESSONS=on`, `QA_LESSONS_DAYS=7`):
+  collects every re-score / calibration review since the last sync, groups the AI-vs-QA
+  disagreements per criterion (a "no mistakes" re-score of an AI FAIL counts each failed criterion,
+  marked *inferred*), and drafts one general rule per criterion corrected ≥ `QA_LESSONS_MIN_CASES`
+  times. By hand: `intercom-summary lessons sync [--since …] [--no-draft]`.
+- **Approval** (admin only): the rule is appended to the prompt's QA PRACTICE section under
+  "Learned from QA re-scores", and NOT-A-FAIL rules also go to the fail verifier
+  (`FailVerifier.learned`). New rules version → new chats only; nothing is re-graded.
+- CLI: `intercom-summary lessons list --status draft`, `lessons approve ql-…`, `lessons reject ql-…`.
+
 ### Calibration samples (measuring the AI against human graders)
 A **calibration sample** is a frozen list of conversations. Frozen is the point: two measurement
 runs are only comparable if they graded the same chats, so membership is written down once
@@ -460,6 +472,13 @@ sample that already has members.
 - The importer **reports** members it cannot grade rather than dropping them: a chat absent from
   the cache, or one sitting in the trash. ⚠️ A trashed conversation silently blocks its own
   re-import from Intercom, so a short sample stays short until someone restores it.
+- **QA's reference verdicts:** `python scripts/import_calibration_sample.py <file> --id <sample> --labels`
+  reads a .docx/.xlsx/.csv table whose header names the chat-id, score / PASS-FAIL and comment
+  columns, and stores them on the members (`calibration_sample_items.human_*`). Every run of the
+  sample is then compared against them in the Calibration tab (PASS/FAIL agreement card, "PASS/FAIL
+  differs from QA" filter). A review made in the tab on a run overrides the reference for that run.
+- **Where to start:** `python scripts/worst_disagreements.py --sample <id> -n 10` (or `--rescored`)
+  ranks the chats furthest from QA from grades that already exist; `--freeze <id>` saves them as a sample.
 - Browse one: `/api/conversations?sample=<id>`. List them with their gradeable counts:
   `/api/calibration/samples`.
 

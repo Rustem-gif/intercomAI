@@ -54,12 +54,25 @@ BOUNDARIES: dict[str, list[str]] = {
         "duplicate account was closed, verification is needed first, not eligible under the "
         "terms, a T&C reference), the step that must come first, or a handover to whoever will "
         "handle it (the VIP manager). QA counts that as answered.",
-        "A secondary or non-material question skipped while the main request was handled is "
-        "info-completeness at most, never resp-no-ghost.",
+        "A secondary question skipped while the main request was handled, which the player "
+        "did not repeat and which is not in their last messages, is info-completeness at most — "
+        "even when it concerns money.",
+        "The 'request' is a bot-menu choice clicked before the agent joined ('Withdrawal issue'), "
+        "and the player's own words pursued a different topic, which the agent dealt with.",
+        "The player's last message only repeats a demand the agent already answered, or refused "
+        "with a reason and an alternative (e.g. 'we cannot open files — please type the "
+        "details'); a reminder of the rule that bars the request also answers it.",
+        "An internal note shows a problem on the agent's side (power outage, lost connection, "
+        "system down) — not proven; a QC manager decides.",
+        "NOT covered by these: the player corrected the agent and got the same answer again; or "
+        "a vague 'it has been forwarded' repeated to a player asking for the status.",
     ],
     "res-no-fake-close": [
         "Automation closed the chat after the player stopped replying, or the agent closed with "
-        "the standard inactivity message after the player stopped replying.",
+        "the standard inactivity message after the player stopped replying to an agent message "
+        "that moved the case forward. (NOT when the player's last message was left unanswered, "
+        "or the agent's last message only re-asked for something already given.)",
+        "An internal note shows a problem on the agent's side (power outage, lost connection).",
         "The agent closed after answering, after asking the player for something, or after the "
         "player stopped replying to the agent's last message.",
         "The problem is pending with another team and the agent said so.",
@@ -71,7 +84,14 @@ BOUNDARIES: dict[str, list[str]] = {
         "The agent's standard wording: 'Crypto E-wallets up to 24 hours', 'withdrawals are "
         "approved within 24 hours', 'Support does not add bonuses in live chat'.",
         "The statement is about THIS player's own account, transaction, verification or what "
-        "the agent sees in the back office — not a general rule.",
+        "the agent sees in the back office — not a general rule. The player denying it does "
+        "not prove it wrong.",
+        "The 'contradiction' is between statements that can both be true: a general rule and a "
+        "refusal of this player's exception; two wordings of one standard term ('up to 5 days', "
+        "'5–7 business days'); a later message adding a further reason or reflecting an action "
+        "the player asked for; an internal note in which the agent is unsure.",
+        "(Still a FAIL: denying service on eligibility — country, age, account type — when the "
+        "KNOWLEDGE BASE says the player is accepted.)",
     ],
     "accuracy-minor": [
         "The only proof is a difference from the KNOWLEDGE BASE, or the statement is a harmless "
@@ -81,8 +101,13 @@ BOUNDARIES: dict[str, list[str]] = {
         "None of the MANDATORY ESCALATION cases applies — answering or refusing by the terms "
         "was the correct handling.",
         "An internal note shows the handoff, or the agent resolved the matter themselves.",
-        "The agent was still waiting for proof or a detail they asked the player for, so no "
-        "escalation was due yet.",
+        "The agent was still waiting for proof or a detail they asked the player for, or for "
+        "the player to try a step they suggested, so no escalation was due yet.",
+        "The reward was not yet due under the promotion's own timeline.",
+        "The player only voiced dissatisfaction with their manager ('I think I need a new "
+        "manager') — not a request to be put in touch with one.",
+        "(Still a FAIL: an explicit request to close, block or self-exclude the account that was "
+        "neither carried out nor forwarded, or not confirmed to the player.)",
     ],
     "financial-case-abandoned": [
         "The agent gave the status they could see, the next step, or asked for what was needed, "
@@ -99,18 +124,27 @@ BOUNDARIES: dict[str, list[str]] = {
         "The player complained or was dissatisfied but never said in plain words they are "
         "leaving, closing the account or playing elsewhere.",
         "The agent apologised, empathised, explained, offered a solution or escalated.",
+        "A threat used as leverage ('a bonus or I play elsewhere') answered with a polite refusal "
+        "by the terms and an offer of further help.",
     ],
     "info-completeness": [
-        "The answer covers what the player asked; it could merely have been more detailed.",
+        "The answer covers what the player asked; it could merely have been more detailed. "
+        "(Not when a refusal or status gave the player no reason and no next step.)",
         "The missing part depends on another team, or on information the player has not given.",
     ],
     "ownership-effort": [
         "The agent did what was available to them in the chat; the limit was outside their "
         "authority or waited on another team.",
-        "Asking the player once for a detail needed to act is not making them repeat it.",
+        "Asking the player once for a detail needed to act is not making them repeat it — "
+        "unless they had already given it or it was visible (a screenshot). The standard opening "
+        "question asking the player to describe the request is not making them repeat it.",
+        "Declining for security reasons to open an external link or file and asking for the "
+        "details as text.",
     ],
     "comm-tone": [
-        "Brief, neutral or templated wording is not cold or irritated.",
+        "Brief, neutral or templated wording is not cold or irritated — unless the player is "
+        "visibly upset and no reply acknowledges it, or the same template is pasted twice.",
+        "The wording judged is in an internal (yellow) note, which the player never sees.",
         "A firm refusal by the terms, said politely, is the correct tone.",
     ],
     "resp-sla": [
@@ -174,12 +208,14 @@ def would_fail(conversation, data: dict[str, Any], ruleset_id: str) -> bool:
     return g.overall_result == "FAIL"
 
 
-def verification_text(fails: list[dict]) -> str:
+def verification_text(fails: list[dict], extra: dict[str, list[str]] | None = None) -> str:
+    """The verification task. `extra` adds boundaries per criterion — the approved QA lessons
+    (qa/lessons.py), on top of the hand-written BOUNDARIES."""
     items = []
     for c in fails:
         cid = c["id"]
         lines = [f'- {cid} — the first pass wrote: "{str(c.get("ev") or "").strip()[:300]}"']
-        for b in BOUNDARIES.get(cid, []):
+        for b in [*BOUNDARIES.get(cid, []), *(extra or {}).get(cid, [])]:
             lines.append(f"    NOT A FAIL: {b}")
         items.append("\n".join(lines))
     return _INSTRUCTIONS.format(items="\n".join(items))
@@ -192,6 +228,24 @@ class FailVerifier:
         self.mode = mode or settings.qa_fail_verifier
         if self.mode not in VERIFIER_MODES:
             raise ValueError(f"fail verifier mode must be one of {VERIFIER_MODES} (got {self.mode!r})")
+        self._learned: dict[str, dict[str, list[str]]] = {}
+
+    def learned(self, ruleset_id: str) -> dict[str, list[str]]:
+        """Approved NOT-A-FAIL QA lessons for this ruleset, read once per verifier (one grading
+        run). An unreadable table means none — the verifier still has its own boundaries."""
+        if ruleset_id not in self._learned:
+            try:
+                from intercom_summary.storage.lessons_store import LessonsStore
+
+                store = LessonsStore()
+                try:
+                    self._learned[ruleset_id] = store.approved_boundaries(ruleset_id)
+                finally:
+                    store.close()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Fail verifier: QA lessons unavailable: %s", exc)
+                self._learned[ruleset_id] = {}
+        return self._learned[ruleset_id]
 
     def verify(self, grader, conversation, messages: list[dict], data: dict[str, Any],
                meter) -> dict:
@@ -233,8 +287,9 @@ class FailVerifier:
     def _ask(self, grader, conversation, messages: list[dict], fails: list[dict], meter) -> dict:
         # Same system blocks (cached), same transcript, then the verification task.
         transcript = messages[-1]["content"] if messages else ""
+        task = verification_text(fails, self.learned(grader.ruleset_id))
         params = grader.request_params(conversation, messages=[{
-            "role": "user", "content": f"{transcript}\n\n{verification_text(fails)}"}])
+            "role": "user", "content": f"{transcript}\n\n{task}"}])
         params["output_config"]["format"] = {"type": "json_schema", "schema": VERIFIER_SCHEMA}
         params["max_tokens"] = 8_000
         resp = grader.client.beta.messages.create(**params)

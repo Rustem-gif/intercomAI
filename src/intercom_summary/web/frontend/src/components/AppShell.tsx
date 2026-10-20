@@ -13,6 +13,7 @@ import {
   HardDrive,
   Crown,
   History,
+  Lightbulb,
   Moon,
   Sun,
   LogOut,
@@ -40,6 +41,8 @@ const nav = [
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
   // The labelled chat history the grader reads for context (docs/history-context.md).
   { to: "/history", label: "History index", icon: History },
+  // Weekly rule changes drafted from QA's re-scores, approved by an admin (qa/lessons.py).
+  { to: "/lessons", label: "QA lessons", icon: Lightbulb },
   { to: "/coaching", label: "Coaching", icon: GraduationCap },
   { to: "/ruleset", label: "Ruleset", icon: ScrollText },
   { to: "/storage", label: "Storage", icon: HardDrive, adminOnly: true },

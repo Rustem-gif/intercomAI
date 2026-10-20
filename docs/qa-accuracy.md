@@ -84,3 +84,56 @@ agreement number therefore moves as new chats are graded and reviewed.
 2. QA confirms or corrects points 1–5. Re-measure with `accuracy_ab.py --set holdout` (on a DB
    copy; it never writes grades) after any change.
 3. QA presses Agree on reviewed chats going forward, so the Accuracy page tracks the live number.
+
+## Round 2 — learning from QA's corrections (2026-10-21)
+
+**What was read** (by Claude Code within the subscription — no API calls, nothing graded):
+- the 34 dev-split chats where the round-1 rules + verifier still disagreed with QA (23 false FAILs, 11 false PASSes), with transcripts, the AI's evidence and QA's comment;
+- the 6 newest re-scores (20 Oct);
+- 1,391 historical re-scores under the old ruleset (Jul – 7 Oct) — the 400 with a real comment, a lowered score or a criterion QA failed — and 68 agent disputes.
+
+The 35-chat holdout was **not** read, so it still measures the change honestly. The 180-chat
+document (`Vybirka_180_Chativ_King_Billy`) carries no QA verdicts — every row is "Не розпочато".
+
+**Of the 34 + 6 disagreements:** about 20 have a general rule fix; about 8 are the AI misreading
+a rule it already had (fixed by sharper wording, mainly in the verifier); about 10 depend on
+knowledge the AI cannot see (the 15 Oct scam-deposit shift, a power outage, the back office,
+internal bonus policy) or contradict QA's own verdicts on similar chats.
+
+**Rule changes** (prompt `rules/qa_system_prompt_kb_v41.txt` = `qa/kbv41_prompt.py`, and `BOUNDARIES` in `qa/fail_verifier.py`):
+
+| # | Change | Chats it explains (estimate, not measured) | Direction |
+|---|---|---|---|
+| 1 | A secondary request skipped while the main one was handled, not repeated and not in the last messages, is info-completeness — even about money | 6 | false FAIL |
+| 2 | Bot-menu clicks before the agent joins only route the chat; the requests are what the player writes | 4 | false FAIL |
+| 3 | The player only repeating a demand already answered/refused with a reason and an alternative is not ghosting; a rule reminder answers the question; a security refusal to open a link/file is correct | 4 | false FAIL |
+| 4 | Accuracy: a contradiction needs two statements that cannot both be true and change what the player does (not: general rule vs this player's exception, two wordings of one term, the player's denial, an unsure internal note) | 5 | false FAIL |
+| 5 | Leverage churn threat ("bonus or I leave") answered with a polite refusal + help is a reaction | 1 | false FAIL |
+| 6 | Internal notes are never judged for tone/language; an agent-side outage note → cannot_determine (manual review) | 2 + history | false FAIL |
+| 7 | Escalation not due yet (reward not due by the promo timeline; waiting on the player's step); a remark about one's manager is not a request for one | 2 | false FAIL |
+| 8 | **Still failures:** the player corrects the agent and gets the same answer; a vague "forwarded" repeated to a player asking for status | 2 | false PASS |
+| 9 | **Still a failure:** the inactivity close after the player's last message went unanswered, or after re-asking for something already given | 2 + history | false PASS |
+| 10 | **Still a failure:** an explicit close / block / self-exclude request not carried out or forwarded and confirmed | 2 | false PASS |
+| 11 | **Still a failure:** denying service on eligibility (country) when the Help Center says the player is accepted | 1 | false PASS |
+| 12 | Verifier boundaries that excused real defects were narrowed: templated replies to a visibly upset player (comm-tone), a refusal with no reason or next step (info-completeness), asking for what the player already gave (ownership-effort) | history (~75 corrections) | false PASS |
+
+Rules version: see `git log` — every change is a new version and applies to chats graded from
+then on only. **Not yet measured**: the holdout and the pass-audit sample need one batch run.
+
+**For QA to confirm** (items that change how the manual reads): 1 (money-related secondary
+request is not a Gate 2 failure), 7 (manager remark), 10 (account closure as a required action),
+11 (country eligibility vs the Help Center).
+
+**History says QA wants, but the AI cannot judge without data:**
+- VIP players: a goodwill/bonus request, closure or data change must go to vip_cs; telling the player to write to their VIP manager is a miss (~28 corrections). Needs the player's VIP status in the transcript header.
+- Shift events (scam waves, outages) — exclude those chats from calibration, or mark them.
+- Tag taxonomy, the PG quiz for RG, internal bonus eligibility (B/C tags), German/Polish support since 2026-09-17 (comm-language).
+
+## QA lessons — the weekly loop
+
+`qa/lessons.py`, the **QA lessons** page. Every `QA_LESSONS_DAYS` (7) the web app collects QA's
+re-scores since the last sync, groups the disagreements by criterion and, for each criterion
+corrected ≥ `QA_LESSONS_MIN_CASES` (3) times, asks Sonnet for one general rule (~$0.1 a week).
+Drafts wait on the page; an admin edits, approves or rejects. Approval adds the rule to the
+prompt's QA PRACTICE section and (NOT-A-FAIL rules) to the verifier — for new chats only.
+`intercom-summary lessons sync --no-draft` reports the week's corrections without a model call.

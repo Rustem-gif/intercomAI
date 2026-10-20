@@ -387,6 +387,56 @@ export interface Job {
   error: string | null;
 }
 
+export interface QaLessonEvidence {
+  conversation_id: string;
+  ai: string | null;
+  human: string;
+  note: string;
+  ai_evidence: string;
+  inferred: boolean;
+}
+
+export interface QaLesson {
+  id: string;
+  created_at: string;
+  ruleset_id: string;
+  criterion_id: string;
+  kind: "not_a_fail" | "is_a_fail";
+  text: string;
+  rationale: string;
+  evidence: QaLessonEvidence[];
+  status: "draft" | "approved" | "rejected";
+  eval: any;
+  sync_id: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+}
+
+export interface QaLessonsResponse {
+  lessons: QaLesson[];
+  last_sync: {
+    at: string;
+    since: string;
+    sync_id: string;
+    drafted: number;
+    cost_usd: number;
+    disputes: number;
+    criteria: Record<string, number>;
+    summary: {
+      re_scored: number;
+      agreed: number;
+      reviewed: number;
+      result_disagreements: number;
+      false_fail: number;
+      false_pass: number;
+      reviewed_agreement: number | null;
+    };
+  } | null;
+  every_days: number;
+  enabled: boolean;
+  active_job: { id: string; status: string } | null;
+}
+
 export interface JobListItem {
   id: string;
   kind: string;
@@ -613,6 +663,10 @@ export interface CalibrationRow {
   summary: string | null;
   human_score: number | null;
   human_note: string | null;
+  /** "run" = reviewed in this tab on this run; "sample" = QA's imported reference label. */
+  human_source: "run" | "sample" | null;
+  human_result: string | null;
+  result_agrees: boolean | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
   delta: number | null;
@@ -630,6 +684,8 @@ export interface CalibrationSummary {
   mean_ai: number | null;
   mean_ai_reviewed: number | null;
   mean_human: number | null;
+  result_compared: number;
+  result_agreement: number | null;
   mean_abs_delta: number | null;
   mean_delta: number | null;
   criteria_agreement: number | null;

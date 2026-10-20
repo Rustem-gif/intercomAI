@@ -143,6 +143,19 @@ class Settings:
         default_factory=lambda: int(_env("HISTORY_REFRESH_DAYS", "14") or "14")
     )
 
+    # QA lessons (qa/lessons.py): every QA_LESSONS_DAYS the web app collects QA's re-scores
+    # since the last sync and drafts rule changes for the criteria corrected at least
+    # QA_LESSONS_MIN_CASES times (one Sonnet call each, ~$0.1 a week). Drafts wait for an
+    # admin; nothing reaches the rules unapproved. QA_LESSONS=off stops the weekly job
+    # (`intercom-summary lessons sync` still works).
+    qa_lessons: bool = field(
+        default_factory=lambda: _env("QA_LESSONS", "on").lower() not in ("off", "0", "false", "no")
+    )
+    qa_lessons_days: int = field(default_factory=lambda: int(_env("QA_LESSONS_DAYS", "7") or "7"))
+    qa_lessons_min_cases: int = field(
+        default_factory=lambda: int(_env("QA_LESSONS_MIN_CASES", "3") or "3")
+    )
+
     # Ollama local inference backend (Qwen)
     ollama_base_url: str = field(default_factory=lambda: _env("OLLAMA_BASE_URL", "http://localhost:11434"))
     ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen2.5:14b"))

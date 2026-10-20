@@ -65,23 +65,42 @@ def reviewed(ruleset: str) -> dict[str, dict]:
 
 
 def sample_labels(sample_id: str) -> dict[str, dict]:
-    """A calibration sample's members, with QA's verdict from its newest reviewed run."""
+    """A calibration sample's members with QA's verdict: the sample's imported reference label
+    (CalibrationStore.labels), else the newest review made on one of its runs."""
+    from intercom_summary.storage.calibration_store import CalibrationStore
+
     db = sqlite3.connect(settings.db_path)
     try:
         ids = [r[0] for r in db.execute(
             "SELECT conversation_id FROM calibration_sample_items WHERE sample_id = ? ORDER BY seq",
             (sample_id,))]
-        labels = {}
-        for cid, hs in db.execute(
-                "SELECT r.conversation_id, r.human_score FROM calibration_results r "
-                "JOIN calibration_runs u ON u.id = r.run_id WHERE u.sample_id = ? "
-                "AND r.human_score IS NOT NULL ORDER BY u.started_at", (sample_id,)):
-            labels[cid] = hs          # newest run last, so it wins
+        reviews = {}
+        for cid, hs, crit, note in db.execute(
+                "SELECT r.conversation_id, r.human_score, r.human_criteria, r.human_note "
+                "FROM calibration_results r JOIN calibration_runs u ON u.id = r.run_id "
+                "WHERE u.sample_id = ? AND r.human_score IS NOT NULL ORDER BY u.started_at",
+                (sample_id,)):
+            reviews[cid] = {"human": hs, "human_result": result_of(hs),   # newest run wins
+                            "human_criteria": json.loads(crit) if crit else {}, "reason": note or ""}
     finally:
         db.close()
-    return {cid: {"human": labels.get(cid), "human_result": result_of(labels.get(cid)),
-                  "stored_ai": None, "stored_result": None, "human_criteria": {}, "reason": "",
-                  "confirmed": False} for cid in ids}
+    cal = CalibrationStore()
+    try:
+        ref = cal.labels(sample_id)
+    finally:
+        cal.close()
+    out = {}
+    for cid in ids:
+        lab = ref.get(cid)
+        if lab:
+            hum = {"human": lab["human_score"],
+                   "human_result": lab["human_result"] or result_of(lab["human_score"]),
+                   "human_criteria": lab["human_criteria"], "reason": lab["human_note"] or ""}
+        else:
+            hum = reviews.get(cid) or {"human": None, "human_result": None,
+                                       "human_criteria": {}, "reason": ""}
+        out[cid] = {**hum, "stored_ai": None, "stored_result": None, "confirmed": False}
+    return out
 
 
 def record(c, g, hum: dict, dt: float) -> dict:

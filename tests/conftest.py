@@ -43,3 +43,12 @@ def _offline_history():
     yield
     object.__setattr__(settings, "history_context", old[0])
     object.__setattr__(settings, "history_refresh_days", old[1])
+
+
+@pytest.fixture(autouse=True)
+def _no_qa_lessons_loop():
+    """No weekly QA-lessons sync under TestClient (qa/lessons.py)."""
+    old = settings.qa_lessons
+    object.__setattr__(settings, "qa_lessons", False)
+    yield
+    object.__setattr__(settings, "qa_lessons", old)
