@@ -58,8 +58,9 @@ BOUNDARIES: dict[str, list[str]] = {
         "A secondary question skipped while the main request was handled, which the player "
         "did not repeat and which is not in their last messages, is info-completeness at most — "
         "even when it concerns money.",
-        "The 'request' is a bot-menu choice clicked before the agent joined ('Withdrawal issue'), "
-        "and the player's own words pursued a different topic, which the agent dealt with.",
+        "The 'request' is a bot-menu button — a customer line marked '(bot-menu choice)' — "
+        "clicked before the agent joined ('Withdrawal issue'), and the player's own words "
+        "pursued a different topic, which the agent dealt with.",
         "The player's last message only repeats a demand the agent already answered, or refused "
         "with a reason and an alternative (e.g. 'we cannot open files — please type the "
         "details'); a reminder of the rule that bars the request also answers it.",

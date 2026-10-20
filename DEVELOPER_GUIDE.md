@@ -448,6 +448,14 @@ It checks each failed criterion against the manual and that criterion's NOT-A-FA
 - When QA reports a new kind of false FAIL, add the boundary to `BOUNDARIES` **and** to the prompt's
   QA PRACTICE section, then re-measure with `accuracy_ab.py`.
 
+### Bot-menu buttons in the transcript
+Intercom records a button the player clicks in the bot menu as an ordinary customer message with
+the button's label, so "My deposit did not come" looked like a typed request the agent ignored.
+`Conversation.menu_choices()` (`intercom/models.py`) finds them — the bot's `quick_reply` part
+before the line, or a short opening line the bot answered within 2 s — and `transcript_text`
+marks them `CUSTOMER Name (bot-menu choice): …`. The kb-v41 prompt and the fail verifier refer
+to that marker. It is a rendering change: stored grades are untouched, new chats see the marker.
+
 ### QA lessons — the rules learn from QA's re-scores, weekly
 `qa/lessons.py`, `storage/lessons_store.py` (table `qa_lessons`), page **QA lessons** (`/lessons`).
 - **Weekly sync** (in-process loop like the history refresh; `QA_LESSONS=on`, `QA_LESSONS_DAYS=7`):

@@ -105,7 +105,7 @@ internal bonus policy) or contradict QA's own verdicts on similar chats.
 | # | Change | Chats it explains (estimate, not measured) | Direction |
 |---|---|---|---|
 | 1 | A secondary request skipped while the main one was handled, not repeated and not in the last messages, is info-completeness — even about money | 6 | false FAIL |
-| 2 | Bot-menu clicks before the agent joins only route the chat; the requests are what the player writes | 4 | false FAIL |
+| 2 | Bot-menu clicks before the agent joins only route the chat; the requests are what the player writes. Since rules `c5454a028a30` the transcript marks them itself — `CUSTOMER … (bot-menu choice): My deposit did not come` (`Conversation.menu_choices`, from Intercom's `quick_reply` parts) — so the model no longer has to guess which lines were buttons. **Not yet measured.** | 4 | false FAIL |
 | 3 | The player only repeating a demand already answered/refused with a reason and an alternative is not ghosting; a rule reminder answers the question; a security refusal to open a link/file is correct | 4 | false FAIL |
 | 4 | Accuracy: a contradiction needs two statements that cannot both be true and change what the player does (not: general rule vs this player's exception, two wordings of one term, the player's denial, an unsure internal note) | 5 | false FAIL |
 | 5 | Leverage churn threat ("bonus or I leave") answered with a polite refusal + help is a reaction | 1 | false FAIL |
