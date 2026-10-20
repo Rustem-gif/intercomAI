@@ -28,13 +28,13 @@ import { cn } from "@/lib/utils";
 
 const nav = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-  { to: "/conversations", label: "Conversations", icon: MessagesSquare },
+  { to: "/conversations", label: "Support chats", icon: MessagesSquare },
   { to: "/needs-attention", label: "Needs Attention", icon: AlertTriangle },
   { to: "/disputes", label: "Grade Disputes", icon: Scale },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/evaluation", label: "Evaluation", icon: ClipboardCheck },
   // The VIP managers' email threads (not graded; see vip.py).
-  { to: "/vip", label: "VIP chats", icon: Crown },
+  { to: "/vip", label: "VIP emails", icon: Crown },
   // "Calibration 180" (/calibration) is hidden from the menu since 2026-10-16; the route and its
   // data stay. To bring it back: { to: "/calibration", label: "Calibration 180", icon: FlaskConical }.
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
@@ -139,7 +139,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
               <Crown className="h-4 w-4 text-amber-500" />
               <span>
-                The VIP managers' email cases are graded on the VIP page. This page shows support
+                The VIP managers' emails are graded on the VIP emails page. This page shows support
                 chats, filtered to agents in the VIP group.
               </span>
               <Link to="/vip" className="font-medium text-primary hover:underline">

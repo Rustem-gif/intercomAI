@@ -236,7 +236,7 @@ export default function Conversations() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">Conversations</h1>
+        <h1 className="text-2xl font-bold">Support chats</h1>
         <div className="flex gap-2">
           {writer && selected.size > 0 && (
             <Button
