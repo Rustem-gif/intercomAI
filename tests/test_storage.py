@@ -114,8 +114,8 @@ def test_evaluation_counts_excludes_ignored(tmp_path):
     assert counts["ignored"] == 2     # spammy + jira
     assert counts["graded"] == 1      # the ignored "spammy" grade is excluded
     assert counts["graded_current"] == 1
-    # Editing the ruleset the grade was scored with makes it stale.
-    assert cstore.evaluation_counts({"default": "v2"})["graded_current"] == 0
+    # Editing the ruleset the grade was scored with does not make it stale: never re-graded.
+    assert cstore.evaluation_counts({"default": "v2"})["graded_current"] == 1
     cstore.close()
     gstore.close()
 
@@ -742,13 +742,16 @@ def _graded(conversation_id="c1", score=60, version="v1"):
     return g
 
 
-def test_a_stale_grade_is_regraded(tmp_path):
+def test_an_old_grade_is_never_regraded_after_a_rules_change(tmp_path):
+    """The client's instruction (2026-10-20): old chats are never re-graded."""
     from intercom_summary.storage.grades_store import GradesStore
 
     store = GradesStore(tmp_path / "g.db")
     store.save(_graded(version="v1"))
     assert store.is_current("c1", "default", "v1") is True
-    assert store.is_current("c1", "default", "v2") is False   # prompt changed
+    assert store.is_current("c1", "default", "v2") is True    # prompt changed — still kept
+    assert store.is_current("nope", "default", "v1") is False # never graded → graded once
+    assert store.staleness_preview("default", "v1")["would_regrade"] == 0
     store.close()
 
 

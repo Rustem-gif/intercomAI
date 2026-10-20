@@ -25,9 +25,14 @@ from intercom_summary.storage.conversations_store import ConversationsStore, tag
 
 
 
-def pick_ids(n: int) -> list[str]:
+def pick_ids(n: int, only_overridden: str | None = None) -> list[str]:
     db = sqlite3.connect(settings.db_path)
     try:
+        if only_overridden:
+            # Every chat a human re-scored under this ruleset — the A/B's ground truth.
+            return [r[0] for r in db.execute(
+                "SELECT conversation_id FROM grades WHERE human_score IS NOT NULL "
+                "AND ruleset_id = ? ORDER BY overridden_at DESC LIMIT ?", (only_overridden, n))]
         reviewed = [r[0] for r in db.execute(
             "SELECT conversation_id FROM grades WHERE human_score IS NOT NULL "
             "ORDER BY graded_at DESC LIMIT ?", (n // 2,))]
@@ -102,6 +107,10 @@ def main() -> None:
                     help="override JEV_MODE for this run (v4.1 only)")
     ap.add_argument("--batch", action="store_true",
                     help="grade through the Message Batches API (half price; waits for it)")
+    ap.add_argument("--history", choices=["off", "shadow", "on"],
+                    help="historical context for this run (default: HISTORY_CONTEXT)")
+    ap.add_argument("--only-overridden", action="store_true",
+                    help="pick only chats a human re-scored under --ruleset (up to -n)")
     args = ap.parse_args()
 
     if args.effort:
@@ -113,16 +122,20 @@ def main() -> None:
 
     from intercom_summary.qa.grader import Grader
 
-    grader = Grader(ruleset_id=args.ruleset)
+    history = None
+    if args.history:
+        from intercom_summary.qa.history_context import HistoryProvider
+        history = False if args.history == "off" else HistoryProvider(mode=args.history)
+    grader = Grader(ruleset_id=args.ruleset, history=history)
     print(f"model={settings.qa_model} effort={settings.qa_effort} jev={settings.jev_mode} "
-          f"ruleset={args.ruleset} "
+          f"history={args.history or settings.history_context} ruleset={args.ruleset} "
           f"({grader.rules_version}) — nothing is saved\n")
 
     cs = ConversationsStore()
     total_cost, rows = 0.0, []
     try:
         convos = []
-        for cid in args.ids or pick_ids(args.n):
+        for cid in args.ids or pick_ids(args.n, args.ruleset if args.only_overridden else None):
             c = cs.get(cid)
             if c is None or tags_are_ignored(c.tags):
                 print(f"{cid}: not in cache or ignored-tag — skipped")
@@ -159,6 +172,10 @@ def main() -> None:
             print(f"      fail: {', '.join(failed) or '—'}"
                   + (f"   cannot_determine: {', '.join(undet)}" if undet else "")
                   + ("   [manual review]" if g.manual_review_needed else ""))
+            if h := getattr(g, "history_context", None):
+                print(f"      history[{h['mode']}]: prior={h['contact_prior'] or '—'} "
+                      f"precedents={h['precedents'] or '—'} ~{h['tokens_est']} tok "
+                      f"(label: {h['label_source']}, index {h['index_version']})")
             if g.jev:
                 j = g.jev
                 found = "; ".join(

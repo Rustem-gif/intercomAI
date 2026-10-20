@@ -24,7 +24,7 @@ const STATUS_LABEL: Record<string, string> = {
   ticket: "ticket — not graded",
 };
 
-type ReviewFilter = "all" | "reviewed" | "unreviewed" | "gap";
+type ReviewFilter = "all" | "reviewed" | "unreviewed" | "gap" | "result";
 type SortKey = "seq" | "delta" | "ai";
 
 function Stat({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
@@ -46,6 +46,9 @@ function Flags({ r }: { r: CalibrationRow }) {
       {r.catastrophic && (
         <Badge className="border-destructive/40 bg-destructive/10 text-destructive">catastrophic</Badge>
       )}
+      {r.major && !r.critical_fail && !r.catastrophic && (
+        <Badge className="border-destructive/40 bg-destructive/10 text-destructive">major</Badge>
+      )}
       {r.manual_review_needed && (
         <Badge className="border-amber-500/40 bg-amber-500/10 text-amber-600">manual review</Badge>
       )}
@@ -65,6 +68,8 @@ export default function Calibration() {
   const [review, setReview] = useState<ReviewFilter>("all");
   const [sort, setSort] = useState<SortKey>("seq");
   const [batch, setBatch] = useState(false);
+  // Historical context for the next run: "" = the server's HISTORY_CONTEXT setting.
+  const [history, setHistory] = useState<"" | "off" | "shadow" | "on">("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
 
@@ -107,9 +112,10 @@ export default function Calibration() {
         (!pilotOnly || r.pilot) &&
         (!category || r.category === category) &&
         (review === "all" ||
-          (review === "reviewed" && r.human_score != null) ||
-          (review === "unreviewed" && r.status === "graded" && r.human_score == null) ||
-          (review === "gap" && r.delta != null && Math.abs(r.delta) >= 10)),
+          (review === "reviewed" && r.human_source != null) ||
+          (review === "unreviewed" && r.status === "graded" && r.human_source == null) ||
+          (review === "gap" && r.delta != null && Math.abs(r.delta) >= 10) ||
+          (review === "result" && r.result_agrees === false)),
     );
     if (sort === "delta")
       out = [...out].sort((a, b) => Math.abs(b.delta ?? -1) - Math.abs(a.delta ?? -1));
@@ -133,7 +139,9 @@ export default function Calibration() {
     setError("");
     try {
       // No ruleset: the server uses the sample's own default (kb-v41 unless the sample says).
-      await api.post(`/api/calibration/samples/${sid}/run`, { batch });
+      await api.post(`/api/calibration/samples/${sid}/run`, {
+        batch, ...(history ? { history_context: history } : {}),
+      });
       setRunId(null);
       qc.invalidateQueries({ queryKey: ["calibration-results", sid] });
     } catch (e: any) {
@@ -175,6 +183,7 @@ export default function Calibration() {
             <p className="mt-1 text-xs text-muted-foreground">
               Run {run.id} · {run.model} ({run.effort}) · ruleset {run.ruleset_id} ·{" "}
               {fmtDate(run.started_at)}
+              {run.history_context && run.history_context !== "off" && ` · history ${run.history_context}`}
               {run.cost_usd != null && ` · $${run.cost_usd.toFixed(2)}`}
               {!run.finished_at && !running && " · unfinished"}
             </p>
@@ -216,6 +225,14 @@ export default function Calibration() {
           )}
           {writer && !running && (
             <>
+              <select className="h-8 rounded-md border bg-background px-2 text-xs" value={history}
+                      title="Historical context: the player's earlier chats and QA precedents in the prompt"
+                      onChange={(e) => setHistory(e.target.value as typeof history)}>
+                <option value="">history: default</option>
+                <option value="off">history: off</option>
+                <option value="shadow">history: shadow</option>
+                <option value="on">history: on</option>
+              </select>
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground"
                      title="Message Batches API: half price, results in minutes to hours">
                 <input type="checkbox" checked={batch} onChange={(e) => setBatch(e.target.checked)} />
@@ -259,13 +276,18 @@ export default function Calibration() {
       ) : (
         <>
           {s && (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
               <Stat label="Graded" value={`${s.graded} / ${s.members}`}
                     hint={Object.entries(s.status).filter(([k]) => k !== "graded")
                       .map(([k, n]) => `${n} ${STATUS_LABEL[k] ?? k.replace("_", " ")}`).join(" · ")} />
               <Stat label="Mean AI score" value={s.mean_ai}
                     hint={`${s.manual_review} need manual review`} />
+              <Stat label="AI result" value={s.results ? `${s.results.PASS} / ${s.results.FAIL} / ${s.results["CANNOT DETERMINE"]}` : null}
+                    hint={`pass / fail / cannot determine · ${s.major ?? 0} major`} />
               <Stat label="Reviewed by QA" value={`${s.reviewed} / ${s.graded}`} />
+              <Stat label="PASS/FAIL agreement"
+                    value={s.result_agreement != null ? `${s.result_agreement}%` : null}
+                    hint={s.result_compared ? `${s.result_compared} chats · target ≥ 95%` : "no QA verdicts yet"} />
               <Stat label="Mean QA score" value={s.mean_human}
                     hint={s.mean_ai_reviewed != null ? `AI on the same chats: ${s.mean_ai_reviewed}` : undefined} />
               <Stat label="Mean |Δ|" value={s.mean_abs_delta}
@@ -290,6 +312,7 @@ export default function Calibration() {
               <option value="all">All chats</option>
               <option value="unreviewed">Awaiting QA review</option>
               <option value="reviewed">Reviewed by QA</option>
+              <option value="result">PASS/FAIL differs from QA</option>
               <option value="gap">|Δ| ≥ 10</option>
             </select>
             <select className="h-8 rounded-md border bg-background px-2" value={sort}
@@ -353,8 +376,16 @@ export default function Calibration() {
                       </td>
                       <td className="px-3 py-2.5"><Flags r={r} /></td>
                       <td className={cn("px-3 py-2.5 font-bold", scoreColor(r.human_score))}
-                          title={r.human_note ? `${r.reviewed_by}: ${r.human_note}` : undefined}>
-                        {r.human_score ?? "—"}
+                          title={r.human_note ? `${r.reviewed_by ?? "QA"}: ${r.human_note}` : undefined}>
+                        {r.human_score ?? (r.human_result ?? "—")}
+                        {r.result_agrees === false && (
+                          <Badge className="ml-1 border-destructive/40 bg-destructive/10 text-destructive">
+                            {r.human_result}
+                          </Badge>
+                        )}
+                        {r.human_source === "sample" && (
+                          <span className="ml-1 text-[10px] font-normal text-muted-foreground">ref</span>
+                        )}
                       </td>
                       <td className={cn("px-3 py-2.5 font-semibold tabular-nums",
                         r.delta == null ? "text-muted-foreground"

@@ -104,6 +104,51 @@ class CalibrationStore:
         rows = self._conn.execute(sql + " ORDER BY seq", (sample_id,)).fetchall()
         return [dict(r) for r in rows]
 
+    def set_labels(self, sample_id: str, labels: list[dict], labelled_by: str = "") -> dict:
+        """Record QA's reference verdict on sample members — the answer key every run of the
+        sample is measured against. Membership is not touched, so a frozen sample can be
+        labelled. `labels` are dicts of conversation_id plus any of human_score, human_result
+        ('PASS' | 'FAIL'), human_criteria ({criterion_id: verdict}) and human_note.
+
+        Returns {"labelled": n, "not_in_sample": [ids]}: a label for a chat that is not a member
+        is reported, never added — adding it would change the sample."""
+        members = set(self.conversation_ids(sample_id))
+        done, unknown = 0, []
+        for lab in labels:
+            cid = str(lab["conversation_id"])
+            if cid not in members:
+                unknown.append(cid)
+                continue
+            result = lab.get("human_result")
+            self._conn.execute(
+                """UPDATE calibration_sample_items
+                      SET human_score=?, human_result=?, human_criteria=?, human_note=?,
+                          labelled_by=?, labelled_at=?
+                    WHERE sample_id=? AND conversation_id=?""",
+                (lab.get("human_score"), str(result).upper() if result else None,
+                 json.dumps(lab["human_criteria"]) if lab.get("human_criteria") else None,
+                 lab.get("human_note") or None, labelled_by, _now(), sample_id, cid),
+            )
+            done += 1
+        self._conn.commit()
+        return {"labelled": done, "not_in_sample": unknown}
+
+    def labels(self, sample_id: str) -> dict[str, dict]:
+        """{conversation_id: QA's reference verdict} for the labelled members."""
+        rows = self._conn.execute(
+            """SELECT conversation_id, human_score, human_result, human_criteria, human_note,
+                      labelled_by, labelled_at
+                 FROM calibration_sample_items
+                WHERE sample_id=? AND (human_score IS NOT NULL OR human_result IS NOT NULL)""",
+            (sample_id,),
+        ).fetchall()
+        out = {}
+        for r in rows:
+            d = dict(r)
+            d["human_criteria"] = json.loads(d["human_criteria"]) if d["human_criteria"] else {}
+            out[d.pop("conversation_id")] = d
+        return out
+
     def conversation_ids(self, sample_id: str, pilot_only: bool = False) -> list[str]:
         return [i["conversation_id"] for i in self.items(sample_id, pilot_only)]
 
@@ -140,17 +185,18 @@ class CalibrationStore:
     # replace.
     def start_run(self, sample_id: str, ruleset_id: str, rules_version: str = "",
                   model: str = "", effort: str = "", job_id: str | None = None,
-                  created_by: str = "") -> str:
+                  created_by: str = "", history_context: str = "off",
+                  history_index_version: str = "") -> str:
         import uuid
 
         run_id = uuid.uuid4().hex[:12]
         self._conn.execute(
             """INSERT INTO calibration_runs
                (id, sample_id, ruleset_id, rules_version, model, effort, started_at, job_id,
-                created_by)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                created_by, history_context, history_index_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (run_id, sample_id, ruleset_id, rules_version, model, effort, _now(), job_id,
-             created_by),
+             created_by, history_context, history_index_version),
         )
         self._conn.commit()
         return run_id
@@ -216,6 +262,9 @@ class CalibrationStore:
                       r.source, r.status, r.error, r.overall_score, r.payload_json,
                       r.human_score, r.human_criteria, r.human_note, r.reviewed_by,
                       r.reviewed_at,
+                      i.human_score AS label_score, i.human_result AS label_result,
+                      i.human_criteria AS label_criteria, i.human_note AS label_note,
+                      i.labelled_by AS label_by,
                       g.overall_score AS live_score, g.human_score AS live_human_score,
                       g.ruleset_id AS live_ruleset_id
                  FROM calibration_sample_items i
@@ -232,6 +281,7 @@ class CalibrationStore:
             d["pilot"] = bool(d["pilot"])
             d["payload"] = json.loads(d.pop("payload_json")) if d["payload_json"] else None
             d["human_criteria"] = json.loads(d["human_criteria"]) if d["human_criteria"] else None
+            d["label_criteria"] = json.loads(d["label_criteria"]) if d["label_criteria"] else None
             out.append(d)
         return out
 

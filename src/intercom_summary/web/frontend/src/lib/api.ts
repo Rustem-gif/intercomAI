@@ -282,6 +282,9 @@ export interface Grade {
   human_criteria: Record<string, string> | null;
   /** Analyst manual deductions for things the AI can't verify (e.g. information correctness). */
   human_deductions: ManualDeduction[] | null;
+  /** A QC manager's "Agree" — the AI grade reviewed and left as it is. Cleared on a re-grade. */
+  human_confirmed_by?: string | null;
+  human_confirmed_at?: string | null;
   /** Which ruleset produced this grade — decides how a re-score is computed. */
   ruleset_id?: string;
   overall_result?: string;          // "PASS" | "FAIL"
@@ -303,7 +306,25 @@ export interface Grade {
   confidence?: string;
   /** Jev's second opinion on the verdicts (v4.1 only). Advisory: it never moves the score. */
   jev?: JevCheck;
+  /** The majority vote on a borderline grade (qa/grader.py); absent when the grade was not voted on. */
+  votes?: {
+    n: number;
+    majority: string;
+    results: { score: number; result: string }[];
+    changed: boolean;
+  };
+  /** The fail verifier's second look at a FAIL (qa/fail_verifier.py); absent when it did not run. */
+  fail_verifier?: {
+    mode: "shadow" | "on";
+    checked: string[];
+    answers?: Record<string, { verdict: "upheld" | "not_proven"; quote: string; reason: string }>;
+    overturned?: string[];
+    disputed_critical?: string[];
+    error?: string;
+  };
   usage?: GradeUsage;
+  /** The historical context the grader was given (or, in shadow mode, would have been given). */
+  history_context?: HistoryContextUsed;
   /** The model that produced the grade (differs from QA_MODEL when a fallback served it). */
   model?: string;
   /** Each thing the player asked for, and what became of it. */
@@ -396,6 +417,56 @@ export interface Job {
   status: string;
   result: any;
   error: string | null;
+}
+
+export interface QaLessonEvidence {
+  conversation_id: string;
+  ai: string | null;
+  human: string;
+  note: string;
+  ai_evidence: string;
+  inferred: boolean;
+}
+
+export interface QaLesson {
+  id: string;
+  created_at: string;
+  ruleset_id: string;
+  criterion_id: string;
+  kind: "not_a_fail" | "is_a_fail";
+  text: string;
+  rationale: string;
+  evidence: QaLessonEvidence[];
+  status: "draft" | "approved" | "rejected";
+  eval: any;
+  sync_id: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+}
+
+export interface QaLessonsResponse {
+  lessons: QaLesson[];
+  last_sync: {
+    at: string;
+    since: string;
+    sync_id: string;
+    drafted: number;
+    cost_usd: number;
+    disputes: number;
+    criteria: Record<string, number>;
+    summary: {
+      re_scored: number;
+      agreed: number;
+      reviewed: number;
+      result_disagreements: number;
+      false_fail: number;
+      false_pass: number;
+      reviewed_agreement: number | null;
+    };
+  } | null;
+  every_days: number;
+  enabled: boolean;
+  active_job: { id: string; status: string } | null;
 }
 
 export interface JobListItem {
@@ -595,6 +666,9 @@ export interface CalibrationRun {
   ruleset_id: string;
   model: string | null;
   effort: string | null;
+  /** "off" | "shadow" | "on": the historical context this run was graded with. */
+  history_context?: string | null;
+  history_index_version?: string | null;
   started_at: string;
   finished_at: string | null;
   cost_usd: number | null;
@@ -618,10 +692,15 @@ export interface CalibrationRow {
   outcome_status: string | null;
   critical_fail: boolean;
   catastrophic: boolean;
+  major: boolean;
   manual_review_needed: boolean;
   summary: string | null;
   human_score: number | null;
   human_note: string | null;
+  /** "run" = reviewed in this tab on this run; "sample" = QA's imported reference label. */
+  human_source: "run" | "sample" | null;
+  human_result: string | null;
+  result_agrees: boolean | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
   delta: number | null;
@@ -639,12 +718,16 @@ export interface CalibrationSummary {
   mean_ai: number | null;
   mean_ai_reviewed: number | null;
   mean_human: number | null;
+  result_compared: number;
+  result_agreement: number | null;
   mean_abs_delta: number | null;
   mean_delta: number | null;
   criteria_agreement: number | null;
   manual_review: number;
   critical_fail: number;
   catastrophic: number;
+  major: number;
+  results: Record<"PASS" | "FAIL" | "CANNOT DETERMINE", number>;
 }
 
 export interface CalibrationResults {
@@ -758,4 +841,40 @@ export interface VipExceptions {
     thread_id: string; contact_name: string; contact_email: string; brand: string;
     topic: string; created_at: string; subject: string;
   }[];
+}
+
+// ── Historical context (the labelled chat index the grader reads) ───────────
+export interface HistoryContextUsed {
+  mode: string;                 // "on" | "shadow"
+  index_version: string;
+  text: string;                 // the block, "" when nothing was known
+  contact_prior: string[];      // the player's earlier chats shown
+  precedents: string[];         // QA-confirmed similar cases shown
+  label_source: string;         // cached | haiku | fallback
+  tokens_est: number;
+}
+
+export interface HistoryCount {
+  key: string;
+  n: number;
+}
+
+export interface HistoryStats {
+  labels: number;
+  label_cost_usd: number;
+  first: string | null;
+  last: string | null;
+  contacts: number;
+  by_source: HistoryCount[];
+  by_brand: HistoryCount[];
+  by_case_type: HistoryCount[];
+  by_language: HistoryCount[];
+  verdicts: Record<string, number>;
+  verdict_chats_labelled: number;
+  index_version: string;
+  last_refresh_at: string | null;
+  label_version: string;
+  unlabelled_cache: number;
+  archives: string[];
+  mode: string;
 }

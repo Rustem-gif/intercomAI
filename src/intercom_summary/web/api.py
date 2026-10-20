@@ -22,7 +22,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from intercom_summary import service
 from intercom_summary.logging_setup import get_logger
-from intercom_summary.settings import settings
+from intercom_summary.settings import QA_EFFORT_LEVELS, settings
 from intercom_summary.storage.agent_groups_store import AgentGroupsStore
 from intercom_summary.storage.conversations_store import ConversationsStore
 from intercom_summary.storage.grades_store import GradesStore
@@ -171,6 +171,44 @@ def create_app() -> FastAPI:
             tstore.close()
         if removed:
             log.info("Trash: purged %d item(s) older than %d days.", removed, days)
+
+    @app.on_event("startup")
+    async def _history_refresh_loop() -> None:
+        """Refresh the history index (label new chats, regather verdicts) every
+        HISTORY_REFRESH_DAYS, from inside the web process. In-process rather than launchd:
+        a launchd job started from ~/Desktop is refused by macOS privacy protection (the
+        backup job fails exactly that way), and the web app is always running anyway."""
+        if settings.history_refresh_days <= 0 or settings.history_context == "off":
+            return
+
+        async def tick_forever() -> None:
+            await asyncio.sleep(300)          # let a restart settle first
+            while True:
+                try:
+                    await asyncio.to_thread(_maybe_refresh_history)
+                except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
+                    log.exception("history refresh tick failed")
+                await asyncio.sleep(3600)
+
+        asyncio.create_task(tick_forever())
+
+    @app.on_event("startup")
+    async def _qa_lessons_loop() -> None:
+        """The weekly QA-lessons sync (qa/lessons.py), in-process for the same reason as the
+        history refresh. It only drafts; an admin approves on the QA lessons page."""
+        if not settings.qa_lessons or settings.qa_lessons_days <= 0:
+            return
+
+        async def tick_forever() -> None:
+            await asyncio.sleep(600)
+            while True:
+                try:
+                    await asyncio.to_thread(_maybe_sync_lessons)
+                except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
+                    log.exception("QA lessons tick failed")
+                await asyncio.sleep(3600)
+
+        asyncio.create_task(tick_forever())
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     @app.post("/api/auth/login", response_model=UserOut)
@@ -502,6 +540,32 @@ def create_app() -> FastAPI:
             gstore.close()
         return {"ok": True, "human_score": score}
 
+    @app.post("/api/conversations/{conversation_id}/confirm")
+    def confirm_grade(conversation_id: str, user: dict = Depends(auth.require_write)):
+        """A QC manager agrees with the AI grade as it stands (counts toward AI ↔ QA agreement)."""
+        gstore = GradesStore()
+        try:
+            grade = gstore.get(conversation_id)
+            if not grade:
+                raise HTTPException(404, "No grade found for this conversation — grade it first")
+            if grade.get("human_score") is not None:
+                raise HTTPException(409, "This grade has a human re-score already")
+            gstore.confirm(conversation_id, user["username"])
+            grade = gstore.get(conversation_id)
+        finally:
+            gstore.close()
+        return {"ok": True, "human_confirmed_by": grade["human_confirmed_by"],
+                "human_confirmed_at": grade["human_confirmed_at"]}
+
+    @app.delete("/api/conversations/{conversation_id}/confirm")
+    def unconfirm_grade(conversation_id: str, user: dict = Depends(auth.require_write)):
+        gstore = GradesStore()
+        try:
+            gstore.confirm(conversation_id, None)
+        finally:
+            gstore.close()
+        return {"ok": True}
+
     def _open_grade_dispute(conversation_id: str, created_via: str, created_by: str,
                             reason: str) -> None:
         """Shared validation + creation for a grade dispute. Raises HTTPException on
@@ -617,7 +681,18 @@ def create_app() -> FastAPI:
                  user: dict = Depends(auth.current_user)):
         gstore = GradesStore()
         try:
-            return gstore.accuracy_stats(agents=_group_agents(group), brand=brand)
+            agents = _group_agents(group)
+            stats = gstore.accuracy_stats(agents=agents, brand=brand)
+            # The client's bar: PASS/FAIL agreement with QA ≥ 95%, measured on the current
+            # standard ruleset (v4.1) over the last 30 days of grades.
+            from datetime import datetime, timedelta, timezone
+
+            since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            stats["result_agreement"] = {
+                "ruleset_id": "kb-v41", "days": 30,
+                **gstore.result_agreement("kb-v41", since=since, agents=agents, brand=brand),
+            }
+            return stats
         finally:
             gstore.close()
 
@@ -947,6 +1022,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
         if body.batch and (body.backend or settings.qa_backend).lower() != "api":
             raise HTTPException(400, "Batch grading needs the Claude API backend.")
+        if body.history_context not in (None, "off", "shadow", "on"):
+            raise HTTPException(400, "history_context must be off, shadow or on")
         try:
             settings.require_qa(body.backend)
         except RuntimeError as exc:
@@ -1051,7 +1128,7 @@ def create_app() -> FastAPI:
             "total": total,
             "graded": graded,
             "pending": max(0, total - graded),
-            # Its own ruleset was edited since it was graded → re-grading will refresh it.
+            # Always 0: an existing grade is never re-graded (GradesStore.is_current).
             "stale": max(0, graded - graded_current),
             # Graded by a different ruleset than its agent's group uses today (e.g. an agent's
             # back catalogue after they joined VIP). Left alone on purpose; re-grade to convert.
@@ -1212,6 +1289,10 @@ def create_app() -> FastAPI:
 
         if body.ruleset_id is not None and body.ruleset_id not in known_ruleset_ids():
             raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
+        if body.history_context not in (None, "off", "shadow", "on"):
+            raise HTTPException(400, "history_context must be off, shadow or on")
+        if body.effort is not None and body.effort not in QA_EFFORT_LEVELS:
+            raise HTTPException(400, f"effort must be one of {', '.join(QA_EFFORT_LEVELS)}")
         cal = CalibrationStore()
         try:
             if cal.get(sample_id) is None:
@@ -1379,6 +1460,105 @@ def create_app() -> FastAPI:
                             background=BackgroundTask(shutil.rmtree, tmpdir, True))
 
     # ── VIP chats (the VIP managers' email threads; see vip.py) ───────────────────────
+    # ── Historical context: the labelled chat index the grader reads ───────────
+    @app.get("/api/history/stats")
+    def history_stats(user: dict = Depends(auth.current_user)):
+        return service.history_stats()
+
+    @app.post("/api/history/refresh", response_model=JobOut)
+    def history_refresh(background: BackgroundTasks, user: dict = Depends(auth.require_write)):
+        """Label the cached chats the index lacks, regather every human verdict, rebuild the
+        text index. One job at a time, and never while a grading run is in flight — both
+        write the same database and the labels are what the run reads."""
+        try:
+            settings.require_anthropic()
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        js = JobsStore()
+        try:
+            existing = _active_grading_job(js)
+            if existing:
+                return JobOut(id=existing["id"], kind=existing["kind"], status=existing["status"],
+                              result=existing["result"], error=existing["error"])
+            job_id = js.create("history_refresh", {"created_by": user["username"]})
+        finally:
+            js.close()
+        background.add_task(_run_history_refresh_job, job_id, {})
+        return JobOut(id=job_id, kind="history_refresh", status="queued")
+
+    # ── QA lessons ────────────────────────────────────────────────────────────
+    @app.get("/api/lessons")
+    def lessons_list(status: str | None = None, user: dict = Depends(auth.current_user)):
+        import json as _json
+
+        from intercom_summary.storage.lessons_store import LessonsStore
+
+        store = LessonsStore()
+        try:
+            rows = store.list(status=status)
+            last = store.get_meta("lessons.last_sync")
+        finally:
+            store.close()
+        js = JobsStore()
+        try:
+            active = next((j for j in js.list_recent(kind="qa_lessons", limit=3)
+                           if j["status"] in ("queued", "running")), None)
+        finally:
+            js.close()
+        return {"lessons": rows, "last_sync": _json.loads(last) if last else None,
+                "every_days": settings.qa_lessons_days, "enabled": settings.qa_lessons,
+                "active_job": active}
+
+    @app.post("/api/lessons/sync", response_model=JobOut)
+    def lessons_sync(background: BackgroundTasks, user: dict = Depends(auth.require_admin)):
+        js = JobsStore()
+        try:
+            job_id = js.create("qa_lessons", {"created_by": user["username"]})
+        finally:
+            js.close()
+        background.add_task(_run_lessons_job, job_id)
+        return JobOut(id=job_id, kind="qa_lessons", status="queued")
+
+    @app.put("/api/lessons/{lesson_id}")
+    def lessons_edit(lesson_id: str, body: dict, user: dict = Depends(auth.require_admin)):
+        from intercom_summary.storage.lessons_store import LessonsStore
+
+        text = str(body.get("text") or "").strip()
+        if not text:
+            raise HTTPException(422, "text is required")
+        store = LessonsStore()
+        try:
+            if not store.edit_text(lesson_id, text):
+                raise HTTPException(409, "Only a draft can be edited")
+            return store.get(lesson_id)
+        finally:
+            store.close()
+
+    @app.post("/api/lessons/{lesson_id}/approve")
+    def lessons_approve(lesson_id: str, user: dict = Depends(auth.require_admin)):
+        """Add the rule to the live prompt (and a NOT-A-FAIL rule to the fail verifier). A new
+        rules version: chats graded from now on use it; existing grades are never re-graded."""
+        from intercom_summary.qa import lessons
+
+        try:
+            return lessons.approve(lesson_id, decided_by=user["username"])
+        except KeyError:
+            raise HTTPException(404, "No such lesson") from None
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.post("/api/lessons/{lesson_id}/reject")
+    def lessons_reject(lesson_id: str, user: dict = Depends(auth.require_admin)):
+        from intercom_summary.storage.lessons_store import LessonsStore
+
+        store = LessonsStore()
+        try:
+            if not store.decide(lesson_id, "rejected", user["username"]):
+                raise HTTPException(409, "Only a draft can be rejected")
+            return store.get(lesson_id)
+        finally:
+            store.close()
+
     @app.get("/api/vip/conversations")
     def vip_conversations(include_excluded: bool = False, agent: str | None = None,
                           brand: str | None = None, search: str | None = None,
@@ -1584,10 +1764,8 @@ def create_app() -> FastAPI:
         from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
 
         rs = get_ruleset(ruleset_id)
-        # What editing this prompt would cost. The version hashes the prompt text, so any edit
-        # — a single word — marks every grade this ruleset produced stale and the next run
-        # re-grades them with different scores. That is the whole September incident, and
-        # nothing in the UI said so at the moment the decision was being made.
+        # What editing this prompt does to existing grades: nothing — they keep their scores and
+        # only chats graded afterwards use the new text (GradesStore.is_current).
         gstore = GradesStore()
         try:
             blast = gstore.staleness_preview(rs.id, rs.version)
@@ -1601,7 +1779,7 @@ def create_app() -> FastAPI:
     def put_ruleset_prompt(ruleset_id: str, body: RulesIn,
                            user: dict = Depends(auth.require_admin)):
         """Edit a ruleset's system prompt. Admin-only: it changes how everyone in that group
-        is graded, and bumps the version so that ruleset's grades re-grade on the next run."""
+        is graded from now on. Existing grades keep their scores — they are never re-graded."""
         from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
 
         rs = get_ruleset(ruleset_id)
@@ -2357,11 +2535,103 @@ def _run_fetch_job(job_id: str, params: dict) -> None:
 
 
 def _active_grading_job(js: JobsStore) -> dict | None:
-    """The grading run in flight (review, calibration or VIP cases), if any — only one at a
-    time: they share the API rate limit and the cost meter."""
+    """The grading run in flight (review, calibration, VIP cases or a history refresh), if any —
+    one at a time: they share the API rate limit and the cost meter, and a refresh writes the
+    labels a grading run reads."""
     jobs = (js.list_recent(kind="review", limit=10) + js.list_recent(kind="calibration", limit=10)
-            + js.list_recent(kind="vip_review", limit=10))
+            + js.list_recent(kind="vip_review", limit=10) + js.list_recent(kind="history_refresh", limit=5))
     return next((j for j in jobs if j["status"] in ("queued", "running", "cancelling")), None)
+
+
+def _run_history_refresh_job(job_id: str, params: dict) -> None:
+    cancel_event = threading.Event()
+    _review_cancel_events[job_id] = cancel_event
+    js = JobsStore()
+    js.update(job_id, status="running")
+    try:
+        progress: dict = {"partial": True}
+
+        def on_progress(done: int, total: int) -> None:
+            progress.update(labelled=done, total=total)
+            js.update(job_id, result=progress)
+
+        def on_status(status: dict) -> None:
+            progress["batch_status"] = status
+            js.update(job_id, result=progress)
+
+        result = service.refresh_history(on_progress=on_progress, on_status=on_status,
+                                         cancel_event=cancel_event)
+        js.update(job_id, status="cancelled" if result.get("cancelled") else "done", result=result)
+    except Exception as e:
+        log.exception("history refresh job failed")
+        js.update(job_id, status="error", error=str(e))
+    finally:
+        _review_cancel_events.pop(job_id, None)
+        js.close()
+
+
+def _maybe_refresh_history() -> str | None:
+    """Start a refresh job when the last one is older than HISTORY_REFRESH_DAYS and nothing is
+    grading. Returns the job id it started, or None."""
+    from datetime import datetime, timedelta, timezone
+
+    from intercom_summary.storage.history_store import HistoryStore
+
+    hs = HistoryStore()
+    try:
+        last = hs.get_meta("history.last_refresh_at")
+    finally:
+        hs.close()
+    due = datetime.now(timezone.utc) - timedelta(days=settings.history_refresh_days)
+    if last and datetime.fromisoformat(last) > due:
+        return None
+    js = JobsStore()
+    try:
+        if _active_grading_job(js):
+            return None
+        job_id = js.create("history_refresh", {"created_by": "scheduler"})
+    finally:
+        js.close()
+    log.info("History index refresh due (last: %s) — starting job %s", last or "never", job_id)
+    _run_history_refresh_job(job_id, {})
+    return job_id
+
+
+def _run_lessons_job(job_id: str) -> None:
+    from intercom_summary.qa import lessons
+
+    js = JobsStore()
+    js.update(job_id, status="running")
+    try:
+        js.update(job_id, status="done", result=lessons.sync())
+    except Exception as e:
+        log.exception("QA lessons job failed")
+        js.update(job_id, status="error", error=str(e))
+    finally:
+        js.close()
+
+
+def _maybe_sync_lessons() -> str | None:
+    """Start a QA-lessons sync when the last one is older than QA_LESSONS_DAYS and nothing is
+    grading. Returns the job id it started, or None."""
+    from datetime import datetime, timedelta, timezone
+
+    from intercom_summary.qa.lessons import last_sync_at
+
+    last = last_sync_at()
+    due = datetime.now(timezone.utc) - timedelta(days=settings.qa_lessons_days)
+    if last and datetime.fromisoformat(last) > due:
+        return None
+    js = JobsStore()
+    try:
+        if _active_grading_job(js):
+            return None
+        job_id = js.create("qa_lessons", {"created_by": "scheduler"})
+    finally:
+        js.close()
+    log.info("QA lessons sync due (last: %s) — starting job %s", last or "never", job_id)
+    _run_lessons_job(job_id)
+    return job_id
 
 
 def _calibration_grade(run_id: str, conversation_id: str) -> tuple[dict, dict | None]:
@@ -2392,13 +2662,26 @@ def _calibration_grade(run_id: str, conversation_id: str) -> tuple[dict, dict | 
 
 
 def _calibration_row(r: dict, ruleset_id: str) -> dict:
-    """One table row: the AI's call, the QA manager's call, and where they part."""
+    """One table row: the AI's call, the QA manager's call, and where they part.
+
+    QA's call is the review made on this run in the tab, else the sample's reference label
+    (imported from QA's own grading of the sample) — `human_source` says which."""
+    from intercom_summary.qa.agreement import result_of
     from intercom_summary.storage.grades_store import _normalize_criteria
 
     p = r.get("payload") or {}
     crit = _normalize_criteria(p.get("rule_results"), p.get("ruleset_id") or ruleset_id) if p else []
+    r = dict(r)
+    human_source = "run" if r.get("human_score") is not None else None
+    if human_source is None and (r.get("label_score") is not None or r.get("label_result")):
+        human_source = "sample"
+        r.update(human_score=r.get("label_score"), human_note=r.get("label_note"),
+                 human_criteria=r.get("label_criteria"), reviewed_by=r.get("label_by"))
     human = r.get("human_criteria") or {}
-    reviewed = r.get("human_score") is not None
+    reviewed = human_source is not None
+    human_result = (r.get("label_result") if human_source == "sample" and r.get("label_result")
+                    else result_of(r.get("human_score")) if reviewed else None)
+    ai_result = p.get("overall_result")
     criteria = [{"id": c["rule_id"], "title": c.get("title") or c["rule_id"],
                  "ai": c["verdict"], "human": human.get(c["rule_id"], c["verdict"])}
                 for c in crit]
@@ -2411,11 +2694,16 @@ def _calibration_row(r: dict, ruleset_id: str) -> dict:
         "overall_result": p.get("overall_result"), "outcome_status": p.get("outcome_status"),
         "critical_fail": bool(p.get("critical_fail")),
         "catastrophic": bool(p.get("catastrophic_service_failure")),
+        "major": bool(p.get("major_outcome_failure")),
         "manual_review_needed": bool(p.get("manual_review_needed")),
         "summary": p.get("summary"),
         "human_score": r.get("human_score"), "human_note": r.get("human_note"),
         "reviewed_by": r.get("reviewed_by"), "reviewed_at": r.get("reviewed_at"),
-        "delta": (r["human_score"] - ai) if reviewed and ai is not None else None,
+        "human_source": human_source, "human_result": human_result,
+        # PASS/FAIL is what the client's 95% bar is about; CANNOT DETERMINE counts as a miss.
+        "result_agrees": (ai_result == human_result) if human_result and ai_result else None,
+        "delta": (r["human_score"] - ai)
+        if reviewed and ai is not None and r.get("human_score") is not None else None,
         # A score-only review says nothing about individual criteria.
         "disagreed": len(human) if reviewed and r.get("human_criteria") is not None else None,
         "criteria": criteria,
@@ -2427,7 +2715,8 @@ def _calibration_row(r: dict, ruleset_id: str) -> dict:
 
 def _calibration_summary(rows: list[dict]) -> dict:
     graded = [r for r in rows if r["status"] == "graded"]
-    reviewed = [r for r in graded if r["human_score"] is not None]
+    reviewed = [r for r in graded if r["human_source"] is not None]
+    compared = [r for r in graded if r["result_agrees"] is not None]
     by_criteria = [r for r in reviewed if r["disagreed"] is not None]
     checked = sum(len(r["criteria"]) for r in by_criteria)
     disagreed = sum(r["disagreed"] for r in by_criteria)
@@ -2445,12 +2734,19 @@ def _calibration_summary(rows: list[dict]) -> dict:
         "mean_ai": mean(r["ai_score"] for r in graded),
         "mean_ai_reviewed": mean(r["ai_score"] for r in reviewed),
         "mean_human": mean(r["human_score"] for r in reviewed),
+        "result_compared": len(compared),
+        "result_agreement": round(100 * sum(r["result_agrees"] for r in compared) / len(compared), 1)
+        if compared else None,
         "mean_abs_delta": mean(abs(r["delta"]) for r in reviewed if r["delta"] is not None),
         "mean_delta": mean(r["delta"] for r in reviewed),
         "criteria_agreement": round(100 * (1 - disagreed / checked), 1) if checked else None,
         "manual_review": sum(r["manual_review_needed"] for r in graded),
         "critical_fail": sum(r["critical_fail"] for r in graded),
         "catastrophic": sum(r["catastrophic"] for r in graded),
+        "major": sum(r["major"] for r in graded),
+        # PASS / FAIL / CANNOT DETERMINE — the rule-decided result, not a score threshold.
+        "results": {res: sum(r["overall_result"] == res for r in graded)
+                    for res in ("PASS", "FAIL", "CANNOT DETERMINE")},
     }
 
 

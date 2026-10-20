@@ -57,7 +57,7 @@ def test_the_other_rulesets_are_untouched_and_still_flat():
 def test_the_grammar_declares_every_field_the_grade_reads(rs):
     props = KBV41_OUTPUT_SCHEMA["properties"]
     for field in ("case_type", "risk_flag", "expected_handling", "data_sufficiency",
-                  "requests", "criteria", "outcome_status", "summary",
+                  "requests", "criteria", "outcome_status", "what_happened",
                   "manual_review_needed", "confidence"):
         assert field in props, field
     assert output_schema_for(KBV41_RULESET_ID) is KBV41_OUTPUT_SCHEMA
@@ -169,3 +169,12 @@ def test_a_critical_fail_cannot_be_softened_by_arithmetic(rs):
     verdicts["crit-pii-leak"] = "fail"
     assert score_from_verdicts(verdicts, extra_deduction=10,
                                ruleset_id=KBV41_RULESET_ID)[0] == 0
+
+
+def test_the_live_prompt_file_is_the_seed():
+    """The grader reads rules/qa_system_prompt_kb_v41.txt; the constant only seeds it when the
+    file is missing. Nothing else keeps the two in step, so a change to one must reach both."""
+    from pathlib import Path
+
+    live = Path(__file__).resolve().parents[1] / "rules" / "qa_system_prompt_kb_v41.txt"
+    assert live.read_text(encoding="utf-8") == KBV41_QA_SYSTEM_PROMPT

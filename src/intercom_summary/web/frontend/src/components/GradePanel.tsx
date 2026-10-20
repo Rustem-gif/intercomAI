@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute, PastGrade, ScorePreview } from "@/lib/api";
 import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
-import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale, CircleDot, EyeOff, ShieldAlert } from "lucide-react";
+import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale, CircleDot, EyeOff, ShieldAlert, ThumbsUp } from "lucide-react";
 import { scoreColor, fmtDate } from "@/lib/utils";
 import { useDisplayName } from "@/lib/auth";
 
@@ -221,6 +221,34 @@ export default function GradePanel({
     }
   };
 
+  // "Agree": the reviewer checked the AI grade and it stands. Without it only disagreements
+  // leave a trace and AI ↔ QA agreement cannot be measured (Accuracy page).
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const isConfirmed = !isOverridden && !!grade.human_confirmed_at;
+  const canConfirm = !!canOverride && !!conversationId && !isOverridden && !editing;
+  const toggleConfirm = async () => {
+    setConfirmBusy(true);
+    setSaveError("");
+    try {
+      const url = `/api/conversations/${conversationId}/confirm`;
+      if (overrideUrl) {
+        // A sandboxed review (calibration) records QA's verdict as a re-score: agreeing is
+        // re-scoring with the AI's own verdicts, which reproduces the AI's score.
+        await api.post(overrideUrl, {
+          criteria: Object.fromEntries(grade.rule_results.map((r) => [r.rule_id, r.verdict])),
+          manual_deductions: [],
+          reason: "Agree — the AI grade is right",
+        });
+      } else if (isConfirmed) await api.delete(url);
+      else await api.post(url, {});
+      onOverridden?.();
+    } catch (e: any) {
+      setSaveError(e.message || "Save failed");
+    } finally {
+      setConfirmBusy(false);
+    }
+  };
+
   const submitDispute = async () => {
     if (!disputeReason.trim()) return;
     setDisputeBusy(true);
@@ -279,10 +307,24 @@ export default function GradePanel({
               </span>
             </div>
           )}
+          {canConfirm && (
+            <button
+              onClick={toggleConfirm}
+              disabled={confirmBusy}
+              className={`ml-auto flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
+                isConfirmed
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+              title={isConfirmed ? "Withdraw your agreement" : "The AI grade is right — record that you agree"}
+            >
+              <ThumbsUp className="h-3 w-3" /> {isConfirmed ? "Agreed" : "Agree"}
+            </button>
+          )}
           {canOverride && !editing && conversationId && (
             <button
               onClick={openEdit}
-              className="ml-auto flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={`${canConfirm ? "" : "ml-auto "}flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground`}
               title="Re-score this conversation"
             >
               <Pencil className="h-3 w-3" /> Re-score
@@ -299,7 +341,9 @@ export default function GradePanel({
               <span className={`rounded px-1.5 py-0.5 font-semibold ${
                 result === "PASS"
                   ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                  : "bg-destructive/10 text-destructive"
+                  : result === "CANNOT DETERMINE"
+                    ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                    : "bg-destructive/10 text-destructive"
               }`}>{result}</span>
             )}
             {grade.outcome_status && (
@@ -387,6 +431,47 @@ export default function GradePanel({
           </div>
         )}
 
+        {/* The fail verifier took a second look because the grade was heading for FAIL. In `on`
+            mode the criteria it could not confirm were turned to pass (they show as passed
+            above); in shadow mode it only records, so say so. */}
+        {/* A borderline grade is made several times and the majority decides (QA_VOTES). */}
+        {!editing && grade.votes && grade.votes.n > 1 && (
+          <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Majority of {grade.votes.n} gradings</span>
+            {": "}
+            {grade.votes.results.map((v) => `${v.result} ${v.score}`).join(" · ")}
+            {" → "}
+            <span className="font-medium text-foreground">{grade.votes.majority}</span>
+            {grade.votes.changed ? " (the first grading was outvoted)" : ""}
+          </div>
+        )}
+        {!editing && grade.fail_verifier && grade.fail_verifier.checked?.length > 0 && (
+          <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Second look at the FAIL</span>
+            {grade.fail_verifier.mode === "shadow" ? " (recorded only)" : ""}
+            {grade.fail_verifier.error ? (
+              <span> — did not run: {grade.fail_verifier.error}</span>
+            ) : (
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {grade.fail_verifier.checked.map((cid) => {
+                  const a = grade.fail_verifier!.answers?.[cid];
+                  return (
+                    <li key={cid}>
+                      <span className="font-mono">{cid}</span> —{" "}
+                      {a?.verdict === "not_proven"
+                        ? (grade.fail_verifier!.disputed_critical?.includes(cid)
+                            ? "not proven; critical, so sent to manual review"
+                            : grade.fail_verifier!.mode === "on" ? "not proven, turned to pass" : "not proven")
+                        : a ? "upheld" : "no answer"}
+                      {a?.reason ? `: ${a.reason}` : ""}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+
         {/* Jev is a second, independent check on the verdicts that move a v4.1 score most. It
             never changes the score; in shadow mode it only records, so say so. */}
         {!editing && grade.jev && (grade.jev.error || (grade.jev.findings?.length ?? 0) > 0) && (
@@ -466,6 +551,14 @@ export default function GradePanel({
             </ul>
           </div>
         )}
+
+        {isConfirmed && !editing && (
+          <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+            <ThumbsUp className="h-3 w-3" />
+            Agreed by {displayName(grade.human_confirmed_by ?? "")} · {fmtDate(grade.human_confirmed_at!)}
+          </div>
+        )}
+        {saveError && !editing && <p className="text-xs text-destructive">{saveError}</p>}
 
         {/* Override attribution */}
         {isOverridden && !editing && (
@@ -706,6 +799,27 @@ export default function GradePanel({
           {grade.usage.calls > 1 ? ` · ${grade.usage.calls} calls` : ""}
           {grade.usage.batch_calls ? " · batch" : ""}
         </p>
+      ) : null}
+
+      {/* What the grader knew beyond this transcript: the player's earlier chats and QA precedents. */}
+      {!editing && grade.history_context?.mode ? (
+        <details className="rounded-md border p-2 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">
+            Historical context{grade.history_context.mode === "shadow" ? " (recorded only, not sent)" : ""}:{" "}
+            {grade.history_context.contact_prior.length} earlier chat(s) of this player ·{" "}
+            {grade.history_context.precedents.length} QA precedent(s)
+            {grade.history_context.tokens_est ? ` · ~${grade.history_context.tokens_est} tokens` : ""}
+          </summary>
+          {grade.history_context.text ? (
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-[11px] leading-snug text-muted-foreground">
+              {grade.history_context.text}
+            </pre>
+          ) : (
+            <p className="mt-2 text-muted-foreground">
+              Nothing was known about this player, and no similar QA-confirmed case existed, when this chat happened.
+            </p>
+          )}
+        </details>
       ) : null}
 
       {grade.violations.length > 0 && !editing && (

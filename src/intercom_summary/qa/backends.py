@@ -15,12 +15,13 @@ from intercom_summary.settings import settings
 log = get_logger(__name__)
 
 
-def get_grader(backend: str | None = None, ruleset_id: str | None = None):
+def get_grader(backend: str | None = None, ruleset_id: str | None = None, **grader_kwargs):
+    """`grader_kwargs` (history=, effort=) reach the Claude grader; Ollama ignores them."""
     backend = (backend or settings.qa_backend).lower()
     if backend == "api":
         from intercom_summary.qa.grader import Grader
 
-        return Grader(ruleset_id=ruleset_id)
+        return Grader(ruleset_id=ruleset_id, **grader_kwargs)
     if backend == "ollama":
         from intercom_summary.qa.ollama_grader import OllamaGrader
 

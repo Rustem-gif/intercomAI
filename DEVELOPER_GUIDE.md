@@ -60,6 +60,7 @@ intercomSummary/
     ├── intercom/             ← Talking to Intercom (downloading chats).
     │   ├── client.py         ← Raw API calls.
     │   ├── fetch.py          ← Pulling conversations.
+    │   ├── archive.py        ← Reading the raw client exports (older history, never imported).
     │   └── models.py         ← The shape of a Conversation/Message/Admin in our code.
     │
     ├── qa/                   ← The AI grading engine.
@@ -70,6 +71,9 @@ intercomSummary/
     │   ├── casino_prompt.py  ← The scoring rubric + JSON schema the AI must fill in. ⚠️ delicate.
     │   ├── schema.py          ← Turns the AI's answer into a score (does the math itself).
     │   ├── verdict_guard.py  ← Overturns greeting/name verdicts the transcript contradicts.
+    │   ├── gated_rules.py    ← v4.1: turns detected problems / requests / notes into verdicts by rule.
+    │   ├── history_labeller.py ← Haiku labels a chat for the history index (digest, errors, outcome…).
+    │   ├── history_context.py ← The player's earlier chats + QA precedents, put in front of the transcript.
     │   ├── agent.py / chat.py ← The "Ask Qwen" chat assistant in the UI.
     │   └── rules.py          ← Loads/versions the rulebook.
     │
@@ -77,6 +81,7 @@ intercomSummary/
     │   ├── conversations_store.py
     │   ├── grades_store.py    ← Grades + human overrides.
     │   ├── jobs_store.py      ← Background jobs (fetch/review progress).
+    │   ├── history_store.py   ← Chat labels, their text index, every human verdict in one table.
     │   └── …                  ← comments, coaching, iconic cases, agent links, etc.
     │
     ├── export/               ← XLSX + transcript file generation.
@@ -165,9 +170,9 @@ ship for real.
 ### Change the scoring rules (what good/bad support means)
 - **Easiest:** open the website → **Ruleset** page → edit → save. No code, no restart.
 - **In files:** `rules/support_rules.md`.
-- ⚠️ **Important side effect:** editing the rules creates a new "rules version," which marks
-  **all existing grades as outdated** and a re-run will re-grade everything (slow). Only edit when
-  you intend to re-grade.
+- Editing the rules creates a new "rules version". It applies **only to chats graded from then on**:
+  existing grades keep their scores and are **never re-graded** (client instruction, 2026-10-20 —
+  `GradesStore.is_current`).
 
 ### Change the AI grader's behavior / scoring weights
 - The rubric, the per-criterion JSON the AI fills in, and the scoring math live in
@@ -185,7 +190,7 @@ ship for real.
   graded against the **VIP ruleset** instead of the standard one.
 - **Their old grades are left alone.** They were graded correctly against the standard rules at the
   time, so nothing is re-graded automatically. The Evaluation page shows them as *"graded with a
-  different ruleset"*. To convert them, run a review over that agent with **re-grade** enabled.
+  different ruleset"*, and they stay as they are — old chats are never re-graded.
 - The **group switcher** in the top bar (All / Standard / VIP) scopes every page. VIP and standard
   scores come from different criteria, so they are never averaged together — don't compare them.
 
@@ -200,8 +205,8 @@ A **ruleset** = a system prompt (what the grading model follows) + a criteria ca
   criteria), write the prompt file, and — only if a whole agent *group* should use it —
   add the group in `qa/rulesets.py` (`GROUP_RULESETS`). Everything else — grading, staleness,
   the UI tabs — picks it up automatically.
-- ⚠️ Editing a ruleset's prompt marks **that ruleset's** grades outdated (a re-run re-grades them).
-  Editing the VIP prompt does *not* affect standard grades, and vice versa.
+- Editing a ruleset's prompt changes how **new** chats are graded. Existing grades are never
+  re-graded.
 
 ### The `kb-v41` ruleset and gated scoring (QA Manual v4.1)
 The third ruleset does not score like the other two, and the difference is structural rather than
@@ -245,6 +250,65 @@ status) is not in the data. Only `cannot_determine` sets `manual_review_needed` 
 to a QC manager, so collapsing the two buries the question instead of asking it. Both cost zero
 points. `verdict_guard` enforces this for `tag-chat`, which has no honest `n/a`.
 
+**The result is a rule, and so are the verdicts it reads (client calibration, 2026-10-08).**
+The model used to decide pass/fail per criterion on its own, and two runs on the same chats
+disagreed — Excellent in one, Major in the other — while some grades described a problem and
+still scored 100. The chain is now *detected problem → fail → severity (the criterion's gate) →
+score → result*:
+- The model writes `problems` (`[{id, ev}]`) **before** any verdict, and a neutral
+  `what_happened` **last** (no verdicts, no "no defects found"). `violations` is not asked for;
+  `qa/schema.py` builds it, and `summary` = the verdict line built from the *final* verdicts
+  (e.g. `FAIL · Major: Request Coverage · Minor: Response SLA.`) + `what_happened`. So the summary
+  can never say "no defects" on a FAIL (QA, 2026-10-09). Undetermined criteria are not in the
+  verdict line — on a PASS they read as defects; they are in `manual_review_reason`.
+- **Who stopped responding** (QA, 2026-10-09). `Conversation.ending` (`intercom/models.py`) reads
+  the comment order — notes, bots and bookkeeping parts excluded — and `qa/prompt.py:_ending_line`
+  states it in the grader's header (`Ending: the player's last 2 message(s) … got no agent reply`
+  / `… the agent wrote 3 message(s), all inactivity/closing prompts` / …). The agents' macros are
+  matched by `is_agent_macro`; add a macro there if a new one appears. A request the player left
+  waiting on is `pending` (new request status), never `unresolved`.
+- `qa/gated_rules.py` (`check_verdicts`, run by both graders before scoring) applies, in order:
+  a. every listed problem → `fail` on its criterion (then `verdict_guard` still drops bot/player quotes);
+  b. an `unresolved` request, by who wrote last: the **player** (their last messages never
+     answered, not just a "thanks") → `resp-no-ghost` fail, material or not; the **agent** (the
+     player went quiet) and nothing failed that explains it → the request is re-read as `pending`
+     and the verdicts are left alone;
+  c. outcome Unresolved/Abandoned with no Major → `resp-no-ghost` cannot_determine (or
+     `res-no-fake-close` fail when the agent closed it);
+  d. an escalation the model says happened (outcome Escalated correctly, a request `escalated`, or
+     a pass with evidence) with **no internal note** → `action-escalation-missed` cannot_determine
+     — the agent's words are not a trace;
+  f. an escalation that was **required** (`expected_handling` = Internal escalation, decided against
+     the prompt's MANDATORY ESCALATION list) and neither performed nor claimed, with no note →
+     `action-escalation-missed` **fail**, citing `escalation_case`;
+  e. a pass on `action-escalation-missed` with no `ev`: cites the chat's internal note if there is
+     one, else cannot_determine.
+  Every change is a `rule:` flag in `signal_flags`. Tests: `tests/test_gated_rules.py`.
+- Result (`score_gated`): Critical → **FAIL 0**; any Major → **FAIL**, `major_outcome_failure`,
+  capped 75, whatever `pass_threshold` says; otherwise PASS at ≥ 85. `cannot_determine` costs
+  nothing and does not block a PASS; it (or Insufficient data) only sets `manual_review_needed`.
+- **`churn-rg-signal-ignored` — explicit words only (QA, 2026-10-09).** A churn signal is a plain
+  "I'm leaving / close my account / I'll play elsewhere" (or an RG signal). "I never win", "the bonus
+  gave nothing", "my account is jinxed" are NOT churn: a cold reply to them is comm-tone at most.
+  This reverses the 10-08 widening to "open dissatisfaction", which failed ordinary complaints.
+  Answering the main request is still not a reaction to an explicit statement. A fail is a Major
+  and always sets `manual_review_needed` (`MANUAL_REVIEW_ON_FAIL` in `qa/gated_rules.py`).
+- **MANDATORY ESCALATION (QA, 2026-10-09).** The prompt carries the list of cases the agent must
+  pass on (VIP/personal manager asked for, deposit not credited after proof, …); the model used to
+  decide on its own that no escalation was needed. QA owns the list — edit it in
+  `rules/qa_system_prompt_kb_v41.txt` (Ruleset page) **and** in `KBV41_QA_SYSTEM_PROMPT`;
+  `tests/test_kbv41_ruleset.py` fails if the two differ.
+- **Withdrawn the same day (client points 4 and 6).** The first cut also had a `CANNOT DETERMINE`
+  result (any cannot_determine or Insufficient data → never PASS), required every
+  `accuracy-*`/`financial-case-abandoned`/`severe-business-trust` pass to cite a source, made
+  accuracy cannot_determine with no KB, and made the agent's statements about *this player's
+  account* (admin data) cannot_determine. On the 180-chat sample that put ~85% of chats in CANNOT
+  DETERMINE (runs `7c39f98ace17`, `95a0886c9af4`), and QA asked for exactly those points to go.
+  Don't reintroduce them without a fresh calibration. Old runs still store `CANNOT DETERMINE`, so
+  the UI badge and the calibration counts keep handling it.
+- Consistency check after any grader change: run the sample twice and
+  `python scripts/compare_calibration_runs.py RUN_A RUN_B [--list]`.
+
 **v4.1 is live for standard chats — by date.** `GROUP_RULESETS[GROUP_STANDARD]` is `kb-v41`, but
 only for conversations **created on or after `QA_V41_EFFECTIVE_FROM`** (`.env`, a `YYYY-MM-DD`
 date, judged in UTC). Older standard chats keep `default`. That is manual §9 ("a historical chat is
@@ -279,6 +343,31 @@ every resolver call passes the chat's `created_at`.
   request paying to write it.
 - What still fills manual review: `action-escalation-missed` / `ownership-effort` — the manual
   requires a system trace (an internal note or CRM record) and most chats have neither.
+
+### Historical context for the grader (the player's earlier chats and QA precedents)
+The grader sees one transcript; this gives it what the transcript cannot show — what the same
+player was told before, promises made, whether "I escalated" was true, and how QA ruled on
+similar cases. Full write-up: `docs/history-context.md`. Off by default.
+- **Switch:** `HISTORY_CONTEXT` in `.env`: `off` · `shadow` (retrieve and record on the grade,
+  send nothing) · `on`. Per run: `calibrate --history on`, the Calibration tab, or
+  `/api/review {"history_context": "on"}`. Every grade records what it got in
+  `payload_json["history_context"]`.
+- **The index:** `chat_labels` (one Haiku label per chat, ≈$0.0006 live / $0.0003 batch),
+  `chat_labels_fts` (SQLite full-text), `case_verdicts` (every human verdict, rebuilt on refresh).
+  Build it: `intercom-summary history label --source all --batch`; keep it fresh:
+  `intercom-summary history refresh`; look at it: `intercom-summary history stats`.
+- **Older history** lives in the raw client exports under `data/exports/*/raw/` and is labelled
+  from there (`--source archive`) — deliberately **not** imported into `conversations`, which
+  would put thousands of old ungraded chats on every dashboard and in the next grading run.
+  Fetch more with `scripts/export_client_archive.py --since … --until … --only-fetch`.
+- **Where it goes in the prompt:** the user turn, in front of the transcript (`Grader.messages_for`),
+  so the cached rules + Help Center blocks never change. Precedents are human-confirmed only;
+  a chat never sees itself or anything after its own date.
+- **A/B:** two calibration runs differing only in `--history`; compare in the tab. Needs QA
+  verdicts on the sample (none recorded as of 2026-10-19).
+- **Changing the label** (`qa/history_labeller.py` prompt or schema) changes `LABEL_VERSION`;
+  the next `history refresh`/`label` re-labels everything, so do it deliberately.
+- Tests run offline: `tests/conftest.py` keeps it off unless a test injects a `HistoryProvider`.
 
 ### Jev — a second opinion on the verdicts that matter most
 After Sonnet grades a v4.1 chat and before the score is computed, **Jev** (TypeSafe) checks the
@@ -368,6 +457,75 @@ several threads; the biggest is 20 — serial bonus requesters chain for two wee
   A run on it grades each member's whole case (63 cases for 70 threads); members of one case
   share the grade.
 
+### AI ↔ QA agreement (the client's ≥ 95% PASS/FAIL bar)
+The client's requirement: the AI's PASS/FAIL agrees with QA's on at least 95% of chats.
+- **Measured how:** `qa/agreement.py`. QA reviews the AI's FAILs far more often than its PASSes, so a
+  plain "agreed / reviewed" ratio mostly measures the FAILs. The estimate weights each side by how
+  often the AI gives it: `P(AI PASS)·agree|PASS + P(AI FAIL)·agree|FAIL`, with a 95% range. A side
+  nobody has reviewed makes the estimate "unknown" rather than assuming it is perfect.
+- **Where:** the Accuracy page's top card (`/api/accuracy` → `result_agreement`, v4.1, last 30 days),
+  or `python scripts/agreement_report.py`.
+- **The "Agree" button** (grade panel, next to Re-score) records that a QC manager checked the AI
+  grade and it stands (`grades.human_confirmed_by/at`, `POST|DELETE /api/conversations/<id>/confirm`).
+  Without it only disagreements leave a trace. A re-scored grade can't be agreed with (it already
+  has a human verdict). In the Calibration tab, Agree saves a re-score with
+  the AI's own verdicts.
+- **False-PASS audit:** `scripts/pass_audit_sample.py` freezes 80 random unreviewed AI-PASS chats as
+  sample `kb-v41-pass-audit`. QA opens them (`/api/conversations?sample=kb-v41-pass-audit`) and presses
+  Agree or Re-score on the **stored** grade. No calibration run — old chats are never re-graded.
+- **Measuring a change before shipping it:** `scripts/accuracy_ab.py` grades the human-reviewed chats
+  per configuration ("arm": `base`, `hist`, `jev`, `verify`, `vshadow`, joined with `+`). It never
+  writes to `grades`. Tune prompts on `--set dev` only and check once on `--set holdout`
+  (`agreement.split_of`, a stable 70/30 hash split). Then
+  `scripts/agreement_report.py <accuracy_ab_*.json>` projects the population agreement for each arm.
+  Run both against a **copy** of the DB (`DB_PATH=…`).
+
+### The fail verifier — a second look at every FAIL
+`qa/fail_verifier.py`. QA overturned 130 of the 146 AI FAILs it reviewed (Oct 2026), almost always
+over a judgement call, while PASSes are rarely overturned. So when a v4.1 grade is heading for FAIL,
+the same model takes one more look, at ~$0.013 per verified chat. It reuses the cached prompt and KB.
+It checks each failed criterion against the manual and that criterion's NOT-A-FAIL boundaries
+(`BOUNDARIES` in the file), then answers `upheld` or `not_proven`.
+- `QA_FAIL_VERIFIER` in `.env`: `on` (default) · `shadow` (record only) · `off`. It applies to chats
+  graded from now on; existing grades are never re-graded.
+- **`on`:** `not_proven` turns a Gate 2/3 fail into pass, with a `verifier:` flag. A Gate 1 critical is
+  never lifted. A disputed critical goes to manual review instead. A verifier error leaves the grade
+  unchanged.
+- The record is in `payload_json["fail_verifier"]` (checked, answers, overturned).
+- When QA reports a new kind of false FAIL, add the boundary to `BOUNDARIES` **and** to the prompt's
+  QA PRACTICE section, then re-measure with `accuracy_ab.py`.
+
+### The majority vote — borderline grades are made three times
+`Grader._vote` (`qa/grader.py`), `QA_VOTES=3` (1 = off), `QA_VOTE_BAND=70-89`. Two runs of the
+same rules disagreed on about one QA-reviewed chat in ten (Oct 2026), nearly all near the 85
+threshold. So when the first grading lands in the band, or the fail verifier changed a verdict,
+the chat is graded again (two more full passes, guards and verifier included) and the majority
+PASS/FAIL wins; the kept grade is the median-scored one on the majority side. `grade.votes`
+records every result; the panel shows "Majority of 3 gradings: FAIL 75 · PASS 92 · PASS 95 →
+PASS". Extra calls reuse the cached prompt (~$0.013 each) on roughly one chat in five. A warm-up
+call and a vote that yields no usable grade are never voted on. Evaluate it with the `vote` arm
+of `scripts/accuracy_ab.py`.
+
+### Bot-menu buttons in the transcript
+Intercom records a button the player clicks in the bot menu as an ordinary customer message with
+the button's label, so "My deposit did not come" looked like a typed request the agent ignored.
+`Conversation.menu_choices()` (`intercom/models.py`) finds them — the bot's `quick_reply` part
+before the line, or a short opening line the bot answered within 2 s — and `transcript_text`
+marks them `CUSTOMER Name (bot-menu choice): …`. The kb-v41 prompt and the fail verifier refer
+to that marker. It is a rendering change: stored grades are untouched, new chats see the marker.
+
+### QA lessons — the rules learn from QA's re-scores, weekly
+`qa/lessons.py`, `storage/lessons_store.py` (table `qa_lessons`), page **QA lessons** (`/lessons`).
+- **Weekly sync** (in-process loop like the history refresh; `QA_LESSONS=on`, `QA_LESSONS_DAYS=7`):
+  collects every re-score / calibration review since the last sync, groups the AI-vs-QA
+  disagreements per criterion (a "no mistakes" re-score of an AI FAIL counts each failed criterion,
+  marked *inferred*), and drafts one general rule per criterion corrected ≥ `QA_LESSONS_MIN_CASES`
+  times. By hand: `intercom-summary lessons sync [--since …] [--no-draft]`.
+- **Approval** (admin only): the rule is appended to the prompt's QA PRACTICE section under
+  "Learned from QA re-scores", and NOT-A-FAIL rules also go to the fail verifier
+  (`FailVerifier.learned`). New rules version → new chats only; nothing is re-graded.
+- CLI: `intercom-summary lessons list --status draft`, `lessons approve ql-…`, `lessons reject ql-…`.
+
 ### Calibration samples (measuring the AI against human graders)
 A **calibration sample** is a frozen list of conversations. Frozen is the point: two measurement
 runs are only comparable if they graded the same chats, so membership is written down once
@@ -380,6 +538,14 @@ sample that already has members.
 - The importer **reports** members it cannot grade rather than dropping them: a chat absent from
   the cache, or one sitting in the trash. ⚠️ A trashed conversation silently blocks its own
   re-import from Intercom, so a short sample stays short until someone restores it.
+- **QA's reference verdicts:** `python scripts/import_calibration_sample.py <file> --id <sample> --labels`
+  reads a .docx/.xlsx/.csv table whose header names the chat-id, score / PASS-FAIL and comment
+  columns, and stores them on the members (`calibration_sample_items.human_*`). Every run of the
+  sample is then compared against them in the Calibration tab (PASS/FAIL agreement card, "PASS/FAIL
+  differs from QA" filter). A review made in the tab on a run overrides the reference for that run.
+  QA's written feedback on a run is kept as `docs/qa-feedback/<date>-<sample>.csv` and imported the same way.
+- **Where to start:** `python scripts/worst_disagreements.py --sample <id> -n 10` (or `--rescored`)
+  ranks the chats furthest from QA from grades that already exist; `--freeze <id>` saves them as a sample.
 - Browse one: `/api/conversations?sample=<id>`. List them with their gradeable counts:
   `/api/calibration/samples`.
 
@@ -571,10 +737,10 @@ first); if a link ever needs widening, generate a new one.
 This happened for real in September and it is worth understanding, because the mechanism is not
 obvious.
 
-`rules_version` is a hash of the **prompt text**. Any edit — one word — produces a new version,
-which marks every grade that ruleset produced stale, and the next review run re-grades them. The
-model does not return the same score twice for the same chat under different rules, so scores
-move. In September the rulebook was corrected on the 3rd and the 4th; QA had already manually
+`rules_version` is a hash of the **prompt text**. Any edit — one word — produces a new version.
+Back then that marked every grade the ruleset produced stale, and the next review run re-graded
+them. The model does not return the same score twice for the same chat under different rules, so
+scores moved. In September the rulebook was corrected on the 3rd and the 4th; QA had already manually
 re-graded the month's red/yellow chats, agents had disputed specific numbers, and those numbers
 then changed underneath everyone. Several grading runs had also crashed mid-batch (Ollama
 dropping out), so chats acquired scores in dribs over days — and an ungraded chat has no colour,
@@ -582,16 +748,17 @@ so it cannot appear in a red/yellow worklist until it does.
 
 Three things now guard against it:
 
-- **A chat an analyst has re-graded is never re-graded by an ordinary run.** `is_current`
-  (`storage/grades_store.py`) treats `human_score IS NOT NULL` as current whatever the
-  rules_version says. Their verdict already wins via `COALESCE(human_score, overall_score)`; this
-  stops the AI score and the criteria checklist under it from moving too. `regrade=True` still
-  forces them. The Evaluation page reports them as *"kept as analyst-reviewed"*.
+- **An ordinary run never re-grades a chat that already has a grade** — reviewed or not, whatever
+  the rules_version says. `is_current` (`storage/grades_store.py`) returns True for any stored
+  grade; new rules apply to new chats only. This is the client's instruction (2026-10-20): **old
+  chats are never re-graded.** Only an explicit `regrade=True` (a person pressing Re-score on a
+  chat, or ticking "Re-grade already-evaluated conversations") replaces a stored grade. Don't do
+  that to old chats without the client's say-so.
 - **Every overwritten grade is archived** into `grade_history` before the upsert, and shown in the
   grade panel as *"Re-graded N times — see previous scores"*. This is what makes "why is this red
   now when it was green last week?" answerable.
-- **The Ruleset page states the blast radius before you save**: how many conversations the edit
-  will re-grade, and how many are protected. `GradesStore.staleness_preview` computes it.
+- **The Ruleset page says what saving does**: existing grades keep their scores, only new chats use
+  the new text.
 
 To find what QA still owes a manual grade for a period:
 ```bash
@@ -685,10 +852,9 @@ knowing because it will recur with other criteria.
   `signal_flags`, never silent. It is scoped to those two criteria on purpose — the same rule
   applied everywhere would move 37% of failing verdicts and shift scores by ~6 points.
 
-⚠️ **Editing any prompt file re-grades everything.** `rules_version` is a hash of the whole
-prompt file (`qa/rulesets.py`), so a one-word change marks every existing grade stale. Nothing
-re-grades on its own — `review_and_store` only runs when a human triggers it from the dashboard
-or Slack — but the Evaluation page's "graded" count will drop until someone does.
+**Editing a prompt file never re-grades existing chats.** `rules_version` is a hash of the whole
+prompt file (`qa/rulesets.py`), so a one-word change makes a new version — grades made from then
+on carry it, and every existing grade keeps its score (`GradesStore.is_current`).
 
 ### Exclude a kind of conversation from grading (e.g. follow-ups)
 Triage/noise chats are never graded and never count towards an agent's score. They're picked
@@ -786,6 +952,10 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
   upsert) to ask when a conversation actually arrived. Confusing the two is what made the
   September incident look like a late import when nothing had arrived late at all.
 - `grade_history` holds every superseded grade. Nothing deletes from it.
+- The history index (`chat_labels`, `chat_labels_fts`, `case_verdicts`, `meta`) is derived data:
+  `case_verdicts` is rebuilt from the human-verdict tables on every refresh, and `chat_labels`
+  can be rebuilt from the chats for the price of the labels. `conversations.contact_id` is
+  mirrored out of the payload for the player lookup.
 - It's backed up automatically into `data/backups/`.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
 - **The Trash blocks re-import.** Deleting a conversation individually moves it to
@@ -806,7 +976,7 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
 - **Qwen** — the specific AI model (`qwen2.5:14b`) that grades conversations. Free, runs locally.
 - **Grade / override** — the AI's score vs. a human-corrected score. Analysts and admins can override.
 - **Rules version** — a fingerprint of the rulebook. Grades are tagged with it; editing the rules
-  changes it and makes old grades "stale."
+  changes it for new grades. Old grades keep theirs and are never re-graded.
 - **Job** — a long task (fetching or grading a batch) that runs in the background; the Evaluation
   page polls its progress.
 - **Backend** — the Python server (`web/api.py`). **Frontend** — the React website

@@ -37,6 +37,8 @@ class ReviewRequest(BaseModel):
     # Force one ruleset for this run instead of the one each agent's group selects. This is
     # how a new scoring model is piloted without moving anyone between groups.
     ruleset_id: str | None = None
+    # Historical context for this run only: "off" | "shadow" | "on" (None = HISTORY_CONTEXT).
+    history_context: str | None = None
     # Restrict the run to a frozen calibration sample.
     sample: str | None = None
     # Grade through the Claude Message Batches API: half price, results in minutes to hours.
@@ -120,6 +122,10 @@ class CalibrationRunRequest(BaseModel):
     ruleset_id: str | None = None
     batch: bool = False
     pilot_only: bool = False
+    # Historical context for this run only: "off" | "shadow" | "on" (None = HISTORY_CONTEXT),
+    # and the effort level (None = QA_EFFORT). An A/B is two runs differing in one of these.
+    history_context: str | None = None
+    effort: str | None = None
 
 
 class VipReviewRequest(BaseModel):

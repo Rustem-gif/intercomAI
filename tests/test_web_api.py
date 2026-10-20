@@ -323,8 +323,8 @@ def test_eval_stats_counts_grades_under_older_ruleset(client):
     stats = client.get("/api/evaluation/stats").json()
     assert stats["graded"] == 1
     assert stats["pending"] == 0
-    # And it is flagged as graded under an older ruleset.
-    assert stats["stale"] == 1
+    # It is kept as it is — an old grade is never re-graded, so nothing is stale.
+    assert stats["stale"] == 0
 
 
 def test_eval_stats_current_ruleset_not_stale(client):
@@ -1088,3 +1088,45 @@ def test_calibration_tab_endpoints(client):
     r = client.post(f"/api/calibration/runs/{run}/conversations/42/review",
                     json={"score": 50, "reason": "x"})
     assert r.status_code == 403
+
+
+def test_agree_with_a_grade_and_withdraw(client):
+    _seed_grade()
+    _login(client, "ana", "pw")
+    r = client.post("/api/conversations/42/confirm")
+    assert r.status_code == 200 and r.json()["human_confirmed_by"] == "ana"
+    assert client.get("/api/conversations/42").json()["grade"]["human_confirmed_by"] == "ana"
+    assert client.delete("/api/conversations/42/confirm").status_code == 200
+    assert client.get("/api/conversations/42").json()["grade"]["human_confirmed_by"] is None
+    client.post("/api/conversations/42/override", json={"score": 95, "reason": "higher"})
+    assert client.post("/api/conversations/42/confirm").status_code == 409
+    assert client.post("/api/conversations/404/confirm").status_code == 404
+
+
+def test_viewer_cannot_agree(client):
+    _seed_grade()
+    _login(client, "looker", "pw")
+    assert client.post("/api/conversations/42/confirm").status_code == 403
+
+
+def test_accuracy_reports_result_agreement(client):
+    _login(client)
+    ra = client.get("/api/accuracy").json()["result_agreement"]
+    assert ra["ruleset_id"] == "kb-v41" and ra["target"] == 0.95 and ra["estimate"] is None
+
+
+def test_qa_lessons_list_and_decide(client):
+    from intercom_summary.storage.lessons_store import LessonsStore
+
+    store = LessonsStore()
+    lid = store.add(ruleset_id="kb-v41", criterion_id="comm-tone", kind="is_a_fail", text="x")
+    store.close()
+    _login(client, "ana", "pw")                    # an analyst reads, but only an admin decides
+    body = client.get("/api/lessons?status=draft").json()
+    assert [r["id"] for r in body["lessons"]] == [lid] and body["last_sync"] is None
+    assert client.post(f"/api/lessons/{lid}/reject").status_code == 403
+    _login(client)
+    assert client.put(f"/api/lessons/{lid}", json={"text": "y"}).json()["text"] == "y"
+    assert client.post(f"/api/lessons/{lid}/reject").json()["status"] == "rejected"
+    assert client.post(f"/api/lessons/{lid}/reject").status_code == 409
+    assert client.post("/api/lessons/nope/approve").status_code == 404

@@ -161,42 +161,24 @@ class GradesStore:
         return row is not None
 
     def is_current(self, conversation_id: str, ruleset_id: str, rules_version: str) -> bool:
-        """True if the stored grade needs no re-grading.
+        """True if the conversation already has a grade — an ordinary run never re-grades it.
 
-        `ruleset_id` / `rules_version` are the ruleset the conversation *would* be graded with
-        now, taken from the live grader (not from the ruleset file directly — the Anthropic
-        backend grades against support_rules.md and stamps that hash instead).
+        A grade is final once made. Editing a ruleset's prompt (a new `rules_version`), moving
+        an agent to another group (a different `ruleset_id`) or a human review does not send an
+        existing grade back through the model: new rules apply to chats graded from then on.
+        The client's instruction (2026-10-20) is that old chats are never re-graded. It also
+        closes the September incident for good — the rulebook was corrected on the 3rd and 4th,
+        every grade went stale, and chats QA had already signed off on came back with different
+        scores days later.
 
-        Three cases count as current:
-        - **a human has already re-graded it** → never touched again by an ordinary run. QA's
-          process is to manually re-grade every red/yellow chat in a period, and agents dispute
-          individual scores; both are commitments made against a specific number. Re-grading
-          underneath them is what caused the September incident: the rulebook was corrected on
-          the 3rd and 4th, every grade went stale, and chats QA had already signed off on came
-          back with different scores days later. The analyst's verdict already wins downstream
-          via COALESCE(human_score, overall_score), so re-running the model here changes nothing
-          anyone sees — except the criteria checklist under a verdict someone already defended.
-          `regrade=True` still forces them, so a deliberate re-grade after a rules change works.
-        - the grade was produced by the same ruleset, at its current version → nothing changed;
-        - the grade was produced by a *different* ruleset → it was graded correctly at the
-          time, so leave it alone. This is what stops a VIP agent's entire back catalogue from
-          being invalidated and re-graded the moment they are added to the VIP group. Those
-          grades are surfaced separately as `wrong_ruleset` on the Evaluation page, where an
-          analyst can choose to re-grade them.
-
-        Editing a ruleset's prompt still marks that ruleset's own un-reviewed grades stale.
+        `ruleset_id` / `rules_version` are kept so callers need not change; they no longer
+        decide anything. Only an explicit `regrade=True` (a human choosing to re-score) still
+        replaces a stored grade, and the replaced one is archived in grade_history.
         """
         row = self._conn.execute(
-            "SELECT rules_version, ruleset_id, human_score FROM grades WHERE conversation_id=?",
-            (conversation_id,),
+            "SELECT 1 FROM grades WHERE conversation_id=?", (conversation_id,)
         ).fetchone()
-        if row is None:
-            return False
-        if row["human_score"] is not None:
-            return True
-        if (row["ruleset_id"] or "default") != ruleset_id:
-            return True
-        return row["rules_version"] == rules_version
+        return row is not None
 
     def count_graded(self, rules_version: str | None = None) -> int:
         """Count distinct conversations that have a grade (optionally for a specific ruleset)."""
@@ -242,12 +224,11 @@ class GradesStore:
         return [dict(r) for r in rows]
 
     def staleness_preview(self, ruleset_id: str, current_version: str) -> dict:
-        """What editing this ruleset's prompt would invalidate.
+        """What editing this ruleset's prompt does to existing grades: nothing.
 
-        `would_regrade` is the number of grades a single edit sends back through the model with
-        a different score. `protected` are the ones an analyst has already re-graded, which
-        `is_current` now refuses to touch — they are reported separately because they are the
-        ones people have argued about and would notice moving.
+        Existing grades are never re-graded (see is_current), so `would_regrade` is always 0.
+        `graded_at_current_version` is how many grades carry the current version — they keep
+        their scores after an edit; only chats graded afterwards use the new text.
         """
         row = self._conn.execute(
             """SELECT COUNT(*) AS total,
@@ -259,7 +240,7 @@ class GradesStore:
         total = row["total"] or 0
         protected = row["protected"] or 0
         return {"graded_at_current_version": total,
-                "would_regrade": total - protected,
+                "would_regrade": 0,
                 "protected_by_human_review": protected}
 
     def save(self, grade: ConversationGrade) -> None:
@@ -290,7 +271,9 @@ class GradesStore:
                    case_type      = excluded.case_type,
                    risk_flag      = excluded.risk_flag,
                    catastrophic_service_failure = excluded.catastrophic_service_failure,
-                   manual_review_needed         = excluded.manual_review_needed""",
+                   manual_review_needed         = excluded.manual_review_needed,
+                   human_confirmed_by = NULL,
+                   human_confirmed_at = NULL""",
             (
                 grade.conversation_id,
                 grade.agent_name,
@@ -319,7 +302,8 @@ class GradesStore:
     def get(self, conversation_id: str) -> dict | None:
         row = self._conn.execute(
             """SELECT payload_json, human_score, override_reason, overridden_by,
-                      overridden_at, human_criteria, human_deductions, ruleset_id
+                      overridden_at, human_criteria, human_deductions, ruleset_id,
+                      human_confirmed_by, human_confirmed_at
                FROM grades WHERE conversation_id=?""",
             (conversation_id,),
         ).fetchone()
@@ -335,6 +319,8 @@ class GradesStore:
         d["overridden_at"] = row["overridden_at"]
         d["human_criteria"] = json.loads(row["human_criteria"]) if row["human_criteria"] else None
         d["human_deductions"] = json.loads(row["human_deductions"]) if row["human_deductions"] else None
+        d["human_confirmed_by"] = row["human_confirmed_by"]
+        d["human_confirmed_at"] = row["human_confirmed_at"]
         d["rule_results"] = _normalize_criteria(d.get("rule_results"), d["ruleset_id"])
         return d
 
@@ -445,6 +431,59 @@ class GradesStore:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    def confirm(self, conversation_id: str, confirmed_by: str | None) -> bool:
+        """Record (or with None, withdraw) a QC manager's agreement with the AI grade as it
+        stands. A chat with a human override has a human verdict already, so it cannot be
+        confirmed — False then, and when there is no grade."""
+        cur = self._conn.execute(
+            "UPDATE grades SET human_confirmed_by=?, human_confirmed_at=? "
+            "WHERE conversation_id=? AND human_score IS NULL",
+            (confirmed_by, _now() if confirmed_by else None, conversation_id))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def result_agreement(self, ruleset_id: str | None = None, since: str | None = None,
+                         agents: list[str] | None = None, brand: str | None = None) -> dict:
+        """AI ↔ QA agreement on PASS/FAIL, weighted by how often the AI gives each result
+        (qa/agreement.py). A chat counts as reviewed when a human overrode it (their score
+        decides their result) or pressed Agree (the AI's result stands)."""
+        from intercom_summary.qa.agreement import population_agreement, result_of
+
+        where, args = [], []
+        if ruleset_id:
+            where.append("ruleset_id = ?")
+            args.append(ruleset_id)
+        if since:
+            where.append("graded_at >= ?")
+            args.append(since)
+        if agents is not None:
+            if not agents:
+                where.append("0")
+            else:
+                where.append(f"agent_name IN ({','.join('?' * len(agents))})")
+                args.extend(agents)
+        brand_sql, brand_args = _brand_sql(brand)
+        if brand_sql:
+            where.append(brand_sql)
+            args.extend(brand_args)
+        ign_sql, ign_args = _not_ignored_sql()
+        where.append(ign_sql)
+        args.extend(ign_args)
+        rows = self._conn.execute(
+            "SELECT overall_score, human_score, human_confirmed_at FROM grades WHERE "
+            + " AND ".join(where), args).fetchall()
+        labelled = []
+        for r in rows:
+            ai = result_of(r["overall_score"])
+            human = (result_of(r["human_score"]) if r["human_score"] is not None
+                     else ai if r["human_confirmed_at"] else None)
+            labelled.append({"ai": ai, "human": human})
+        out = population_agreement(labelled)
+        out["confirmed"] = sum(1 for r in rows if r["human_confirmed_at"] and r["human_score"] is None)
+        out["overridden"] = sum(1 for r in rows if r["human_score"] is not None)
+        out["target"] = 0.95
+        return out
 
     def accuracy_stats(self, agents: list[str] | None = None, brand: str | None = None) -> dict:
         """AI-vs-human accuracy metrics for the traceability dashboard."""

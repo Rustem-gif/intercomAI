@@ -20,6 +20,8 @@ batch result into a grade exactly as `grade` does for a live response.
 from __future__ import annotations
 
 import json
+import threading
+from collections import Counter
 from datetime import datetime, timezone
 
 from anthropic import Anthropic
@@ -27,7 +29,10 @@ from anthropic import Anthropic
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.qa import knowledge_base
+from intercom_summary.qa.fail_verifier import FailVerifier
+from intercom_summary.qa.gated_rules import check_verdicts
 from intercom_summary.qa.grading_common import GradeParseError, is_valid_grade, trim_transcript
+from intercom_summary.qa.history_context import HistoryContext, HistoryProvider
 from intercom_summary.qa.jev_verifier import (
     JevVerifier,
     dispute_text,
@@ -46,7 +51,7 @@ from intercom_summary.qa.rulesets import (
     validate_ruleset,
 )
 from intercom_summary.qa.schema import ConversationGrade
-from intercom_summary.qa.verdict_guard import apply_guards, apply_vip_guards
+from intercom_summary.qa.verdict_guard import apply_vip_guards
 from intercom_summary.settings import settings
 
 log = get_logger(__name__)
@@ -68,8 +73,15 @@ class Grader:
         client: Anthropic | None = None,
         jev=None,
         knowledge: dict | None = None,
+        history=None,
+        effort: str | None = None,
+        fail_verifier=None,
+        votes: int | None = None,
     ) -> None:
         self._model = model or settings.qa_model
+        # Resolved once: a run grades every chat at one effort, and the dry-run script sets
+        # settings.qa_effort before building its grader.
+        self._effort = effort or settings.qa_effort
         self._client = client or Anthropic(
             api_key=settings.anthropic_api_key, timeout=180.0, max_retries=4
         )
@@ -103,6 +115,53 @@ class Grader:
                    and settings.kb_enabled)
             knowledge = knowledge_base.load_all() if use else {}
         self._kb: dict = knowledge
+        # Historical context (qa/history_context.py): the player's earlier chats and QA
+        # precedents, put in front of the transcript. Pass history=False to grade without it,
+        # or a HistoryProvider to inject one (tests, a calibration run with its own mode).
+        if history is None:
+            history = HistoryProvider() if settings.history_context != "off" else None
+        self._history = history or None
+        # The second look at FAILs (qa/fail_verifier.py) — gated rulesets only, like Jev.
+        # Pass fail_verifier=False to switch it off, or a FailVerifier to inject one.
+        if fail_verifier is None:
+            use = (self._ruleset.scoring_model == SCORING_GATED
+                   and settings.qa_fail_verifier != "off")
+            fail_verifier = FailVerifier() if use else None
+        self._fail_verifier = fail_verifier or None
+        # Majority vote on borderline chats (QA_VOTES). Two runs of the same rules disagreed on
+        # about one QA-reviewed chat in ten (Oct 2026), and the flips sit near the threshold:
+        # a grade in the vote band, or one the verifier changed, is made again and the
+        # majority PASS/FAIL decides. Gated rulesets only; votes=1 switches it off.
+        if votes is None:
+            votes = settings.qa_votes if self._ruleset.scoring_model == SCORING_GATED else 1
+        self._votes = max(1, int(votes))
+        self._history_memo: dict[str, HistoryContext | None] = {}
+        self._history_lock = threading.Lock()
+
+    @property
+    def history(self):
+        return self._history
+
+    @property
+    def effort(self) -> str:
+        return self._effort
+
+    def history_for(self, conversation: Conversation) -> HistoryContext | None:
+        """The context block for a chat, computed once per grader so the live call, a retry
+        and a batch `finish` all read the same one."""
+        if self._history is None:
+            return None
+        with self._history_lock:
+            if conversation.id in self._history_memo:
+                return self._history_memo[conversation.id]
+        ctx = self._history.context_for(conversation)
+        with self._history_lock:
+            self._history_memo[conversation.id] = ctx
+        return ctx
+
+    @property
+    def critical_ids(self) -> list[str]:
+        return [c["id"] for c in self._ruleset.criteria if c.get("critical")]
 
     @property
     def client(self) -> Anthropic:
@@ -123,7 +182,13 @@ class Grader:
             from intercom_summary.qa.vip_transcript import case_block
 
             return [{"role": "user", "content": case_block(conversation)}]
-        return [{"role": "user", "content": trim_transcript(transcript_block(conversation))}]
+        text = trim_transcript(transcript_block(conversation))
+        ctx = self.history_for(conversation)
+        if ctx is not None and ctx.mode == "on" and ctx.text:
+            # In front of the transcript, inside the (uncached) user turn: the cached system
+            # blocks above it stay byte-identical (tests/test_token_optimisation.py).
+            text = f"{ctx.text}\n\n{text}"
+        return [{"role": "user", "content": text}]
 
     def knowledge_for(self, conversation: Conversation):
         return self._kb.get(conversation.brand or "")
@@ -148,7 +213,7 @@ class Grader:
             "system": system,
             "messages": messages if messages is not None else self.messages_for(conversation),
             "output_config": {
-                "effort": effort or settings.qa_effort,
+                "effort": effort or self._effort,
                 "format": {"type": "json_schema", "schema": self._schema},
             },
         }
@@ -233,13 +298,16 @@ class Grader:
         )
 
     def _guard(self, conversation: Conversation, data: dict) -> None:
-        # Overturn verdicts the transcript contradicts BEFORE the grade is built —
-        # from_model_output computes the score from these same criteria entries. A VIP case
-        # has its own roles (VIP MANAGER / OTHER STAFF) and no chat closing or greeting rules.
-        guard = (apply_vip_guards if self._ruleset.transcript == TRANSCRIPT_VIP_CASE
-                 else apply_guards)
-        if guard_flags := guard(conversation, data):
-            data["flags"] = [*(data.get("flags") or []), *guard_flags]
+        # Overturn verdicts the transcript contradicts, and derive the ones the model's own
+        # problem/request lists decide, BEFORE the grade is built — from_model_output computes
+        # the score from these same criteria entries. A VIP case has its own roles (VIP MANAGER /
+        # OTHER STAFF) and no chat closing or greeting rules, so it gets its own guard only.
+        if self._ruleset.transcript == TRANSCRIPT_VIP_CASE:
+            flags = apply_vip_guards(conversation, data)
+        else:
+            flags = check_verdicts(conversation, data, self._ruleset)
+        if flags:
+            data["flags"] = [*(data.get("flags") or []), *flags]
 
     def _reconcile(self, conversation: Conversation, messages: list[dict], data: dict,
                    served_by: str, jev: dict, meter: UsageMeter) -> tuple[dict, str, dict]:
@@ -250,7 +318,7 @@ class Grader:
             {"role": "assistant", "content": json.dumps(data, ensure_ascii=False)},
             {"role": "user", "content": dispute_text(targets)},
         ]
-        effort = "high" if settings.qa_effort in ("low", "medium") else settings.qa_effort
+        effort = "high" if self._effort in ("low", "medium") else self._effort
         try:
             revised, revised_by = self._ask(conversation, follow_up, effort, meter)
         except GradeParseError as exc:
@@ -274,7 +342,9 @@ class Grader:
         meter = meter if meter is not None else UsageMeter()
         messages = self.messages_for(conversation)
         data, served_by = self._ask(conversation, messages, meter=meter, batch_shape=batch_shape)
-        return self._complete(conversation, messages, data, served_by, meter)
+        grade = self._complete(conversation, messages, data, served_by, meter)
+        # A warm-up call (batch_shape) only primes the cache; the batch result is voted on later.
+        return grade if batch_shape else self._vote(conversation, messages, grade, meter)
 
     def finish(self, conversation: Conversation, resp, meter: UsageMeter | None = None) -> ConversationGrade:
         """A grade from a Batch API result — the same path a live response takes. Raises
@@ -288,7 +358,51 @@ class Grader:
                 f"(stop_reason={resp.stop_reason})"
             )
         served_by = getattr(resp, "model", None) or self._model
-        return self._complete(conversation, self.messages_for(conversation), data, served_by, meter)
+        messages = self.messages_for(conversation)
+        grade = self._complete(conversation, messages, data, served_by, meter)
+        return self._vote(conversation, messages, grade, meter)
+
+    def _borderline(self, grade: ConversationGrade) -> bool:
+        low, high = settings.qa_vote_band
+        return (low <= grade.overall_score <= high
+                or bool((grade.fail_verifier or {}).get("overturned")))
+
+    def _vote(self, conversation: Conversation, messages: list[dict], first: ConversationGrade,
+              meter: UsageMeter) -> ConversationGrade:
+        """The majority of QA_VOTES full gradings when the first one is borderline. Each vote
+        goes through the same guards and verifier, so the votes are comparable. The grade kept
+        is the median-scored one on the majority side; `votes` on it records every result. A
+        vote that yields no usable grade is skipped; with fewer than two votes the first grade
+        stands as it was."""
+        if self._votes < 2 or not self._borderline(first):
+            return first
+        grades = [first]
+        for i in range(self._votes - 1):
+            try:
+                data, served_by = self._ask(conversation, messages, meter=meter)
+                grades.append(self._complete(conversation, messages, data, served_by, meter))
+            except GradeParseError as exc:
+                log.warning("Vote %d/%d for %s unusable: %s", i + 2, self._votes, conversation.id, exc)
+        if len(grades) < 2:
+            return first
+        tally = Counter(g.overall_result for g in grades)
+        top = max(tally.values())
+        # A tie keeps the first grade's result.
+        majority = (first.overall_result if tally[first.overall_result] == top
+                    else tally.most_common(1)[0][0])
+        side = sorted((g for g in grades if g.overall_result == majority),
+                      key=lambda g: g.overall_score)
+        chosen = side[len(side) // 2]
+        chosen.votes = {
+            "n": len(grades), "majority": majority,
+            "results": [{"score": g.overall_score, "result": g.overall_result} for g in grades],
+            "changed": first.overall_result != majority,
+        }
+        chosen.usage = meter.as_dict()
+        log.info("Voted %s: %s → %s (%d votes%s)", conversation.id,
+                 " / ".join(f"{g.overall_result} {g.overall_score}" for g in grades),
+                 majority, len(grades), ", result changed" if chosen.votes["changed"] else "")
+        return chosen
 
     def _kb_text(self, conversation: Conversation) -> str:
         kb = self.knowledge_for(conversation)
@@ -305,6 +419,10 @@ class Grader:
                 data, served_by, jev = self._reconcile(conversation, messages, data,
                                                        served_by, jev, meter)
 
+        verified: dict = {}
+        if self._fail_verifier is not None:
+            verified = self._fail_verifier.verify(self, conversation, messages, data, meter)
+
         grade = ConversationGrade.from_model_output(
             conversation.id, conversation.assignee_name, data, ruleset_id=self._ruleset.id
         )
@@ -317,6 +435,16 @@ class Grader:
         grade.usage = meter.as_dict()
         kb = self.knowledge_for(conversation)
         grade.kb_version = f"{kb.brand}:{kb.version}" if kb else ""
+        ctx = self.history_for(conversation)
+        grade.history_context = ctx.as_dict() if ctx is not None else {}
+        if verified:
+            grade.fail_verifier = verified
+            # A zero is never lifted by the verifier: a disputed critical goes to a QC manager.
+            if verified.get("disputed_critical") and self._fail_verifier.mode == "on":
+                grade.manual_review_needed = True
+                grade.manual_review_reason = "; ".join(r for r in (
+                    grade.manual_review_reason,
+                    "verifier disputes critical " + ", ".join(verified["disputed_critical"])) if r)
         if jev is not None:
             grade.jev = jev
             # In shadow mode Jev's findings are recorded and change nothing.
