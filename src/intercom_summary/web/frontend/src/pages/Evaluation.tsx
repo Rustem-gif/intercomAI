@@ -575,8 +575,7 @@ export default function Evaluation() {
             [
               `${coverage}% coverage`,
               stale > 0 ? `${stale.toLocaleString()} on an older ruleset` : "",
-              // Said out loud because it is the reason those grades are not counted stale:
-              // an analyst has re-graded them and a run will never overwrite that again.
+              // An analyst has re-graded them; a run never overwrites a stored grade.
               humanReviewed > 0
                 ? `${humanReviewed.toLocaleString()} kept as analyst-reviewed`
                 : "",

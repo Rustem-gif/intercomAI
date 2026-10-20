@@ -7,8 +7,9 @@ red/yellow chats, and agents had disputed specific numbers. Those numbers then m
 because nothing recorded what a grade used to be, nobody could show what had changed.
 
 Two guarantees follow, and both are load-bearing:
-  1. a chat an analyst has re-graded is never re-graded by an ordinary run;
-  2. any grade that *is* overwritten leaves its predecessor behind.
+  1. an ordinary run never re-grades a chat that already has a grade — reviewed or not
+     (the client's instruction, 2026-10-20: old chats are never re-graded);
+  2. any grade that *is* overwritten (an explicit re-grade) leaves its predecessor behind.
 """
 from datetime import datetime, timezone
 
@@ -54,7 +55,7 @@ def _seed_grade(db, cid, score, version):
     store.close()
 
 
-def _run_with_new_rules(monkeypatch, new_version="v2", new_score=41):
+def _run_with_new_rules(monkeypatch, new_version="v2", new_score=41, regrade=False):
     """Re-run grading after a rulebook edit. The model returns a different score, as it did."""
     class _Grader:
         def __init__(self, ruleset_id=None, **_):
@@ -71,7 +72,7 @@ def _run_with_new_rules(monkeypatch, new_version="v2", new_score=41):
 
     monkeypatch.setattr(backends_mod, "get_grader",
                         lambda backend=None, ruleset_id=None: _Grader(ruleset_id))
-    return service.review_and_store(conversation_ids=["reviewed", "untouched"])
+    return service.review_and_store(conversation_ids=["reviewed", "untouched"], regrade=regrade)
 
 
 def test_a_rules_change_does_not_move_a_score_qa_signed_off_on(db, monkeypatch):
@@ -92,9 +93,21 @@ def test_a_rules_change_does_not_move_a_score_qa_signed_off_on(db, monkeypatch):
     assert reviewed["overall_score"] == 92
     assert reviewed["human_score"] == 88
     assert reviewed["rules_version"] == "v1"
-    # The one nobody reviewed is re-graded under the new rules, which is the point of the edit.
-    assert untouched["overall_score"] == 41
-    assert untouched["rules_version"] == "v2"
+    # The one nobody reviewed keeps its grade too: new rules apply to new chats only.
+    assert untouched["overall_score"] == 92
+    assert untouched["rules_version"] == "v1"
+
+
+def test_a_rules_change_only_grades_chats_without_a_grade(db, monkeypatch):
+    _seed_grade(db, "reviewed", 92, "v1")
+
+    result = _run_with_new_rules(monkeypatch)
+
+    store = GradesStore(db)
+    assert store.get("reviewed")["overall_score"] == 92
+    assert store.get("untouched")["overall_score"] == 41   # had no grade → graded now
+    store.close()
+    assert result["graded"] == 1 and result["skipped"] == 1
 
 
 def test_an_explicit_regrade_still_reaches_a_reviewed_chat(db, monkeypatch):
@@ -129,7 +142,7 @@ def test_the_superseded_score_is_still_on_record(db, monkeypatch):
     """"Why is this chat red now when it was green last week?" must have an answer."""
     _seed_grade(db, "untouched", 92, "v1")
 
-    _run_with_new_rules(monkeypatch, new_version="v2", new_score=41)
+    _run_with_new_rules(monkeypatch, new_version="v2", new_score=41, regrade=True)
 
     store = GradesStore(db)
     hist = store.history("untouched")

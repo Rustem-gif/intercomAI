@@ -165,9 +165,9 @@ ship for real.
 ### Change the scoring rules (what good/bad support means)
 - **Easiest:** open the website → **Ruleset** page → edit → save. No code, no restart.
 - **In files:** `rules/support_rules.md`.
-- ⚠️ **Important side effect:** editing the rules creates a new "rules version," which marks
-  **all existing grades as outdated** and a re-run will re-grade everything (slow). Only edit when
-  you intend to re-grade.
+- Editing the rules creates a new "rules version". It applies **only to chats graded from then on**:
+  existing grades keep their scores and are **never re-graded** (client instruction, 2026-10-20 —
+  `GradesStore.is_current`).
 
 ### Change the AI grader's behavior / scoring weights
 - The rubric, the per-criterion JSON the AI fills in, and the scoring math live in
@@ -185,7 +185,7 @@ ship for real.
   graded against the **VIP ruleset** instead of the standard one.
 - **Their old grades are left alone.** They were graded correctly against the standard rules at the
   time, so nothing is re-graded automatically. The Evaluation page shows them as *"graded with a
-  different ruleset"*. To convert them, run a review over that agent with **re-grade** enabled.
+  different ruleset"*, and they stay as they are — old chats are never re-graded.
 - The **group switcher** in the top bar (All / Standard / VIP) scopes every page. VIP and standard
   scores come from different criteria, so they are never averaged together — don't compare them.
 
@@ -200,8 +200,8 @@ A **ruleset** = a system prompt (what the grading model follows) + a criteria ca
   criteria), write the prompt file, and — only if a whole agent *group* should use it —
   add the group in `qa/rulesets.py` (`GROUP_RULESETS`). Everything else — grading, staleness,
   the UI tabs — picks it up automatically.
-- ⚠️ Editing a ruleset's prompt marks **that ruleset's** grades outdated (a re-run re-grades them).
-  Editing the VIP prompt does *not* affect standard grades, and vice versa.
+- Editing a ruleset's prompt changes how **new** chats are graded. Existing grades are never
+  re-graded.
 
 ### The `kb-v41` ruleset and gated scoring (QA Manual v4.1)
 The third ruleset does not score like the other two, and the difference is structural rather than
@@ -524,10 +524,10 @@ first); if a link ever needs widening, generate a new one.
 This happened for real in September and it is worth understanding, because the mechanism is not
 obvious.
 
-`rules_version` is a hash of the **prompt text**. Any edit — one word — produces a new version,
-which marks every grade that ruleset produced stale, and the next review run re-grades them. The
-model does not return the same score twice for the same chat under different rules, so scores
-move. In September the rulebook was corrected on the 3rd and the 4th; QA had already manually
+`rules_version` is a hash of the **prompt text**. Any edit — one word — produces a new version.
+Back then that marked every grade the ruleset produced stale, and the next review run re-graded
+them. The model does not return the same score twice for the same chat under different rules, so
+scores moved. In September the rulebook was corrected on the 3rd and the 4th; QA had already manually
 re-graded the month's red/yellow chats, agents had disputed specific numbers, and those numbers
 then changed underneath everyone. Several grading runs had also crashed mid-batch (Ollama
 dropping out), so chats acquired scores in dribs over days — and an ungraded chat has no colour,
@@ -535,16 +535,17 @@ so it cannot appear in a red/yellow worklist until it does.
 
 Three things now guard against it:
 
-- **A chat an analyst has re-graded is never re-graded by an ordinary run.** `is_current`
-  (`storage/grades_store.py`) treats `human_score IS NOT NULL` as current whatever the
-  rules_version says. Their verdict already wins via `COALESCE(human_score, overall_score)`; this
-  stops the AI score and the criteria checklist under it from moving too. `regrade=True` still
-  forces them. The Evaluation page reports them as *"kept as analyst-reviewed"*.
+- **An ordinary run never re-grades a chat that already has a grade** — reviewed or not, whatever
+  the rules_version says. `is_current` (`storage/grades_store.py`) returns True for any stored
+  grade; new rules apply to new chats only. This is the client's instruction (2026-10-20): **old
+  chats are never re-graded.** Only an explicit `regrade=True` (a person pressing Re-score on a
+  chat, or ticking "Re-grade already-evaluated conversations") replaces a stored grade. Don't do
+  that to old chats without the client's say-so.
 - **Every overwritten grade is archived** into `grade_history` before the upsert, and shown in the
   grade panel as *"Re-graded N times — see previous scores"*. This is what makes "why is this red
   now when it was green last week?" answerable.
-- **The Ruleset page states the blast radius before you save**: how many conversations the edit
-  will re-grade, and how many are protected. `GradesStore.staleness_preview` computes it.
+- **The Ruleset page says what saving does**: existing grades keep their scores, only new chats use
+  the new text.
 
 To find what QA still owes a manual grade for a period:
 ```bash
@@ -638,10 +639,9 @@ knowing because it will recur with other criteria.
   `signal_flags`, never silent. It is scoped to those two criteria on purpose — the same rule
   applied everywhere would move 37% of failing verdicts and shift scores by ~6 points.
 
-⚠️ **Editing any prompt file re-grades everything.** `rules_version` is a hash of the whole
-prompt file (`qa/rulesets.py`), so a one-word change marks every existing grade stale. Nothing
-re-grades on its own — `review_and_store` only runs when a human triggers it from the dashboard
-or Slack — but the Evaluation page's "graded" count will drop until someone does.
+**Editing a prompt file never re-grades existing chats.** `rules_version` is a hash of the whole
+prompt file (`qa/rulesets.py`), so a one-word change makes a new version — grades made from then
+on carry it, and every existing grade keeps its score (`GradesStore.is_current`).
 
 ### Exclude a kind of conversation from grading (e.g. follow-ups)
 Triage/noise chats are never graded and never count towards an agent's score. They're picked
@@ -759,7 +759,7 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
 - **Qwen** — the specific AI model (`qwen2.5:14b`) that grades conversations. Free, runs locally.
 - **Grade / override** — the AI's score vs. a human-corrected score. Analysts and admins can override.
 - **Rules version** — a fingerprint of the rulebook. Grades are tagged with it; editing the rules
-  changes it and makes old grades "stale."
+  changes it for new grades. Old grades keep theirs and are never re-graded.
 - **Job** — a long task (fetching or grading a batch) that runs in the background; the Evaluation
   page polls its progress.
 - **Backend** — the Python server (`web/api.py`). **Frontend** — the React website
