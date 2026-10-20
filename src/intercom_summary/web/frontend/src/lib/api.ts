@@ -270,6 +270,9 @@ export interface Grade {
   human_criteria: Record<string, string> | null;
   /** Analyst manual deductions for things the AI can't verify (e.g. information correctness). */
   human_deductions: ManualDeduction[] | null;
+  /** A QC manager's "Agree" — the AI grade reviewed and left as it is. Cleared on a re-grade. */
+  human_confirmed_by?: string | null;
+  human_confirmed_at?: string | null;
   /** Which ruleset produced this grade — decides how a re-score is computed. */
   ruleset_id?: string;
   overall_result?: string;          // "PASS" | "FAIL"
@@ -291,6 +294,15 @@ export interface Grade {
   confidence?: string;
   /** Jev's second opinion on the verdicts (v4.1 only). Advisory: it never moves the score. */
   jev?: JevCheck;
+  /** The fail verifier's second look at a FAIL (qa/fail_verifier.py); absent when it did not run. */
+  fail_verifier?: {
+    mode: "shadow" | "on";
+    checked: string[];
+    answers?: Record<string, { verdict: "upheld" | "not_proven"; quote: string; reason: string }>;
+    overturned?: string[];
+    disputed_critical?: string[];
+    error?: string;
+  };
   usage?: GradeUsage;
   /** The historical context the grader was given (or, in shadow mode, would have been given). */
   history_context?: HistoryContextUsed;

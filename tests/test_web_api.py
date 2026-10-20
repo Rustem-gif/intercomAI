@@ -1088,3 +1088,28 @@ def test_calibration_tab_endpoints(client):
     r = client.post(f"/api/calibration/runs/{run}/conversations/42/review",
                     json={"score": 50, "reason": "x"})
     assert r.status_code == 403
+
+
+def test_agree_with_a_grade_and_withdraw(client):
+    _seed_grade()
+    _login(client, "ana", "pw")
+    r = client.post("/api/conversations/42/confirm")
+    assert r.status_code == 200 and r.json()["human_confirmed_by"] == "ana"
+    assert client.get("/api/conversations/42").json()["grade"]["human_confirmed_by"] == "ana"
+    assert client.delete("/api/conversations/42/confirm").status_code == 200
+    assert client.get("/api/conversations/42").json()["grade"]["human_confirmed_by"] is None
+    client.post("/api/conversations/42/override", json={"score": 95, "reason": "higher"})
+    assert client.post("/api/conversations/42/confirm").status_code == 409
+    assert client.post("/api/conversations/404/confirm").status_code == 404
+
+
+def test_viewer_cannot_agree(client):
+    _seed_grade()
+    _login(client, "looker", "pw")
+    assert client.post("/api/conversations/42/confirm").status_code == 403
+
+
+def test_accuracy_reports_result_agreement(client):
+    _login(client)
+    ra = client.get("/api/accuracy").json()["result_agreement"]
+    assert ra["ruleset_id"] == "kb-v41" and ra["target"] == 0.95 and ra["estimate"] is None

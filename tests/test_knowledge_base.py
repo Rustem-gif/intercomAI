@@ -130,12 +130,16 @@ def test_flat_rulesets_never_load_a_kb(monkeypatch):
         assert Grader(ruleset_id=rid, client=FakeClaude(reply(_v41())), jev=False)._kb == {}
 
 
-def test_the_v41_prompt_judges_accuracy_against_the_kb():
+def test_the_v41_prompt_uses_the_kb_as_reference_not_as_the_judge():
+    """QA calibration (2026-10-20): the Help Center lags behind offers and internal policy, so
+    a difference from it is flagged (kb-discrepancy), never failed or sent to cannot_determine."""
     from intercom_summary.qa.rulesets import get_ruleset
 
     text = get_ruleset("kb-v41").prompt_text
     assert "## ACCURACY" in text
-    assert "never mark accuracy cannot_determine because of it" in text
+    assert "NOT an accuracy failure on its own" in text
+    assert "kb-discrepancy:" in text
+    assert "Never mark accuracy cannot_determine because the knowledge base does not cover" in text
     assert "Accuracy needs the transcript plus approved KB/T&C or policy. Without it" not in text
 
 

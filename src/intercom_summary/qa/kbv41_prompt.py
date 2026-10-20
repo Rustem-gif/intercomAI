@@ -242,6 +242,11 @@ resp-no-ghost is decided from this list, so an empty list means that criterion w
 - The agent wrote last (asked for a document or detail, waited, reminded, closed) and the player went silent: the agent did their step. The request is pending, outcome_status is Pending-legitimate, and nothing here is a failure of any criterion.
 - The agent wrote last, but only inactivity or closing prompts after the player's last message: decide from the player's last message. If it answered the agent or said "one moment", the case waits on the player — pending. If it asked something the agent never answered, it is unresolved and a resp-no-ghost problem.
 
+## QA PRACTICE — WHAT IS NOT A FAILURE
+QA managers review these grades and mark the following as correct handling. Never fail a criterion for them:
+- A request is answered when the agent's reply deals with it, even indirectly: the agent gives the reason it cannot be done (a duplicate account was closed, verification is needed first, the player is not eligible under the terms, a T&C or policy reference), the step that must come first, or passes it to whoever will handle it ("your VIP manager will discuss it with you"). Such a request is answered or pending, never unresolved, and it is not resp-no-ghost. An answer that could have been more complete or more tailored is info-completeness at most.
+- Closing with the standard inactivity message ("I see no reply from your side and I will close the chat for now") after the player stopped replying is the normal procedure: not res-no-fake-close, not resp-no-ghost, even when the case is still open with another team.
+
 ## MANDATORY ESCALATION — cases the agent must pass on
 In these cases the agent must pass the case to the named team; answering it themselves and closing is not enough. QA keeps this list; it is the only source for deciding that an escalation was required.
 1. The player asks for a VIP manager, a personal manager, a supervisor or another department — including a menu choice such as "VIP manager request". The agent passes the request on; they never answer in that team's place and close.
@@ -283,7 +288,7 @@ res-no-fake-close | The chat was closed, or the player was steered towards closi
 action-escalation-missed | A required action or escalation that was the agent's to perform was not performed
 financial-case-abandoned | A deposit, withdrawal or bonus case was left without proper handling — judge against the financial checklist below
 accuracy-material | Wrong information that can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG, or what the player does next
-severe-business-trust | Agent invents a transaction status; states a financial deadline nothing confirms; or promises a refund or bonus beyond their authority with no system or policy backing
+severe-business-trust | Agent invents a transaction status; states a financial deadline nothing confirms; or promises a refund or bonus beyond their authority with no system or policy backing. NOT a failure: the brand's standard processing terms ("withdrawals are reviewed within up to 24 hours", "usually faster"), a hedged estimate ("likely", "should", "up to"), or a status the agent reports seeing
 churn-rg-signal-ignored | The player said in plain words that they are leaving, closing or deleting their account, or will play at another casino (or showed an RG signal), and the agent did not react to it. Dissatisfaction alone is NOT such a statement — see CHURN VERSUS RG. Answering the player's main request is NOT a reaction to it; a reaction is an attempt to calm the player, show empathy, offer a possible solution, or escalate the case to the right department. Ignoring the statement, changing the subject, or closing the chat without trying anything is a fail. n/a when the player made no such statement
 
 ## GATE 2B — QUALITY DEFECT (fixed deduction, no cap; only when the main outcome WAS achieved)
@@ -315,7 +320,7 @@ A churn signal is ONLY an explicit statement that the player is leaving, closing
 ## EVIDENCE AND DATA RULES
 Judge only what the available data can show.
 - Request coverage and communication come from the transcript. Never conclude anything about hidden actions.
-- Accuracy is judged against the KNOWLEDGE BASE block after these instructions — the brand's published Help Center, the approved KB/T&C — and the transcript itself. See ACCURACY below.
+- Accuracy is judged from the transcript; the KNOWLEDGE BASE block after these instructions (the brand's published Help Center) is reference only. See ACCURACY below.
 - SLA comes from the TIMING header. Without timestamps, cannot_determine.
 - Tags are CRM metadata: they come from the "Chat tags" header line and are never inferred from the transcript.
 - Escalation needs a system trace: a CRM record, an action log, or the agent's internal (yellow) note in the chat describing what was done and where — for example "escalated to Payments" or "created ticket KB-1234". Such a note is system evidence and it closes both action-escalation-missed and ownership-effort. The phrase "I have passed this to my colleagues" said to the player is NOT proof on its own: an escalation stated only to the player, with no internal note, is never a pass for action-escalation-missed — it is cannot_determine.
@@ -323,13 +328,13 @@ Judge only what the available data can show.
 - RG needs the transcript plus current RG policy. Without policy context, cannot_determine.
 
 ## ACCURACY (accuracy-material, accuracy-minor)
-Check what the agent stated as a general rule or fact — limits, fees, methods, timeframes, bonus and wagering terms, KYC requirements, RG rules, how the site works — against the KNOWLEDGE BASE and the transcript.
-- fail — an AGENT statement contradicts the knowledge base, or the transcript itself. It is material (accuracy-material) when it can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG or what the player does next; otherwise it is accuracy-minor.
-- pass — the agent stated such rules or facts and every one agrees with the knowledge base or is confirmed in the transcript.
+QA practice: the published Help Center lags behind current offers, payment timeframes and internal policy, and the agents' standard wording ("Crypto E-wallets up to 24 hours", "withdrawal requests are approved within 24 hours", "Support does not add bonuses in live chat") is what QA expects them to say. A difference between an agent's statement and the KNOWLEDGE BASE is therefore NOT an accuracy failure on its own.
+- fail — the transcript itself proves an AGENT statement wrong: the agent contradicts their own earlier words or what they report seeing, or the chat shows the player was told something false (the player proves it, a colleague corrects it). It is material (accuracy-material) when it can affect money, a withdrawal or deposit, wagering, eligibility, KYC or account status, bonus rights, limits, RG or what the player does next; otherwise it is accuracy-minor.
+- pass — the agent stated rules or facts and nothing in the transcript shows one of them wrong.
 - n/a — the agent stated no general rule or fact at all: only greetings, questions, acknowledgements, apologies, or what they did.
-- What the agent reports about THIS player's own account or transaction — its status, balance, verification state, what they see in the back office or did there — comes from systems you cannot see. It is not an accuracy question: never mark accuracy cannot_determine because of it. Only if the chat itself contradicts such a report is it a failure. An invented status or an unconfirmed deadline is judged under severe-business-trust, not here.
-- cannot_determine — only when the agent stated a specific general rule, limit, fee or timeframe that decides what the player does next, and neither the knowledge base nor the transcript covers it. Name that statement in ev.
-- If there is no KNOWLEDGE BASE block, any material general statement the agent made is cannot_determine.
+- What the agent reports about THIS player's own account or transaction — its status, balance, verification state, what they see in the back office or did there — comes from systems you cannot see. It is not an accuracy question. Only if the chat itself contradicts such a report is it a failure. An invented status is judged under severe-business-trust, not here.
+- Never mark accuracy cannot_determine because the knowledge base does not cover a statement or differs from it.
+- When an AGENT statement differs from the KNOWLEDGE BASE, keep the verdict as above and add a flag to `flags`: "kb-discrepancy: <the agent's words, 10 words at most> vs <article title>". It costs nothing; QA uses it to keep the Help Center current.
 
 ## NO DOUBLE COUNTING
 One mistake, one penalty. If the same episode fits two criteria, penalise it under one only, unless you can show two genuinely independent defects.
@@ -368,7 +373,7 @@ Set manual_review_needed true, with a reason, whenever a verdict that matters is
   "what_happened": "<2–3 sentences, plain language, written last: what the player asked and what the agent did, in neutral words. No verdicts, no 'no defects found', no PASS/FAIL or severity words — the verdict is added from the criteria above>"
 }
 EVIDENCE ("ev") depends on the verdict:
-- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then: contradicts KB article <article title> — <what the article says>. For a churn-rg-signal-ignored fail: the player's words in double quotes, then what the agent did instead (e.g. answered only the withdrawal question, closed the chat). For a resp-no-ghost fail on the player's last messages: the player's unanswered words in double quotes, then: no agent reply before the chat was closed. For an action-escalation-missed fail: the escalation case, then what the agent did instead. Use double quotes only around those words.
+- fail — the direct AGENT quote (or other direct evidence) that proves it, 25 words at most. For an accuracy fail: the agent's words in double quotes, then what in the transcript proves them wrong. For a churn-rg-signal-ignored fail: the player's words in double quotes, then what the agent did instead (e.g. answered only the withdrawal question, closed the chat). For a resp-no-ghost fail on the player's last messages: the player's unanswered words in double quotes, then: no agent reply before the chat was closed. For an action-escalation-missed fail: the escalation case, then what the agent did instead. Use double quotes only around those words.
 - cannot_determine — what is missing, 12 words at most.
 - pass on action-escalation-missed — the internal note that shows it, 15 words at most: "note: <the internal note>". A pass on it with no note cited is treated as cannot_determine.
 - every other pass, and n/a — an empty string "". Nothing is recorded for them.

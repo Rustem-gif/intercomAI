@@ -28,6 +28,7 @@ from anthropic import Anthropic
 from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.qa import knowledge_base
+from intercom_summary.qa.fail_verifier import FailVerifier
 from intercom_summary.qa.gated_rules import check_verdicts
 from intercom_summary.qa.grading_common import GradeParseError, is_valid_grade, trim_transcript
 from intercom_summary.qa.history_context import HistoryContext, HistoryProvider
@@ -65,6 +66,7 @@ class Grader:
         knowledge: dict | None = None,
         history=None,
         effort: str | None = None,
+        fail_verifier=None,
     ) -> None:
         self._model = model or settings.qa_model
         # Resolved once: a run grades every chat at one effort, and the dry-run script sets
@@ -107,6 +109,13 @@ class Grader:
         if history is None:
             history = HistoryProvider() if settings.history_context != "off" else None
         self._history = history or None
+        # The second look at FAILs (qa/fail_verifier.py) — gated rulesets only, like Jev.
+        # Pass fail_verifier=False to switch it off, or a FailVerifier to inject one.
+        if fail_verifier is None:
+            use = (self._ruleset.scoring_model == SCORING_GATED
+                   and settings.qa_fail_verifier != "off")
+            fail_verifier = FailVerifier() if use else None
+        self._fail_verifier = fail_verifier or None
         self._history_memo: dict[str, HistoryContext | None] = {}
         self._history_lock = threading.Lock()
 
@@ -130,6 +139,10 @@ class Grader:
         with self._history_lock:
             self._history_memo[conversation.id] = ctx
         return ctx
+
+    @property
+    def critical_ids(self) -> list[str]:
+        return [c["id"] for c in self._ruleset.criteria if c.get("critical")]
 
     @property
     def client(self) -> Anthropic:
@@ -332,6 +345,10 @@ class Grader:
                 data, served_by, jev = self._reconcile(conversation, messages, data,
                                                        served_by, jev, meter)
 
+        verified: dict = {}
+        if self._fail_verifier is not None:
+            verified = self._fail_verifier.verify(self, conversation, messages, data, meter)
+
         grade = ConversationGrade.from_model_output(
             conversation.id, conversation.assignee_name, data, ruleset_id=self._ruleset.id
         )
@@ -346,6 +363,14 @@ class Grader:
         grade.kb_version = f"{kb.brand}:{kb.version}" if kb else ""
         ctx = self.history_for(conversation)
         grade.history_context = ctx.as_dict() if ctx is not None else {}
+        if verified:
+            grade.fail_verifier = verified
+            # A zero is never lifted by the verifier: a disputed critical goes to a QC manager.
+            if verified.get("disputed_critical") and self._fail_verifier.mode == "on":
+                grade.manual_review_needed = True
+                grade.manual_review_reason = "; ".join(r for r in (
+                    grade.manual_review_reason,
+                    "verifier disputes critical " + ", ".join(verified["disputed_critical"])) if r)
         if jev is not None:
             grade.jev = jev
             # In shadow mode Jev's findings are recorded and change nothing.

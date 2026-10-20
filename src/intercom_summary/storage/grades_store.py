@@ -260,7 +260,9 @@ class GradesStore:
                    case_type      = excluded.case_type,
                    risk_flag      = excluded.risk_flag,
                    catastrophic_service_failure = excluded.catastrophic_service_failure,
-                   manual_review_needed         = excluded.manual_review_needed""",
+                   manual_review_needed         = excluded.manual_review_needed,
+                   human_confirmed_by = NULL,
+                   human_confirmed_at = NULL""",
             (
                 grade.conversation_id,
                 grade.agent_name,
@@ -289,7 +291,8 @@ class GradesStore:
     def get(self, conversation_id: str) -> dict | None:
         row = self._conn.execute(
             """SELECT payload_json, human_score, override_reason, overridden_by,
-                      overridden_at, human_criteria, human_deductions, ruleset_id
+                      overridden_at, human_criteria, human_deductions, ruleset_id,
+                      human_confirmed_by, human_confirmed_at
                FROM grades WHERE conversation_id=?""",
             (conversation_id,),
         ).fetchone()
@@ -305,6 +308,8 @@ class GradesStore:
         d["overridden_at"] = row["overridden_at"]
         d["human_criteria"] = json.loads(row["human_criteria"]) if row["human_criteria"] else None
         d["human_deductions"] = json.loads(row["human_deductions"]) if row["human_deductions"] else None
+        d["human_confirmed_by"] = row["human_confirmed_by"]
+        d["human_confirmed_at"] = row["human_confirmed_at"]
         d["rule_results"] = _normalize_criteria(d.get("rule_results"), d["ruleset_id"])
         return d
 
@@ -415,6 +420,59 @@ class GradesStore:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    def confirm(self, conversation_id: str, confirmed_by: str | None) -> bool:
+        """Record (or with None, withdraw) a QC manager's agreement with the AI grade as it
+        stands. A chat with a human override has a human verdict already, so it cannot be
+        confirmed — False then, and when there is no grade."""
+        cur = self._conn.execute(
+            "UPDATE grades SET human_confirmed_by=?, human_confirmed_at=? "
+            "WHERE conversation_id=? AND human_score IS NULL",
+            (confirmed_by, _now() if confirmed_by else None, conversation_id))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def result_agreement(self, ruleset_id: str | None = None, since: str | None = None,
+                         agents: list[str] | None = None, brand: str | None = None) -> dict:
+        """AI ↔ QA agreement on PASS/FAIL, weighted by how often the AI gives each result
+        (qa/agreement.py). A chat counts as reviewed when a human overrode it (their score
+        decides their result) or pressed Agree (the AI's result stands)."""
+        from intercom_summary.qa.agreement import population_agreement, result_of
+
+        where, args = [], []
+        if ruleset_id:
+            where.append("ruleset_id = ?")
+            args.append(ruleset_id)
+        if since:
+            where.append("graded_at >= ?")
+            args.append(since)
+        if agents is not None:
+            if not agents:
+                where.append("0")
+            else:
+                where.append(f"agent_name IN ({','.join('?' * len(agents))})")
+                args.extend(agents)
+        brand_sql, brand_args = _brand_sql(brand)
+        if brand_sql:
+            where.append(brand_sql)
+            args.extend(brand_args)
+        ign_sql, ign_args = _not_ignored_sql()
+        where.append(ign_sql)
+        args.extend(ign_args)
+        rows = self._conn.execute(
+            "SELECT overall_score, human_score, human_confirmed_at FROM grades WHERE "
+            + " AND ".join(where), args).fetchall()
+        labelled = []
+        for r in rows:
+            ai = result_of(r["overall_score"])
+            human = (result_of(r["human_score"]) if r["human_score"] is not None
+                     else ai if r["human_confirmed_at"] else None)
+            labelled.append({"ai": ai, "human": human})
+        out = population_agreement(labelled)
+        out["confirmed"] = sum(1 for r in rows if r["human_confirmed_at"] and r["human_score"] is None)
+        out["overridden"] = sum(1 for r in rows if r["human_score"] is not None)
+        out["target"] = 0.95
+        return out
 
     def accuracy_stats(self, agents: list[str] | None = None, brand: str | None = None) -> dict:
         """AI-vs-human accuracy metrics for the traceability dashboard."""

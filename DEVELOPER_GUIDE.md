@@ -410,6 +410,44 @@ the Overview, the grading queue or agent stats, and nothing is graded.
 - 1–14 Oct 2026: 916 fetched, **538 kept**. Rules dropped 185 duplicates, 115 with no player
   message, 31 one-word replies and 36 with no manager reply. The AI dropped 11.
 
+### AI ↔ QA agreement (the client's ≥ 95% PASS/FAIL bar)
+The client's requirement: the AI's PASS/FAIL agrees with QA's on at least 95% of chats.
+- **Measured how:** `qa/agreement.py`. QA reviews the AI's FAILs far more often than its PASSes, so a
+  plain "agreed / reviewed" ratio mostly measures the FAILs. The estimate weights each side by how
+  often the AI gives it: `P(AI PASS)·agree|PASS + P(AI FAIL)·agree|FAIL`, with a 95% range. A side
+  nobody has reviewed makes the estimate "unknown" rather than assuming it is perfect.
+- **Where:** the Accuracy page's top card (`/api/accuracy` → `result_agreement`, v4.1, last 30 days),
+  or `python scripts/agreement_report.py`.
+- **The "Agree" button** (grade panel, next to Re-score) records that a QC manager checked the AI
+  grade and it stands (`grades.human_confirmed_by/at`, `POST|DELETE /api/conversations/<id>/confirm`).
+  Without it only disagreements leave a trace. A re-scored grade can't be agreed with (it already
+  has a human verdict). In the Calibration tab, Agree saves a re-score with
+  the AI's own verdicts.
+- **False-PASS audit:** `scripts/pass_audit_sample.py` freezes 80 random unreviewed AI-PASS chats as
+  sample `kb-v41-pass-audit`. QA opens them (`/api/conversations?sample=kb-v41-pass-audit`) and presses
+  Agree or Re-score on the **stored** grade. No calibration run — old chats are never re-graded.
+- **Measuring a change before shipping it:** `scripts/accuracy_ab.py` grades the human-reviewed chats
+  per configuration ("arm": `base`, `hist`, `jev`, `verify`, `vshadow`, joined with `+`). It never
+  writes to `grades`. Tune prompts on `--set dev` only and check once on `--set holdout`
+  (`agreement.split_of`, a stable 70/30 hash split). Then
+  `scripts/agreement_report.py <accuracy_ab_*.json>` projects the population agreement for each arm.
+  Run both against a **copy** of the DB (`DB_PATH=…`).
+
+### The fail verifier — a second look at every FAIL
+`qa/fail_verifier.py`. QA overturned 130 of the 146 AI FAILs it reviewed (Oct 2026), almost always
+over a judgement call, while PASSes are rarely overturned. So when a v4.1 grade is heading for FAIL,
+the same model takes one more look, at ~$0.013 per verified chat. It reuses the cached prompt and KB.
+It checks each failed criterion against the manual and that criterion's NOT-A-FAIL boundaries
+(`BOUNDARIES` in the file), then answers `upheld` or `not_proven`.
+- `QA_FAIL_VERIFIER` in `.env`: `on` (default) · `shadow` (record only) · `off`. It applies to chats
+  graded from now on; existing grades are never re-graded.
+- **`on`:** `not_proven` turns a Gate 2/3 fail into pass, with a `verifier:` flag. A Gate 1 critical is
+  never lifted. A disputed critical goes to manual review instead. A verifier error leaves the grade
+  unchanged.
+- The record is in `payload_json["fail_verifier"]` (checked, answers, overturned).
+- When QA reports a new kind of false FAIL, add the boundary to `BOUNDARIES` **and** to the prompt's
+  QA PRACTICE section, then re-measure with `accuracy_ab.py`.
+
 ### Calibration samples (measuring the AI against human graders)
 A **calibration sample** is a frozen list of conversations. Frozen is the point: two measurement
 runs are only comparable if they graded the same chats, so membership is written down once

@@ -46,6 +46,61 @@ function BiasIndicator({ avgDelta }: { avgDelta: number }) {
   );
 }
 
+const pct = (x: number | null | undefined, digits = 1) =>
+  x === null || x === undefined ? "—" : `${(x * 100).toFixed(digits)}%`;
+
+/** The client's bar: the AI's PASS/FAIL agrees with QA's on ≥ 95% of chats. QA reviews the AI's
+ *  FAILs far more often than its PASSes, so each side's agreement is weighted by how often the
+ *  AI gives that result (qa/agreement.py) — a reviewed-only ratio would mostly measure FAILs. */
+function ResultAgreement({ ra }: { ra: any }) {
+  if (!ra) return null;
+  const est: number | null = ra.estimate;
+  const ok = est !== null && est >= ra.target;
+  const side = (k: "PASS" | "FAIL") => ra.sides[k];
+  return (
+    <Card>
+      <CardContent className="space-y-3 pt-5">
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
+          <div>
+            <p className="text-xs font-medium text-muted-foreground">
+              PASS/FAIL agreement with QA · v4.1 · last {ra.days} days
+            </p>
+            <p className={`mt-1 text-3xl font-bold ${est === null ? "" : ok ? "text-emerald-500" : "text-destructive"}`}>
+              {pct(est)}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              target ≥ {pct(ra.target, 0)}
+              {ra.ci95 && <> · 95% range {pct(ra.ci95[0])}–{pct(ra.ci95[1])}</>}
+            </p>
+          </div>
+          {(["FAIL", "PASS"] as const).map((k) => (
+            <div key={k} className="text-sm">
+              <p className="text-xs text-muted-foreground">When the AI says {k}</p>
+              <p className="font-semibold">
+                {side(k).reviewed ? `${pct(side(k).rate, 0)} agree` : "not reviewed"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {side(k).agreed}/{side(k).reviewed} reviewed · {side(k).population} graded
+              </p>
+            </div>
+          ))}
+          <div className="text-sm">
+            <p className="text-xs text-muted-foreground">Human reviews</p>
+            <p className="font-semibold">{ra.overridden + ra.confirmed}</p>
+            <p className="text-xs text-muted-foreground">{ra.overridden} re-scored · {ra.confirmed} agreed</p>
+          </div>
+        </div>
+        {est === null && (
+          <p className="text-xs text-muted-foreground">
+            Not measurable yet: no QA review of a chat the AI {side("PASS").reviewed ? "failed" : "passed"}.
+            Press <strong>Agree</strong> on a grade you checked and found right — otherwise only disagreements are counted.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Accuracy() {
   const displayName = useDisplayName();
   const { data, isLoading } = useQuery({
@@ -73,6 +128,8 @@ export default function Accuracy() {
           Traceability of AI vs manager scoring — {s.total_overridden} override{s.total_overridden !== 1 ? "s" : ""} recorded.
         </p>
       </div>
+
+      <ResultAgreement ra={data.result_agreement} />
 
       {/* KPI row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
