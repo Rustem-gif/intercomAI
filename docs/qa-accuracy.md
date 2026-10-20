@@ -117,8 +117,20 @@ internal bonus policy) or contradict QA's own verdicts on similar chats.
 | 11 | **Still a failure:** denying service on eligibility (country) when the Help Center says the player is accepted | 1 | false PASS |
 | 12 | Verifier boundaries that excused real defects were narrowed: templated replies to a visibly upset player (comm-tone), a refusal with no reason or next step (info-completeness), asking for what the player already gave (ownership-effort) | history (~75 corrections) | false PASS |
 
-Rules version: see `git log` — every change is a new version and applies to chats graded from
-then on only. **Not yet measured**: the holdout and the pass-audit sample need one batch run.
+Rules version `66c36e68e8c0`; every change applies to chats graded from then on only.
+
+**Measured (2026-10-20, Sonnet 5.5 high effort, batch, DB copy, $3.93; nothing saved):**
+
+| Configuration | Dev (116) | Holdout (35) | All (151) | False FAIL / false PASS |
+|---|---|---|---|---|
+| Round-1 rules + verifier (`78889e130313`) | 70.7% | 80.0% | 72.9% | 30 / 11 |
+| Round-2 rules alone (`66c36e68e8c0`) | 75.0% | 71.4% | 74.2% | 32 / 7 |
+| **Round-2 rules + verifier** | **77.6%** | **80.0%** | **78.1%** (95% CI 71–84%) | 25 / 8 |
+
+- **Pass audit** (80 chats the stored grades passed): **0 new FAILs** (round 1: 1–2). Manual review 25 of 80, as before — escalations told to the player with no internal note.
+- **The holdout did not move:** 7 disagreements both times; on 35 chats the interval is 64–90%. The gain is on dev, where the rules were written, so part of it may be fit to those chats.
+- Projected population agreement 97.9%, under the same unverified assumption that QA agrees with the AI's PASSes.
+- The 33 remaining disagreements: 7 are the scam shift and the power outage; 6 are escalation FAILs QA passed with "no mistakes"; 7 are resp-no-ghost FAILs QA passed with "no mistakes"; 8 are false PASSes, half of them back-office or internal-policy knowledge.
 
 **For QA to confirm** (items that change how the manual reads): 1 (money-related secondary
 request is not a Gate 2 failure), 7 (manager remark), 10 (account closure as a required action),
