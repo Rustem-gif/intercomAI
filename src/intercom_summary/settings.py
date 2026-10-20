@@ -46,6 +46,14 @@ def _fail_verifier_mode(value: str) -> str:
     return value
 
 
+def _vote_band(value: str) -> tuple[int, int]:
+    try:
+        low, high = (int(x) for x in value.split("-"))
+    except ValueError as exc:
+        raise ValueError(f"QA_VOTE_BAND must look like 70-89 (got {value!r})") from exc
+    return (low, high)
+
+
 def _history_mode(value: str) -> str:
     value = value.lower()
     if value not in ("off", "shadow", "on"):
@@ -100,6 +108,15 @@ class Settings:
     #   QA-reviewed chats 63.6% → 72.9%, and run-to-run stability 90.7% → 94.7%)
     qa_fail_verifier: str = field(
         default_factory=lambda: _fail_verifier_mode(_env("QA_FAIL_VERIFIER", "on"))
+    )
+
+    # Majority vote on borderline grades (qa/grader.py): QA_VOTES full gradings when the first
+    # lands in QA_VOTE_BAND (score low-high) or the fail verifier changed a verdict, and the
+    # majority PASS/FAIL wins. 1 = off. Oct 2026: two runs of the same rules disagreed on ~10%
+    # of the QA-reviewed chats, nearly all of them near the 85 threshold.
+    qa_votes: int = field(default_factory=lambda: int(_env("QA_VOTES", "3") or "3"))
+    qa_vote_band: tuple[int, int] = field(
+        default_factory=lambda: _vote_band(_env("QA_VOTE_BAND", "70-89"))
     )
 
     # Jev (TypeSafe) — a calibrated second opinion on v4.1 verdicts; see qa/jev_verifier.py.

@@ -9,6 +9,7 @@ FAILs / false PASSes and the criteria behind them. Arms are `+`-joined switches:
     jev       + Jev in reconcile mode
     verify    + the fail verifier (qa/fail_verifier.py) in `on` mode
     vshadow   + the fail verifier in `shadow` mode (records, changes nothing)
+    vote      + the majority vote on borderline chats (QA_VOTES=3; off in every other arm)
 
     .venv/bin/python scripts/accuracy_ab.py --set dev --arms base,verify
     .venv/bin/python scripts/accuracy_ab.py --set holdout --arms verify --live
@@ -111,6 +112,7 @@ def record(c, g, hum: dict, dt: float) -> dict:
         "human": hum.get("human"), "human_result": hum.get("human_result"),
         "stored_ai": hum.get("stored_ai"), "reason": hum.get("reason", ""),
         "human_criteria": hum.get("human_criteria", {}),
+        "votes": g.votes,
         "fails": sorted(r.rule_id for r in g.rule_results if r.verdict == "fail"),
         "cannot": sorted(r.rule_id for r in g.rule_results if r.verdict == "cannot_determine"),
         "criteria": {r.rule_id: [r.verdict, r.evidence] for r in g.rule_results
@@ -140,7 +142,8 @@ def build_grader(switches: set[str], ruleset: str, effort: str | None):
     if "verify" in switches or "vshadow" in switches:
         verifier = FailVerifier(mode="on" if "verify" in switches else "shadow")
     return Grader(ruleset_id=ruleset, effort=effort, jev=jev, fail_verifier=verifier,
-                  history=HistoryProvider(mode="on") if "hist" in switches else False)
+                  history=HistoryProvider(mode="on") if "hist" in switches else False,
+                  votes=settings.qa_votes if "vote" in switches else 1)
 
 
 def run_arm(arm: str, convos: list, hum: dict, *, ruleset: str, effort: str | None,

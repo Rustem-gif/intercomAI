@@ -374,6 +374,17 @@ export default function GradePanel({
         {/* The fail verifier took a second look because the grade was heading for FAIL. In `on`
             mode the criteria it could not confirm were turned to pass (they show as passed
             above); in shadow mode it only records, so say so. */}
+        {/* A borderline grade is made several times and the majority decides (QA_VOTES). */}
+        {!editing && grade.votes && grade.votes.n > 1 && (
+          <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Majority of {grade.votes.n} gradings</span>
+            {": "}
+            {grade.votes.results.map((v) => `${v.result} ${v.score}`).join(" · ")}
+            {" → "}
+            <span className="font-medium text-foreground">{grade.votes.majority}</span>
+            {grade.votes.changed ? " (the first grading was outvoted)" : ""}
+          </div>
+        )}
         {!editing && grade.fail_verifier && grade.fail_verifier.checked?.length > 0 && (
           <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">Second look at the FAIL</span>

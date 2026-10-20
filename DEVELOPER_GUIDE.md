@@ -448,6 +448,17 @@ It checks each failed criterion against the manual and that criterion's NOT-A-FA
 - When QA reports a new kind of false FAIL, add the boundary to `BOUNDARIES` **and** to the prompt's
   QA PRACTICE section, then re-measure with `accuracy_ab.py`.
 
+### The majority vote — borderline grades are made three times
+`Grader._vote` (`qa/grader.py`), `QA_VOTES=3` (1 = off), `QA_VOTE_BAND=70-89`. Two runs of the
+same rules disagreed on about one QA-reviewed chat in ten (Oct 2026), nearly all near the 85
+threshold. So when the first grading lands in the band, or the fail verifier changed a verdict,
+the chat is graded again (two more full passes, guards and verifier included) and the majority
+PASS/FAIL wins; the kept grade is the median-scored one on the majority side. `grade.votes`
+records every result; the panel shows "Majority of 3 gradings: FAIL 75 · PASS 92 · PASS 95 →
+PASS". Extra calls reuse the cached prompt (~$0.013 each) on roughly one chat in five. A warm-up
+call and a vote that yields no usable grade are never voted on. Evaluate it with the `vote` arm
+of `scripts/accuracy_ab.py`.
+
 ### Bot-menu buttons in the transcript
 Intercom records a button the player clicks in the bot menu as an ordinary customer message with
 the button's label, so "My deposit did not come" looked like a typed request the agent ignored.

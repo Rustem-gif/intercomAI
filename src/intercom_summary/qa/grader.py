@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections import Counter
 from datetime import datetime, timezone
 
 from anthropic import Anthropic
@@ -67,6 +68,7 @@ class Grader:
         history=None,
         effort: str | None = None,
         fail_verifier=None,
+        votes: int | None = None,
     ) -> None:
         self._model = model or settings.qa_model
         # Resolved once: a run grades every chat at one effort, and the dry-run script sets
@@ -116,6 +118,13 @@ class Grader:
                    and settings.qa_fail_verifier != "off")
             fail_verifier = FailVerifier() if use else None
         self._fail_verifier = fail_verifier or None
+        # Majority vote on borderline chats (QA_VOTES). Two runs of the same rules disagreed on
+        # about one QA-reviewed chat in ten (Oct 2026), and the flips sit near the threshold:
+        # a grade in the vote band, or one the verifier changed, is made again and the
+        # majority PASS/FAIL decides. Gated rulesets only; votes=1 switches it off.
+        if votes is None:
+            votes = settings.qa_votes if self._ruleset.scoring_model == SCORING_GATED else 1
+        self._votes = max(1, int(votes))
         self._history_memo: dict[str, HistoryContext | None] = {}
         self._history_lock = threading.Lock()
 
@@ -314,7 +323,9 @@ class Grader:
         meter = meter if meter is not None else UsageMeter()
         messages = self.messages_for(conversation)
         data, served_by = self._ask(conversation, messages, meter=meter, batch_shape=batch_shape)
-        return self._complete(conversation, messages, data, served_by, meter)
+        grade = self._complete(conversation, messages, data, served_by, meter)
+        # A warm-up call (batch_shape) only primes the cache; the batch result is voted on later.
+        return grade if batch_shape else self._vote(conversation, messages, grade, meter)
 
     def finish(self, conversation: Conversation, resp, meter: UsageMeter | None = None) -> ConversationGrade:
         """A grade from a Batch API result — the same path a live response takes. Raises
@@ -328,7 +339,51 @@ class Grader:
                 f"(stop_reason={resp.stop_reason})"
             )
         served_by = getattr(resp, "model", None) or self._model
-        return self._complete(conversation, self.messages_for(conversation), data, served_by, meter)
+        messages = self.messages_for(conversation)
+        grade = self._complete(conversation, messages, data, served_by, meter)
+        return self._vote(conversation, messages, grade, meter)
+
+    def _borderline(self, grade: ConversationGrade) -> bool:
+        low, high = settings.qa_vote_band
+        return (low <= grade.overall_score <= high
+                or bool((grade.fail_verifier or {}).get("overturned")))
+
+    def _vote(self, conversation: Conversation, messages: list[dict], first: ConversationGrade,
+              meter: UsageMeter) -> ConversationGrade:
+        """The majority of QA_VOTES full gradings when the first one is borderline. Each vote
+        goes through the same guards and verifier, so the votes are comparable. The grade kept
+        is the median-scored one on the majority side; `votes` on it records every result. A
+        vote that yields no usable grade is skipped; with fewer than two votes the first grade
+        stands as it was."""
+        if self._votes < 2 or not self._borderline(first):
+            return first
+        grades = [first]
+        for i in range(self._votes - 1):
+            try:
+                data, served_by = self._ask(conversation, messages, meter=meter)
+                grades.append(self._complete(conversation, messages, data, served_by, meter))
+            except GradeParseError as exc:
+                log.warning("Vote %d/%d for %s unusable: %s", i + 2, self._votes, conversation.id, exc)
+        if len(grades) < 2:
+            return first
+        tally = Counter(g.overall_result for g in grades)
+        top = max(tally.values())
+        # A tie keeps the first grade's result.
+        majority = (first.overall_result if tally[first.overall_result] == top
+                    else tally.most_common(1)[0][0])
+        side = sorted((g for g in grades if g.overall_result == majority),
+                      key=lambda g: g.overall_score)
+        chosen = side[len(side) // 2]
+        chosen.votes = {
+            "n": len(grades), "majority": majority,
+            "results": [{"score": g.overall_score, "result": g.overall_result} for g in grades],
+            "changed": first.overall_result != majority,
+        }
+        chosen.usage = meter.as_dict()
+        log.info("Voted %s: %s → %s (%d votes%s)", conversation.id,
+                 " / ".join(f"{g.overall_result} {g.overall_score}" for g in grades),
+                 majority, len(grades), ", result changed" if chosen.votes["changed"] else "")
+        return chosen
 
     def _kb_text(self, conversation: Conversation) -> str:
         kb = self.knowledge_for(conversation)

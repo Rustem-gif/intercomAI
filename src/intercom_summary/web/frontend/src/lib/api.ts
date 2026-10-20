@@ -294,6 +294,13 @@ export interface Grade {
   confidence?: string;
   /** Jev's second opinion on the verdicts (v4.1 only). Advisory: it never moves the score. */
   jev?: JevCheck;
+  /** The majority vote on a borderline grade (qa/grader.py); absent when the grade was not voted on. */
+  votes?: {
+    n: number;
+    majority: string;
+    results: { score: number; result: string }[];
+    changed: boolean;
+  };
   /** The fail verifier's second look at a FAIL (qa/fail_verifier.py); absent when it did not run. */
   fail_verifier?: {
     mode: "shadow" | "on";

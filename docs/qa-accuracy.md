@@ -143,6 +143,19 @@ request is not a Gate 2 failure), 7 (manager remark), 10 (account closure as a r
 - Shift events (scam waves, outages) — exclude those chats from calibration, or mark them.
 - Tag taxonomy, the PG quiz for RG, internal bonus eligibility (B/C tags), German/Polish support since 2026-09-17 (comm-language).
 
+## The majority vote (added after run 3, not yet measured)
+
+Runs 2 and 3 (different rules) agreed on 87.4% of the 151 chats; runs with identical rules agreed
+on 90.7% without the verifier and 94.7% with it. That variance is now the ceiling: a rule that
+fixes three chats is invisible under it. `QA_VOTES=3`: a grade in the 70–89 band, or one the
+verifier changed, is made three times and the majority PASS/FAIL wins (`Grader._vote`). Expected
+cost: two extra cached calls on about one chat in five. Measure with `accuracy_ab.py --arms
+vshadow+vote` against `vshadow` on the same set — ideally twice each, to measure the stability
+gain itself.
+
+The cases where QA's own verdicts disagree are listed in `docs/qa-contradictions.md`; each needs
+one decision from QA.
+
 ## QA lessons — the weekly loop
 
 `qa/lessons.py`, the **QA lessons** page. Every `QA_LESSONS_DAYS` (7) the web app collects QA's
