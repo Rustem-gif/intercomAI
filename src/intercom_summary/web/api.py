@@ -1050,7 +1050,7 @@ def create_app() -> FastAPI:
             "total": total,
             "graded": graded,
             "pending": max(0, total - graded),
-            # Its own ruleset was edited since it was graded → re-grading will refresh it.
+            # Always 0: an existing grade is never re-graded (GradesStore.is_current).
             "stale": max(0, graded - graded_current),
             # Graded by a different ruleset than its agent's group uses today (e.g. an agent's
             # back catalogue after they joined VIP). Left alone on purpose; re-grade to convert.
@@ -1452,10 +1452,8 @@ def create_app() -> FastAPI:
         from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
 
         rs = get_ruleset(ruleset_id)
-        # What editing this prompt would cost. The version hashes the prompt text, so any edit
-        # — a single word — marks every grade this ruleset produced stale and the next run
-        # re-grades them with different scores. That is the whole September incident, and
-        # nothing in the UI said so at the moment the decision was being made.
+        # What editing this prompt does to existing grades: nothing — they keep their scores and
+        # only chats graded afterwards use the new text (GradesStore.is_current).
         gstore = GradesStore()
         try:
             blast = gstore.staleness_preview(rs.id, rs.version)
@@ -1469,7 +1467,7 @@ def create_app() -> FastAPI:
     def put_ruleset_prompt(ruleset_id: str, body: RulesIn,
                            user: dict = Depends(auth.require_admin)):
         """Edit a ruleset's system prompt. Admin-only: it changes how everyone in that group
-        is graded, and bumps the version so that ruleset's grades re-grade on the next run."""
+        is graded from now on. Existing grades keep their scores — they are never re-graded."""
         from intercom_summary.qa.rulesets import get_ruleset, validate_ruleset
 
         rs = get_ruleset(ruleset_id)

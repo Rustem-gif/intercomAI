@@ -150,42 +150,24 @@ class GradesStore:
         return row is not None
 
     def is_current(self, conversation_id: str, ruleset_id: str, rules_version: str) -> bool:
-        """True if the stored grade needs no re-grading.
+        """True if the conversation already has a grade — an ordinary run never re-grades it.
 
-        `ruleset_id` / `rules_version` are the ruleset the conversation *would* be graded with
-        now, taken from the live grader (not from the ruleset file directly — the Anthropic
-        backend grades against support_rules.md and stamps that hash instead).
+        A grade is final once made. Editing a ruleset's prompt (a new `rules_version`), moving
+        an agent to another group (a different `ruleset_id`) or a human review does not send an
+        existing grade back through the model: new rules apply to chats graded from then on.
+        The client's instruction (2026-10-20) is that old chats are never re-graded. It also
+        closes the September incident for good — the rulebook was corrected on the 3rd and 4th,
+        every grade went stale, and chats QA had already signed off on came back with different
+        scores days later.
 
-        Three cases count as current:
-        - **a human has already re-graded it** → never touched again by an ordinary run. QA's
-          process is to manually re-grade every red/yellow chat in a period, and agents dispute
-          individual scores; both are commitments made against a specific number. Re-grading
-          underneath them is what caused the September incident: the rulebook was corrected on
-          the 3rd and 4th, every grade went stale, and chats QA had already signed off on came
-          back with different scores days later. The analyst's verdict already wins downstream
-          via COALESCE(human_score, overall_score), so re-running the model here changes nothing
-          anyone sees — except the criteria checklist under a verdict someone already defended.
-          `regrade=True` still forces them, so a deliberate re-grade after a rules change works.
-        - the grade was produced by the same ruleset, at its current version → nothing changed;
-        - the grade was produced by a *different* ruleset → it was graded correctly at the
-          time, so leave it alone. This is what stops a VIP agent's entire back catalogue from
-          being invalidated and re-graded the moment they are added to the VIP group. Those
-          grades are surfaced separately as `wrong_ruleset` on the Evaluation page, where an
-          analyst can choose to re-grade them.
-
-        Editing a ruleset's prompt still marks that ruleset's own un-reviewed grades stale.
+        `ruleset_id` / `rules_version` are kept so callers need not change; they no longer
+        decide anything. Only an explicit `regrade=True` (a human choosing to re-score) still
+        replaces a stored grade, and the replaced one is archived in grade_history.
         """
         row = self._conn.execute(
-            "SELECT rules_version, ruleset_id, human_score FROM grades WHERE conversation_id=?",
-            (conversation_id,),
+            "SELECT 1 FROM grades WHERE conversation_id=?", (conversation_id,)
         ).fetchone()
-        if row is None:
-            return False
-        if row["human_score"] is not None:
-            return True
-        if (row["ruleset_id"] or "default") != ruleset_id:
-            return True
-        return row["rules_version"] == rules_version
+        return row is not None
 
     def count_graded(self, rules_version: str | None = None) -> int:
         """Count distinct conversations that have a grade (optionally for a specific ruleset)."""
@@ -231,12 +213,11 @@ class GradesStore:
         return [dict(r) for r in rows]
 
     def staleness_preview(self, ruleset_id: str, current_version: str) -> dict:
-        """What editing this ruleset's prompt would invalidate.
+        """What editing this ruleset's prompt does to existing grades: nothing.
 
-        `would_regrade` is the number of grades a single edit sends back through the model with
-        a different score. `protected` are the ones an analyst has already re-graded, which
-        `is_current` now refuses to touch — they are reported separately because they are the
-        ones people have argued about and would notice moving.
+        Existing grades are never re-graded (see is_current), so `would_regrade` is always 0.
+        `graded_at_current_version` is how many grades carry the current version — they keep
+        their scores after an edit; only chats graded afterwards use the new text.
         """
         row = self._conn.execute(
             """SELECT COUNT(*) AS total,
@@ -248,7 +229,7 @@ class GradesStore:
         total = row["total"] or 0
         protected = row["protected"] or 0
         return {"graded_at_current_version": total,
-                "would_regrade": total - protected,
+                "would_regrade": 0,
                 "protected_by_human_review": protected}
 
     def save(self, grade: ConversationGrade) -> None:
