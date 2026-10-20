@@ -265,17 +265,19 @@ def strict_schema(ruleset: "QaRuleset") -> dict:
 
     Same fields as the Ollama grammar (output_schema_for), so both backends return the same
     JSON. Two differences: every object is closed (`additionalProperties: false`, which the API
-    requires), and a criterion `id` must be one of the ruleset's catalogue ids — the scorer
+    requires), and a criterion `id` (or a problem's) must be one of the ruleset's catalogue ids — the scorer
     ignores ids it does not know, so a misspelt id would silently drop a failure.
     """
     schema = _strictify(output_schema_for(ruleset.id))
     ids = [c["id"] for c in ruleset.criteria if c.get("id")]
-    try:
-        id_field = schema["properties"]["criteria"]["items"]["properties"]["id"]
-    except KeyError:
-        return schema
-    if ids:
-        id_field["enum"] = ids
+    # A detected problem names its criterion the same way, and is dropped the same way if not.
+    for list_field in ("criteria", "problems"):
+        try:
+            id_field = schema["properties"][list_field]["items"]["properties"]["id"]
+        except KeyError:
+            continue
+        if ids:
+            id_field["enum"] = ids
     return schema
 
 

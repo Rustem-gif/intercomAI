@@ -92,8 +92,11 @@ FAIL_DEFINITIONS: dict[str, str] = {
         "The agent closed the chat, or pushed the player to end it, while the player's problem "
         "was clearly not resolved."),
     "action-escalation-missed": (
-        "The agent did not perform an action or escalation they were required to perform. An "
-        "internal note saying what was escalated and where counts as performed."),
+        "The agent did not perform an action or escalation they were required to perform — for "
+        "example the player asked for a VIP or personal manager, a supervisor or another "
+        "department, or a payment, KYC or bonus problem needed the responsible team, and the "
+        "agent answered it themselves and closed. An internal note saying what was escalated and "
+        "where counts as performed."),
     "financial-case-abandoned": (
         "A deposit, withdrawal or bonus problem was left without proper handling: no status, no "
         "action taken, no next step and no escalation."),
@@ -107,8 +110,12 @@ FAIL_DEFINITIONS: dict[str, str] = {
         "confirmed, or promised a refund or bonus beyond their authority without confirmation "
         "from the system or policy."),
     "churn-rg-signal-ignored": (
-        "The player clearly said they would leave or stop playing, or showed a gambling-harm "
-        "signal, and the agent ignored it completely: no acknowledgement and no response."),
+        "The player said in plain words that they are leaving, closing or deleting their account, "
+        "or will play at another casino, or showed a gambling-harm signal, and the agent did not "
+        "react to it. Complaints about luck, bonuses or terms without such a statement do not "
+        "count. Answering only the player's main request is not a reaction; a reaction is "
+        "calming the player, showing empathy, offering a possible solution or escalating the "
+        "case."),
     # Deductions that can double-count a Major (§7 note, §10)
     "ownership-effort": (
         "The agent did not do everything available to them, made the player repeat information "

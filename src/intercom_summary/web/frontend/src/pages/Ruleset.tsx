@@ -151,7 +151,11 @@ function Editor({
                 <li>PASS at <b>{ruleset.scoring.pass_threshold}</b> or above.</li>
                 <li>
                   Any Gate 2 Major caps the chat at <b>{ruleset.scoring.major_cap}</b> — however
-                  many of them there are.
+                  many of them there are — and is always a FAIL.
+                </li>
+                <li>
+                  A criterion the AI could not determine costs nothing, but sends the chat to
+                  manual review.
                 </li>
                 <li>
                   Without a Major the score never falls below <b>{ruleset.scoring.no_major_floor}</b>,

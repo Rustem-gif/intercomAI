@@ -123,7 +123,10 @@ def score_from_verdicts(
         r = score_gated(criteria, rs)
         if extra_deduction and not r.critical_fail:
             score = max(0, r.score - abs(extra_deduction))
-            result = "PASS" if score >= rs.pass_threshold else "FAIL"
+            # The result moves with the points, except that a Major stays FAIL.
+            result = r.result
+            if not r.major_outcome_failure:
+                result = "PASS" if score >= rs.pass_threshold else "FAIL"
             return score, r.band, result
         return r.score, r.band, r.result
 
@@ -155,6 +158,55 @@ def _as_text(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return "; ".join(_as_text(v) for v in value)
     return str(value)
+
+
+# Worst first: the order failures are listed in, and the label the verdict line gives them.
+_GATE_ORDER = (("critical", "Critical"), ("major", "Major"), ("minor", "Minor"))
+
+
+def _failed_in_order(criteria: list[dict], ruleset) -> list[dict]:
+    """The ruleset's failed criteria, worst severity first (Gate 1 → Gate 2 Major → the rest),
+    each once, in the model's order within a severity."""
+    severities = ruleset.severities
+    seen: set[str] = set()
+    failed = []
+    for c in criteria or []:
+        cid = c.get("id", "")
+        if c.get("v") == "fail" and cid in ruleset.deductions and cid not in seen:
+            seen.add(cid)
+            failed.append(c)
+    rank = {sev: i for i, (sev, _label) in enumerate(_GATE_ORDER)}
+    return sorted(failed, key=lambda c: rank.get(severities.get(c["id"], "minor"), 2))
+
+
+def _violations_from_verdicts(criteria: list[dict], ruleset) -> list[str]:
+    titles = ruleset.titles
+    out = []
+    for c in _failed_in_order(criteria, ruleset):
+        title = titles.get(c["id"], c["id"])
+        ev = _as_text(c.get("ev", "")).strip()
+        out.append(f"{title} — {ev}" if ev else title)
+    return out
+
+
+def _verdict_line(gated, criteria: list[dict], ruleset) -> str:
+    """One sentence stating the result and what decided it, built only from the final verdicts —
+    e.g. "FAIL · Major: Request Coverage · Minor: Response SLA." It leads the summary so the
+    model's narrative can never stand in for, or contradict, the verdict.
+
+    Undetermined criteria are deliberately NOT listed here (QA, 2026-10-09): on a PASS a list of
+    "Cannot determine: …" titles read as a list of defects. They are a question for the QC
+    manager and live in `manual_review_reason`."""
+    titles = ruleset.titles
+    severities = ruleset.severities
+    failed = _failed_in_order(criteria, ruleset)
+    parts = [gated.result]
+    for sev, label in _GATE_ORDER:
+        names = [titles.get(c["id"], c["id"]) for c in failed
+                 if severities.get(c["id"], "minor") == sev]
+        if names:
+            parts.append(f"{label}: {', '.join(names)}")
+    return " · ".join(parts) + "."
 
 
 @dataclass
@@ -202,6 +254,7 @@ class ConversationGrade:
     outcome_status: str = ""                 # what became of the case, separate from the score
     severity: str = ""                       # Critical / Major / Minor — the worst thing that failed
     catastrophic_service_failure: bool = False   # NOT critical_fail; see qa/gated_scoring.py
+    major_outcome_failure: bool = False      # any Gate 2 Major fail — always FAIL, capped at 75
     critical_fail: bool = False
     manual_review_needed: bool = False
     manual_review_reason: str = ""
@@ -315,6 +368,18 @@ class ConversationGrade:
             grade.severity = gated.severity
             grade.critical_fail = gated.critical_fail
             grade.catastrophic_service_failure = gated.catastrophic_service_failure
+            grade.major_outcome_failure = gated.major_outcome_failure
+            # What went wrong is read off the verdicts, not taken from the model's prose: a
+            # problem the model only mentioned in passing cannot appear here without the
+            # criterion that scores it, and a failed criterion cannot be missing from here.
+            grade.violations = _violations_from_verdicts(criteria, ruleset)
+            # The model writes only a neutral narrative (`what_happened`); the verdict comes
+            # from the final criteria, after every rule has run. `summary` is read as a fallback
+            # for responses produced under the earlier grammar.
+            narrative = _as_text(data.get("what_happened") or data.get("summary") or "")
+            grade.summary = " ".join(
+                p for p in (_verdict_line(gated, criteria, ruleset), narrative) if p
+            )
             grade.case_type = _as_text(data.get("case_type", ""))
             grade.risk_flag = _as_text(data.get("risk_flag", ""))
             grade.expected_handling = _as_text(data.get("expected_handling", ""))
@@ -331,11 +396,18 @@ class ConversationGrade:
             undetermined = [
                 c.get("id", "") for c in criteria if c.get("v") == "cannot_determine"
             ]
+            # Some failures are always confirmed by a person (qa/gated_rules.py).
+            from intercom_summary.qa.gated_rules import MANUAL_REVIEW_ON_FAIL
+
+            must_review = sorted({c.get("id", "") for c in criteria if c.get("v") == "fail"}
+                                 & MANUAL_REVIEW_ON_FAIL)
             grade.manual_review_needed = bool(
-                data.get("manual_review_needed") or undetermined
+                data.get("manual_review_needed") or undetermined or must_review
                 or _as_text(data.get("data_sufficiency", "")) == "Insufficient"
             )
             reason = _as_text(data.get("manual_review_reason", ""))
+            if not reason and must_review:
+                reason = "Churn signal ignored — confirm"
             if not reason and undetermined:
                 reason = "Cannot determine: " + ", ".join(sorted(undetermined))
             grade.manual_review_reason = reason
@@ -373,6 +445,7 @@ class ConversationGrade:
         g.outcome_status = d.get("outcome_status", "")
         g.severity = d.get("severity", "")
         g.catastrophic_service_failure = bool(d.get("catastrophic_service_failure"))
+        g.major_outcome_failure = bool(d.get("major_outcome_failure"))
         g.critical_fail = bool(d.get("critical_fail"))
         g.manual_review_needed = bool(d.get("manual_review_needed"))
         g.manual_review_reason = d.get("manual_review_reason", "")

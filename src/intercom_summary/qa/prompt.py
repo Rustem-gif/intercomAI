@@ -97,6 +97,60 @@ def _closed_by_line(conversation: Conversation) -> str:
     }.get(conversation.closed_by, "Chat closed by: nobody — the chat is still open")
 
 
+def _clock(m) -> str:
+    return m.created_at.strftime("%H:%M:%S") if m and m.created_at else "?"
+
+
+def _snippet(text: str, limit: int = 80) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def closing_clause(conversation: Conversation) -> str:
+    close = next((m for m in reversed(conversation.messages) if m.part_type == "close"), None)
+    at = f" at {_clock(close)}" if close and close.created_at else ""
+    return {
+        "bot": f"automation closed the chat{at}",
+        "admin": f"the agent closed the chat{at}",
+    }.get(conversation.closed_by, "the chat is still open")
+
+
+def _ending_line(conversation: Conversation) -> str:
+    """Who stopped responding — stated, so the grader never has to line up timestamps itself.
+
+    QA (2026-10-09) found the model failing agents whose player went silent after being asked
+    for a document, and passing agents who left the player's last questions unanswered. Both are
+    visible only as the order of the last few lines, so it is spelled out here; the derivation
+    rules in qa/gated_rules.py read the same fact (`Conversation.ending`).
+    """
+    e = conversation.ending
+    closing = closing_clause(conversation)
+    if e["last_role"] is None:
+        return f"Ending: no agent or player messages; {closing}."
+    if not e["agent_ever_wrote"]:
+        return f"Ending: the agent never wrote in this chat; {closing}."
+    if e["last_role"] == "CUSTOMER":
+        msgs = e["unanswered_player"]
+        quoted = " · ".join(f'{_clock(m)} "{_snippet(m.text)}"' for m in msgs)
+        return (f"Ending: the player's last {len(msgs)} message(s) came after the agent's last "
+                f"reply at {_clock(e['last_agent'])} and got no agent reply — {quoted}; "
+                f"{closing}.")
+    after = e["agent_after_player"]
+    last_player = e["last_player"]
+    if last_player is None:
+        return f"Ending: only the agent wrote; {closing}."
+    said = f'{_clock(last_player)} ("{_snippet(last_player.text)}")'
+    if e["agent_tail_is_template"]:
+        sub = e["last_substantive_agent"]
+        before = (f"the agent's last substantive reply was at {_clock(sub)}, before it"
+                  if sub else "the agent never wrote anything but such prompts")
+        return (f"Ending: after the player's last message at {said} the agent wrote "
+                f"{len(after)} message(s), all inactivity/closing prompts; {before}; {closing}.")
+    return (f"Ending: the agent replied after the player's last message at {said} — "
+            f"{len(after)} message(s) from {_clock(after[0])}; the player did not write again; "
+            f"{closing}.")
+
+
 def _tags_line(conversation: Conversation) -> str:
     """The chat's tags, which the transcript cannot show.
 
@@ -119,6 +173,7 @@ def transcript_block(conversation: Conversation) -> str:
         f"Subject: {conversation.subject}\n"
         f"State: {conversation.state}\n"
         f"{_closed_by_line(conversation)}\n"
+        f"{_ending_line(conversation)}\n"
         f"{_tags_line(conversation)}\n\n"
         f"{_timing_block(conversation)}\n\n"
         f"{_csat_block(conversation)}"

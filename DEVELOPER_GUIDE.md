@@ -70,6 +70,7 @@ intercomSummary/
     │   ├── casino_prompt.py  ← The scoring rubric + JSON schema the AI must fill in. ⚠️ delicate.
     │   ├── schema.py          ← Turns the AI's answer into a score (does the math itself).
     │   ├── verdict_guard.py  ← Overturns greeting/name verdicts the transcript contradicts.
+    │   ├── gated_rules.py    ← v4.1: turns detected problems / requests / notes into verdicts by rule.
     │   ├── agent.py / chat.py ← The "Ask Qwen" chat assistant in the UI.
     │   └── rules.py          ← Loads/versions the rulebook.
     │
@@ -244,6 +245,65 @@ was something to check and the evidence for it (a chat tag, a CRM escalation rec
 status) is not in the data. Only `cannot_determine` sets `manual_review_needed` and sends the chat
 to a QC manager, so collapsing the two buries the question instead of asking it. Both cost zero
 points. `verdict_guard` enforces this for `tag-chat`, which has no honest `n/a`.
+
+**The result is a rule, and so are the verdicts it reads (client calibration, 2026-10-08).**
+The model used to decide pass/fail per criterion on its own, and two runs on the same chats
+disagreed — Excellent in one, Major in the other — while some grades described a problem and
+still scored 100. The chain is now *detected problem → fail → severity (the criterion's gate) →
+score → result*:
+- The model writes `problems` (`[{id, ev}]`) **before** any verdict, and a neutral
+  `what_happened` **last** (no verdicts, no "no defects found"). `violations` is not asked for;
+  `qa/schema.py` builds it, and `summary` = the verdict line built from the *final* verdicts
+  (e.g. `FAIL · Major: Request Coverage · Minor: Response SLA.`) + `what_happened`. So the summary
+  can never say "no defects" on a FAIL (QA, 2026-10-09). Undetermined criteria are not in the
+  verdict line — on a PASS they read as defects; they are in `manual_review_reason`.
+- **Who stopped responding** (QA, 2026-10-09). `Conversation.ending` (`intercom/models.py`) reads
+  the comment order — notes, bots and bookkeeping parts excluded — and `qa/prompt.py:_ending_line`
+  states it in the grader's header (`Ending: the player's last 2 message(s) … got no agent reply`
+  / `… the agent wrote 3 message(s), all inactivity/closing prompts` / …). The agents' macros are
+  matched by `is_agent_macro`; add a macro there if a new one appears. A request the player left
+  waiting on is `pending` (new request status), never `unresolved`.
+- `qa/gated_rules.py` (`check_verdicts`, run by both graders before scoring) applies, in order:
+  a. every listed problem → `fail` on its criterion (then `verdict_guard` still drops bot/player quotes);
+  b. an `unresolved` request, by who wrote last: the **player** (their last messages never
+     answered, not just a "thanks") → `resp-no-ghost` fail, material or not; the **agent** (the
+     player went quiet) and nothing failed that explains it → the request is re-read as `pending`
+     and the verdicts are left alone;
+  c. outcome Unresolved/Abandoned with no Major → `resp-no-ghost` cannot_determine (or
+     `res-no-fake-close` fail when the agent closed it);
+  d. an escalation the model says happened (outcome Escalated correctly, a request `escalated`, or
+     a pass with evidence) with **no internal note** → `action-escalation-missed` cannot_determine
+     — the agent's words are not a trace;
+  f. an escalation that was **required** (`expected_handling` = Internal escalation, decided against
+     the prompt's MANDATORY ESCALATION list) and neither performed nor claimed, with no note →
+     `action-escalation-missed` **fail**, citing `escalation_case`;
+  e. a pass on `action-escalation-missed` with no `ev`: cites the chat's internal note if there is
+     one, else cannot_determine.
+  Every change is a `rule:` flag in `signal_flags`. Tests: `tests/test_gated_rules.py`.
+- Result (`score_gated`): Critical → **FAIL 0**; any Major → **FAIL**, `major_outcome_failure`,
+  capped 75, whatever `pass_threshold` says; otherwise PASS at ≥ 85. `cannot_determine` costs
+  nothing and does not block a PASS; it (or Insufficient data) only sets `manual_review_needed`.
+- **`churn-rg-signal-ignored` — explicit words only (QA, 2026-10-09).** A churn signal is a plain
+  "I'm leaving / close my account / I'll play elsewhere" (or an RG signal). "I never win", "the bonus
+  gave nothing", "my account is jinxed" are NOT churn: a cold reply to them is comm-tone at most.
+  This reverses the 10-08 widening to "open dissatisfaction", which failed ordinary complaints.
+  Answering the main request is still not a reaction to an explicit statement. A fail is a Major
+  and always sets `manual_review_needed` (`MANUAL_REVIEW_ON_FAIL` in `qa/gated_rules.py`).
+- **MANDATORY ESCALATION (QA, 2026-10-09).** The prompt carries the list of cases the agent must
+  pass on (VIP/personal manager asked for, deposit not credited after proof, …); the model used to
+  decide on its own that no escalation was needed. QA owns the list — edit it in
+  `rules/qa_system_prompt_kb_v41.txt` (Ruleset page) **and** in `KBV41_QA_SYSTEM_PROMPT`;
+  `tests/test_kbv41_ruleset.py` fails if the two differ.
+- **Withdrawn the same day (client points 4 and 6).** The first cut also had a `CANNOT DETERMINE`
+  result (any cannot_determine or Insufficient data → never PASS), required every
+  `accuracy-*`/`financial-case-abandoned`/`severe-business-trust` pass to cite a source, made
+  accuracy cannot_determine with no KB, and made the agent's statements about *this player's
+  account* (admin data) cannot_determine. On the 180-chat sample that put ~85% of chats in CANNOT
+  DETERMINE (runs `7c39f98ace17`, `95a0886c9af4`), and QA asked for exactly those points to go.
+  Don't reintroduce them without a fresh calibration. Old runs still store `CANNOT DETERMINE`, so
+  the UI badge and the calibration counts keep handling it.
+- Consistency check after any grader change: run the sample twice and
+  `python scripts/compare_calibration_runs.py RUN_A RUN_B [--list]`.
 
 **v4.1 is live for standard chats — by date.** `GROUP_RULESETS[GROUP_STANDARD]` is `kb-v41`, but
 only for conversations **created on or after `QA_V41_EFFECTIVE_FROM`** (`.env`, a `YYYY-MM-DD`

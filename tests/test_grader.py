@@ -242,5 +242,6 @@ def test_strict_schema_closes_every_object_and_pins_criterion_ids(rid):
     assert objs and all(o["additionalProperties"] is False for o in objs)
     ids = schema["properties"]["criteria"]["items"]["properties"]["id"]["enum"]
     assert ids == [c["id"] for c in rs.criteria]
-    # Field names under `properties` survive (they are not JSON-schema keywords).
-    assert "summary" in schema["properties"]
+    # Field names under `properties` survive (they are not JSON-schema keywords). The v4.1
+    # grammar asks for a neutral `what_happened`; the summary is composed in code.
+    assert ("what_happened" if rs.id == "kb-v41" else "summary") in schema["properties"]

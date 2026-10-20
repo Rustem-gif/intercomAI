@@ -46,6 +46,9 @@ function Flags({ r }: { r: CalibrationRow }) {
       {r.catastrophic && (
         <Badge className="border-destructive/40 bg-destructive/10 text-destructive">catastrophic</Badge>
       )}
+      {r.major && !r.critical_fail && !r.catastrophic && (
+        <Badge className="border-destructive/40 bg-destructive/10 text-destructive">major</Badge>
+      )}
       {r.manual_review_needed && (
         <Badge className="border-amber-500/40 bg-amber-500/10 text-amber-600">manual review</Badge>
       )}
@@ -252,12 +255,14 @@ export default function Calibration() {
       ) : (
         <>
           {s && (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
               <Stat label="Graded" value={`${s.graded} / ${s.members}`}
                     hint={Object.entries(s.status).filter(([k]) => k !== "graded")
                       .map(([k, n]) => `${n} ${STATUS_LABEL[k] ?? k.replace("_", " ")}`).join(" · ")} />
               <Stat label="Mean AI score" value={s.mean_ai}
                     hint={`${s.manual_review} need manual review`} />
+              <Stat label="AI result" value={s.results ? `${s.results.PASS} / ${s.results.FAIL} / ${s.results["CANNOT DETERMINE"]}` : null}
+                    hint={`pass / fail / cannot determine · ${s.major ?? 0} major`} />
               <Stat label="Reviewed by QA" value={`${s.reviewed} / ${s.graded}`} />
               <Stat label="Mean QA score" value={s.mean_human}
                     hint={s.mean_ai_reviewed != null ? `AI on the same chats: ${s.mean_ai_reviewed}` : undefined} />

@@ -6,6 +6,7 @@ to know the wire format.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -42,6 +43,32 @@ def fmt_duration(seconds: int | float | None) -> str:
 ASSIGNMENT_PARTS: frozenset[str] = frozenset(
     {"assignment", "default_assignment", "message_strategy_assignment", "assign_and_reopen"}
 )
+
+
+# The agents' inactivity, closing and courtesy macros — fixed strings in this workspace (English
+# and German), measured as the commonest agent lines after a player's last message. A reply made
+# only of these answers nothing, so `Conversation.ending` does not count it as a substantive
+# reply. Matched at the start of the message, case-insensitively.
+_AGENT_MACRO = re.compile(
+    r"^\s*(?:"
+    r"i see no reply from your side|in that case, i will close the chat"
+    r"|looks like the chat has become inactive|if you don'?t have any additional questions"
+    r"|are we still connected|please let me know, are you still (?:available|there)"
+    r"|are you still (?:there|available|with me)|i am here, i am waiting"
+    r"|is there anything else i can help|are there any additional questions"
+    r"|do you have any (?:other|unresolved) questions|do you have any unresolved"
+    r"|thank you for (?:visiting king billy|chatting with us)"
+    r"|my pleasure|you(?:'re| are) welcome|anytime\b"
+    r"|ich sehe keine antwort von ihrer seite|es scheint, dass (?:der )?chat inaktiv"
+    r"|haben sie (?:noch offene fragen|vielleicht noch zus)|vielen dank, dass sie sich heute"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_agent_macro(text: str | None) -> bool:
+    """True when an agent message is only an inactivity / closing / courtesy macro."""
+    return bool(_AGENT_MACRO.match(text or ""))
 
 
 @dataclass
@@ -181,6 +208,58 @@ class Conversation:
             if m.part_type == "close":
                 return m.author_type
         return ""
+
+    def human_comments(self) -> list[Message]:
+        """What the agent and the player actually said to each other, in order.
+
+        Comments only: internal notes (of any author), bookkeeping parts such as `close`, and
+        everything automation wrote are left out. `""` counts as a comment because older
+        payloads and test fixtures carry no part type."""
+        return [
+            m for m in self.messages
+            if (m.text or "").strip() and m.part_type in ("", "comment")
+            and self._role_of(m.author_type) in ("AGENT", "CUSTOMER")
+        ]
+
+    @property
+    def ending(self) -> dict:
+        """Who stopped responding, read off the comment order.
+
+        QA (2026-10-09): the grader confused "the agent did not reply" with "the player did not
+        reply". When the agent asks for a bank statement and the player goes quiet, nothing is
+        the agent's fault; when the player's last questions get no answer before the chat is
+        closed, the agent ghosted them. The transcript shows both, but only as timestamps the
+        model has to line up itself — this states it as a fact (qa/prompt.py:_ending_line) and
+        gives the derivation rules (qa/gated_rules.py) the same fact to act on.
+
+        `agent_tail_is_template` is True when everything the agent wrote after the player's last
+        message is an inactivity / closing / courtesy macro — 30% of agent-last chats end that
+        way, and there the player's last message, not the agent's, decides the case.
+        """
+        comments = self.human_comments()
+        agent_idx = [i for i, m in enumerate(comments) if m.author_type == "admin"]
+        player_idx = [i for i, m in enumerate(comments) if m.author_type != "admin"]
+        last_agent = agent_idx[-1] if agent_idx else -1
+        last_player = player_idx[-1] if player_idx else -1
+        unanswered = [m for m in comments[last_agent + 1:] if m.author_type != "admin"]
+        agent_after = [m for m in comments[last_player + 1:] if m.author_type == "admin"]
+        substantive = [comments[i] for i in agent_idx if not is_agent_macro(comments[i].text)]
+        return {
+            "last_role": (self._role_of(comments[-1].author_type) if comments else None),
+            "agent_ever_wrote": bool(agent_idx),
+            "unanswered_player": unanswered,
+            "agent_after_player": agent_after,
+            "agent_tail_is_template": bool(agent_after)
+            and all(is_agent_macro(m.text) for m in agent_after),
+            "last_player": comments[last_player] if last_player >= 0 else None,
+            "last_agent": comments[last_agent] if last_agent >= 0 else None,
+            "last_substantive_agent": substantive[-1] if substantive else None,
+        }
+
+    @property
+    def agent_spoke_last(self) -> bool:
+        """True when an agent comment follows the player's last comment."""
+        return self.ending["last_role"] == "AGENT"
 
     @property
     def display_subject(self) -> str:
