@@ -113,7 +113,7 @@ internal bonus policy) or contradict QA's own verdicts on similar chats.
 | 7 | Escalation not due yet (reward not due by the promo timeline; waiting on the player's step); a remark about one's manager is not a request for one | 2 | false FAIL |
 | 8 | **Still failures:** the player corrects the agent and gets the same answer; a vague "forwarded" repeated to a player asking for status | 2 | false PASS |
 | 9 | **Still a failure:** the inactivity close after the player's last message went unanswered, or after re-asking for something already given | 2 + history | false PASS |
-| 10 | **Still a failure:** an explicit close / block / self-exclude request not carried out or forwarded and confirmed | 2 | false PASS |
+| 10 | An explicit close / block / self-exclude request not visibly carried out or forwarded → **cannot_determine, manual review** (rules `47e9ee024019`; it was an automatic failure for one run, but QA passed 3 such chats and failed 2 — their call) | 2 | manual review |
 | 11 | **Still a failure:** denying service on eligibility (country) when the Help Center says the player is accepted | 1 | false PASS |
 | 12 | Verifier boundaries that excused real defects were narrowed: templated replies to a visibly upset player (comm-tone), a refusal with no reason or next step (info-completeness), asking for what the player already gave (ownership-effort) | history (~75 corrections) | false PASS |
 
@@ -126,7 +126,9 @@ Rules version `66c36e68e8c0`; every change applies to chats graded from then on 
 | Round-1 rules + verifier (`78889e130313`) | 70.7% | 80.0% | 72.9% | 30 / 11 |
 | Round-2 rules alone (`66c36e68e8c0`) | 75.0% | 71.4% | 74.2% | 32 / 7 |
 | **Round-2 rules + verifier** | **77.6%** | **80.0%** | **78.1%** (95% CI 71–84%) | 25 / 8 |
+| Round-2 rules + bot-menu marker + verifier (`c5454a028a30`) | 78.5% | 74.3% | 77.5% | 25 / 9 |
 
+- **The marker run** (third run, $2.99) agrees with the second on 87.4% of chats: 9 chats fixed — both bot-menu chats among them — and 10 broken, none of the 10 on a menu line. The ±3 points between the runs is the model's own variance on this set, so a single run cannot show a 2–3-chat improvement. Five of the ten were escalation calls the model flips between runs (withdrawal status unclear → Finance; account closure), which is where the next gain is: QA's decision on those cases, and a majority vote on borderline chats.
 - **Pass audit** (80 chats the stored grades passed): **0 new FAILs** (round 1: 1–2). Manual review 25 of 80, as before — escalations told to the player with no internal note.
 - **The holdout did not move:** 7 disagreements both times; on 35 chats the interval is 64–90%. The gain is on dev, where the rules were written, so part of it may be fit to those chats.
 - Projected population agreement 97.9%, under the same unverified assumption that QA agrees with the AI's PASSes.

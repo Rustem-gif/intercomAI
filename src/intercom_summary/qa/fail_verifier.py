@@ -108,8 +108,6 @@ BOUNDARIES: dict[str, list[str]] = {
         "The reward was not yet due under the promotion's own timeline.",
         "The player only voiced dissatisfaction with their manager ('I think I need a new "
         "manager') — not a request to be put in touch with one.",
-        "(Still a FAIL: an explicit request to close, block or self-exclude the account that was "
-        "neither carried out nor forwarded, or not confirmed to the player.)",
     ],
     "financial-case-abandoned": [
         "The agent gave the status they could see, the next step, or asked for what was needed, "
