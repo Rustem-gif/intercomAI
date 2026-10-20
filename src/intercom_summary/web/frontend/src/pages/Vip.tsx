@@ -47,7 +47,7 @@ export default function Vip() {
         <div>
           <div className="flex items-center gap-2">
             <Crown className="h-5 w-5 text-amber-500" />
-            <h1 className="text-2xl font-bold">VIP chats</h1>
+            <h1 className="text-2xl font-bold">VIP emails</h1>
           </div>
         </div>
         <div className="flex rounded-md border p-0.5 text-xs">

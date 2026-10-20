@@ -103,12 +103,12 @@ intercomSummary/
 | Screen (URL) | File | What it shows |
 |---|---|---|
 | Overview (`/`) | `pages/Overview.tsx` | KPIs, charts, leaderboard |
-| Conversations (`/conversations`) | `pages/Conversations.tsx` | Browse/search all chats |
+| Support chats (`/conversations`) | `pages/Conversations.tsx` | Browse/search the support chats (VIP emails are on their own tab) |
 | Needs Attention (`/needs-attention`) | `pages/NeedsAttention.tsx` | Flagged low scores |
 | Agents (`/agents`) | `pages/Agents.tsx` | Per-agent performance |
 | Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress (Ollama restart only when Qwen is picked) |
 | Calibration 180 (`/calibration`) — **temporary, hidden from the menu since 2026-10-16** (URL still works) | `pages/Calibration.tsx` | Claude's v4.1 grades of a calibration sample next to the QA managers' own verdicts |
-| VIP chats (`/vip`) | `pages/Vip.tsx` | The VIP managers' email threads (Threads), the cases they group into with their VIP Scorecard grades (Cases), and the Exception Report (Exceptions) |
+| VIP emails (`/vip`) | `pages/Vip.tsx` | The VIP managers' email threads (Threads), the cases they group into with their VIP Scorecard grades (Cases), and the Exception Report (Exceptions) |
 | AI Accuracy (`/accuracy`) | `pages/Accuracy.tsx` | AI-vs-human override stats |
 | Knowledge Base (`/knowledge-base`) | `pages/KnowledgeBase.tsx` | Reference content |
 | Coaching (`/coaching`) | `pages/Coaching.tsx` | Coaching sessions |
@@ -384,7 +384,7 @@ are one mistake counted twice (manual §10), and Step 0. One request per chat, ~
 - Try it on live chats without saving: `scripts/dry_run_grades.py -n 10 --jev shadow`.
 - Tests run offline: `tests/conftest.py` switches Jev off unless a test injects a fake.
 
-### VIP chats tab (the VIP managers' email threads)
+### VIP emails tab (the VIP managers' email threads)
 The VIP managers (Alisa, Jasmine, Eric, Taylor, Victoria, Walter, Sam) are not tracked agents. Their
 work lives in the Intercom teams **VIP managers** (`50006396`) and **pre-VIP** (`50006577`), listed in
 `vip.VIP_TEAM_IDS`. "VIP Players Chats" / "(DE)" hold no conversations, so ignore them.

@@ -739,7 +739,7 @@ export interface CalibrationResults {
   active_job: Job | null;
 }
 
-// ── VIP chats (the VIP managers' email threads; not graded) ─────────────────
+// ── VIP (the VIP managers' email threads, graded per case — pages/Vip.tsx) ──
 export interface VipRow {
   id: string;
   agent_name: string;
