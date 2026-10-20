@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
   MessagesSquare,
@@ -52,6 +52,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { theme, toggle } = useTheme();
   const { user, logout } = useAuth();
   const { group, setGroup } = useGroup();
+  const { pathname } = useLocation();
 
   return (
     <div className="flex h-screen">
@@ -130,7 +131,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </header>
         {/* Brand scope. Renders nothing while the workspace has only one brand. */}
         <BrandTabs />
-        <main className="flex-1 overflow-auto p-6">{children}</main>
+        <main className="flex-1 overflow-auto p-6">
+          {/* The switcher scopes the support pages by agent group; the VIP managers' email cases
+              are graded separately (vip-v16) and live only on the VIP page. Without this note the
+              VIP setting showed empty pages and the grades looked missing. */}
+          {group === "vip" && !pathname.startsWith("/vip") && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
+              <Crown className="h-4 w-4 text-amber-500" />
+              <span>
+                The VIP managers' email cases are graded on the VIP page. This page shows support
+                chats, filtered to agents in the VIP group.
+              </span>
+              <Link to="/vip" className="font-medium text-primary hover:underline">
+                Open VIP cases →
+              </Link>
+            </div>
+          )}
+          {children}
+        </main>
         <footer className="px-6 py-1.5 text-center text-[10px] text-muted-foreground/30 select-none">
           Created and administered by Rustem Samoilenko
         </footer>

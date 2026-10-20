@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Crown, Download, Gauge } from "lucide-react";
 import { api, Job, VipCaseList, VipExceptions, VipList } from "@/lib/api";
@@ -31,8 +32,15 @@ function Stat({ label, value, hint }: { label: string; value: React.ReactNode; h
   );
 }
 
+const VIEWS: View[] = ["cases", "threads", "exceptions"];
+
 export default function Vip() {
-  const [view, setView] = useState<View>("threads");
+  // Opens on the graded cases — that is what people come here for. `?view=` lets other pages
+  // (and the group switcher's notice) link straight to a view.
+  const [params, setParams] = useSearchParams();
+  const asked = params.get("view") as View | null;
+  const view: View = asked && VIEWS.includes(asked) ? asked : "cases";
+  const setView = (v: View) => setParams(v === "cases" ? {} : { view: v }, { replace: true });
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -43,7 +51,7 @@ export default function Vip() {
           </div>
         </div>
         <div className="flex rounded-md border p-0.5 text-xs">
-          {(["threads", "cases", "exceptions"] as View[]).map((v) => (
+          {VIEWS.map((v) => (
             <button key={v} onClick={() => setView(v)}
                     className={cn("rounded px-3 py-1 capitalize",
                       view === v ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}>
