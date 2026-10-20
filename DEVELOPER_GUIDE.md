@@ -388,6 +388,9 @@ are one mistake counted twice (manual §10), and Step 0. One request per chat, ~
 The VIP managers (Alisa, Jasmine, Eric, Taylor, Victoria, Walter, Sam) are not tracked agents. Their
 work lives in the Intercom teams **VIP managers** (`50006396`) and **pre-VIP** (`50006577`), listed in
 `vip.VIP_TEAM_IDS`. "VIP Players Chats" / "(DE)" hold no conversations, so ignore them.
+The collector fetches threads assigned to those teams **or to a VIP manager personally**
+(`vip.collect_query`): in Oct 2026, 617 of the 1,508 emails assigned to a manager carried no
+team at all (outbound offers and follow-ups mostly), so a team-only search had missed them.
 **Every one of these threads is an email**, so they are stored in their own table,
 `vip_conversations` (`storage/vip_store.py`), and never in `conversations`. Nothing there reaches
 the Overview, the grading queue or agent stats. They are graded per **case**, on their own
@@ -455,7 +458,7 @@ several threads; the biggest is 20 — serial bonus requesters chain for two wee
   `case_version`) and nobody re-scored or agreed with its grade; the replaced grade is kept in
   `vip_grade_history`. The majority vote (`QA_VOTES`) applies to VIP grades too; the fail verifier
   and QA lessons do not (their rules are written for the chat criteria).
-- **The VIP loop** — `service.vip_auto_cycle`: collect the VIP teams' threads for yesterday–today,
+- **The VIP loop** — `service.vip_auto_cycle`: collect the threads assigned to a VIP team or to a VIP manager for yesterday–today,
   regroup, grade the cases without a grade (batch). `VIP_AUTO=on` runs it in the web app every
   `VIP_AUTO_HOURS` (24); it is **off by default** because every turn is paid. By hand:
   `intercom-summary vip-auto [--since … --until …] [--live]` or `POST /api/vip/auto` (admin).

@@ -133,3 +133,24 @@ def test_api_list_detail_and_export(client):
     assert client.get("/api/vip/conversations/nope").status_code == 404
     x = client.get("/api/vip/export.xlsx")
     assert x.status_code == 200 and x.content[:2] == b"PK"
+
+
+def test_collect_query_covers_threads_assigned_to_a_manager_personally():
+    """Oct 2026: 617 of the 1,508 emails assigned to a VIP manager carried no team, so a
+    team-only search never fetched them."""
+    from intercom_summary.vip import VIP_TEAM_IDS, collect_query, vip_member_ids
+
+    admins = [
+        {"id": 1, "name": "Alisa Morgan", "team_ids": [VIP_TEAM_IDS[0], 99]},
+        {"id": 2, "name": "Support Sam", "team_ids": [99]},
+        {"id": 3, "name": "Walter Hofer", "team_ids": [VIP_TEAM_IDS[1]]},
+        {"id": 4, "name": "Nobody", "team_ids": None},
+    ]
+    assert vip_member_ids(admins) == [1, 3]
+    q = collect_query(100, 200, [1, 3])
+    assigned = q["value"][2]["value"]
+    assert {(c["field"], c["value"]) for c in assigned} == {
+        ("team_assignee_id", VIP_TEAM_IDS[0]), ("team_assignee_id", VIP_TEAM_IDS[1]),
+        ("admin_assignee_id", 1), ("admin_assignee_id", 3),
+    }
+    assert q["value"][0] == {"field": "created_at", "operator": ">", "value": 99}
