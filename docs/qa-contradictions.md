@@ -13,7 +13,7 @@ previous ruleset (Jul–Oct), and the 8 Oct calibration feedback.
 | QA failed | QA passed |
 |---|---|
 | `215561189196770` — "Close my account as i no longer want it open"; QA: *missing escalation* (75) | `215561184842420` — permanent self-exclusion, block on re-registration and a marketing stop asked; the agent confirmed a plain closure only; QA: *no mistakes* (100) |
-| `215561195031197` — QA: *important to inform the player that SE limits were set* (75) | `215561192205083` — "Close my account permanently please"; the agent said the VIP manager will contact them; QA: *robotic*, score 100 |
+| `215561195031197` — QA: *important to inform the player that SE limits were set* (75) | `215561192205083` — "Close my account permanently please"; the agent said the VIP manager will contact them; QA: *responses felt robotic* (89) |
 | | `215561199807690` — closure request neither carried out nor forwarded; QA: *no mistakes* (100) |
 
 **Now:** `cannot_determine` → manual review. **Decision needed:** is an un-actioned closure /
@@ -37,7 +37,7 @@ QA passed all three, although none was passed to Finance:
 
 - `215561198888771` — withdrawal unpaid for a year; the agent: "the support department has no authority to advise you on matters like this", write to email. QA: *no mistakes* (100).
 - `215561190354551` — withdrawal blocked; the agent: "the tech team is currently working to fix the issue". QA: *no mistakes* (100).
-- `215561186471927` — withdrawal rejected; the agent explained verification, deposit and the 3× wager. QA: *sla* only.
+- `215561186471927` — withdrawal rejected; the agent explained verification, deposit and the 3× wager. QA: *sla* only (95).
 
 **Decision needed:** when is a withdrawal case *not* a Finance escalation — a redirect to the
 email channel, a known outage, an explanation of the rejection reason? Case 3 needs that
@@ -72,8 +72,8 @@ still have to be passed on? Case 1 as written says yes.
 
 | QA failed (resp-no-ghost kept) | QA passed (info-completeness or nothing) |
 |---|---|
-| `215561142097586` (74), `215561160954258` (73) — last messages unanswered | `215561172301058` (92) — *no answer to player's last questions*; `215561146131802` (88) — *reg bonus was ignored* |
-| `215561053744978`, `215561069792702` — a skipped request kept as a failure | `215561191720078` (95) — *the question about Free Spins was left unanswered*; `215561184478348` (92); `215561188849783` (100) |
+| `215561142097586` (74) — *ignored the player's question about the reg bonus*; `215561160954258` (73) | `215561172301058` (92) — *no answer to player's last questions*; `215561146131802` (88) — *reg bonus was ignored* |
+| `215561053744978` (64), `215561069792702` (70) — resp-no-ghost kept as a failed criterion | `215561191720078` (95) — *the question about Free Spins was left unanswered*; `215561184478348` (92); `215561188849783` (100) |
 
 **Now:** a skipped secondary request the player did not repeat is info-completeness (−5); a
 question in the player's last messages is resp-no-ghost. **Decision needed:** confirm that line,
@@ -82,7 +82,7 @@ or say when an ignored question is a Gate 2A failure.
 ## 8. Churn: what counts as "leaving"
 
 - `215561187062279` — "I am NEVER coming back to this site" inside a complaint about a delay; QA: churn n/a, *tone is very dry* (91).
-- History: `215561149030106` — an explicit leaving statement left unacknowledged, QA 90; `215561106973718` — "I want to cancel my account now" ignored, QA 82.
+- History: `215561149030106` — *the player's reply about leaving the casino was not acknowledged*, scored 90; `215561106973718` — *no attempt to de-escalate the conflict or reassure the player*, 82.
 
 The 9 Oct definition QA agreed to counts "I'm leaving / close my account / I'll play elsewhere"
 as a churn signal that must get a reaction (Gate 2A). **Decision needed:** keep that, or
@@ -100,7 +100,7 @@ small deduction?
 
 - **Missed SLA:** noted but scored 100 in `215561134947257`, `215561134975050`, `215561134945329`, `215561129571908`, `215561126242263`; −5 in `215561143423236`, `215561136991308`.
 - **Missing tag:** 0 points in `215561110251320`, `215561126279157` (31 Aug–2 Sep); −2/−3 elsewhere.
-- **Telling a VIP player to write to their VIP manager:** `215561173517204` scored 84 (*should not have simply advised*); `215561126673693` scored 100.
+- **Telling a VIP player to write to their VIP manager:** `215561173517204` scored 84 (*should not have simply advised the player to contact their VIP Manager*); the same advice was passed at 100 in other chats (open question: list them with QA).
 
 The AI applies fixed deductions (resp-sla −5, tag-chat −3, ownership-effort −6), so it will
 disagree with whichever side QA takes case by case. Not a Gate 2A matter; it moves scores, not
@@ -110,7 +110,7 @@ PASS/FAIL, unless the chat is near 85.
 
 - The 15 Oct scam-deposit shift: `215561197770412`, `215561197771902`, `215561197772272`, `215561197772525`, `215561197773452` — all passed "considering the amount of similar scam chats during this shift".
 - The power outage: `215561196729613`, `215561196735896` — "I won't deduct points, as I'm aware that there was a power outage". The AI now routes an agent-side outage note to manual review.
-- 2 Sep (agent Felix): `215561126258456` — the player waited with 4 messages; the agent closed 11 s after "no access to your profile due to technical difficulties"; QA 92.
+- 2 Sep (agent Felix): `215561126258456` — the player waited with 4 messages; the agent closed 11 s after "no access to your profile due to technical difficulties"; QA: *no errors as the chat is empty, missed sla, wrong tag* (92).
 
 **Proposal:** mark shift incidents (date, shift, reason) somewhere the pipeline can read — a tag
 on the chats, or a list — and exclude those chats from the agreement measurement.
