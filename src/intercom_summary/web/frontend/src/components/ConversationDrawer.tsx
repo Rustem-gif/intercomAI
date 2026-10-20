@@ -26,6 +26,8 @@ interface DrawerProps {
   onOverridden?: () => void;
   /** Passed to the grade panel when the conversation has no grade. */
   noGradeText?: string;
+  /** Where the grade panel's "Agree" posts; defaults to the live chat grade's confirm endpoint. */
+  confirmUrl?: string;
   /** Show the server's text transcript instead of message bubbles — a VIP case, where the
    *  text is exactly what the grader read: dated lines, VIP MANAGER / OTHER STAFF labels,
    *  thread separators and the reply-gap table. */
@@ -36,6 +38,7 @@ interface DrawerProps {
 
 export default function ConversationDrawer({
   id, onClose, readOnly = false, detailUrl, disputeUrl, overrideUrl, onOverridden, noGradeText,
+  confirmUrl,
   transcriptText = false, title,
 }: DrawerProps) {
   const { user, displayName } = useAuth();
@@ -418,6 +421,7 @@ export default function ConversationDrawer({
                       disputeUrl={disputeUrl}
                       readOnly={readOnly}
                       overrideUrl={overrideUrl}
+                      confirmUrl={confirmUrl}
                       emptyText={noGradeText}
                       onDisputeChange={afterDisputeChange}
                       onOverridden={() => {

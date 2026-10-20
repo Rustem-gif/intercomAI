@@ -463,6 +463,7 @@ function CasesView() {
         <ConversationDrawer id={openId} onClose={() => setOpenId(null)} title={`Case ${openId}`}
                             detailUrl={`/api/vip/cases/${openId}`}
                             overrideUrl={`/api/vip/grades/${openId}/override`}
+                            confirmUrl={`/api/vip/grades/${openId}/confirm`}
                             onOverridden={() => qc.invalidateQueries({ queryKey: ["vip-cases"] })}
                             transcriptText
                             noGradeText="This case has not been graded yet. Grading runs on the VIP Scorecard v1.6 (paid: Claude API)." />

@@ -133,7 +133,8 @@ class Grader:
         # a grade in the vote band, or one the verifier changed, is made again and the
         # majority PASS/FAIL decides. Gated rulesets only; votes=1 switches it off.
         if votes is None:
-            votes = settings.qa_votes if self._ruleset.scoring_model == SCORING_GATED else 1
+            votes = (settings.qa_votes
+                     if self._ruleset.scoring_model in (SCORING_GATED, SCORING_VIP_GATED) else 1)
         self._votes = max(1, int(votes))
         self._history_memo: dict[str, HistoryContext | None] = {}
         self._history_lock = threading.Lock()

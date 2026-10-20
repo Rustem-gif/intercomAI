@@ -210,6 +210,24 @@ def create_app() -> FastAPI:
 
         asyncio.create_task(tick_forever())
 
+    @app.on_event("startup")
+    async def _vip_auto_loop() -> None:
+        """The VIP loop (service.vip_auto_cycle) every VIP_AUTO_HOURS, in-process like the
+        history refresh. Off unless VIP_AUTO=on: each turn grades new cases, which is paid."""
+        if not settings.vip_auto or settings.vip_auto_hours <= 0:
+            return
+
+        async def tick_forever() -> None:
+            await asyncio.sleep(900)
+            while True:
+                try:
+                    await asyncio.to_thread(_maybe_vip_auto)
+                except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
+                    log.exception("VIP auto tick failed")
+                await asyncio.sleep(3600)
+
+        asyncio.create_task(tick_forever())
+
     # ── Auth ──────────────────────────────────────────────────────────────────
     @app.post("/api/auth/login", response_model=UserOut)
     def login(body: LoginRequest, request: Request):
@@ -1715,6 +1733,54 @@ def create_app() -> FastAPI:
             store.close()
         return {"ok": True, "human_score": score}
 
+    @app.post("/api/vip/grades/{case_id}/confirm")
+    def vip_confirm(case_id: str, user: dict = Depends(auth.require_write)):
+        """A reviewer's Agree with a VIP case grade as it stands (the VIP counterpart of
+        /api/conversations/{id}/confirm). An agreed case is not re-graded when it grows."""
+        from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+        store = VipCasesStore()
+        try:
+            grade = store.get_grade(case_id)
+            if grade is None:
+                raise HTTPException(404, "This case has no grade")
+            if grade.get("human_score") is not None:
+                raise HTTPException(409, "This grade was re-scored; it already has a human verdict")
+            store.confirm(case_id, user["username"])
+            return {"ok": True, "human_confirmed_by": user["username"]}
+        finally:
+            store.close()
+
+    @app.delete("/api/vip/grades/{case_id}/confirm")
+    def vip_unconfirm(case_id: str, user: dict = Depends(auth.require_write)):
+        from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+        store = VipCasesStore()
+        try:
+            if not store.confirm(case_id, None):
+                raise HTTPException(404, "This case has no grade to withdraw an agreement from")
+            return {"ok": True}
+        finally:
+            store.close()
+
+    @app.post("/api/vip/auto", response_model=JobOut)
+    def vip_auto_now(background: BackgroundTasks, user: dict = Depends(auth.require_admin)):
+        """One turn of the VIP loop by hand: collect yesterday's and today's VIP threads,
+        regroup, grade the cases without a grade (batch). Paid: the grading."""
+        settings.require_intercom()
+        settings.require_anthropic()
+        js = JobsStore()
+        try:
+            existing = _active_grading_job(js)
+            if existing:
+                return JobOut(id=existing["id"], kind=existing["kind"], status=existing["status"],
+                              result=existing["result"], error=existing["error"])
+            job_id = js.create("vip_auto", {"created_by": user["username"]})
+        finally:
+            js.close()
+        background.add_task(_run_vip_auto_job, job_id)
+        return JobOut(id=job_id, kind="vip_auto", status="queued")
+
     @app.get("/api/vip/exceptions")
     def vip_exceptions(user: dict = Depends(auth.current_user)):
         """Exception Report v1: unanswered player messages and threads with no owner."""
@@ -2539,7 +2605,8 @@ def _active_grading_job(js: JobsStore) -> dict | None:
     one at a time: they share the API rate limit and the cost meter, and a refresh writes the
     labels a grading run reads."""
     jobs = (js.list_recent(kind="review", limit=10) + js.list_recent(kind="calibration", limit=10)
-            + js.list_recent(kind="vip_review", limit=10) + js.list_recent(kind="history_refresh", limit=5))
+            + js.list_recent(kind="vip_review", limit=10) + js.list_recent(kind="vip_auto", limit=5)
+            + js.list_recent(kind="history_refresh", limit=5))
     return next((j for j in jobs if j["status"] in ("queued", "running", "cancelling")), None)
 
 
@@ -2877,6 +2944,60 @@ def _vip_case_of(thread_id: str) -> str | None:
         return store.case_for_thread(thread_id)
     finally:
         store.close()
+
+
+def _run_vip_auto_job(job_id: str) -> None:
+    cancel_event = threading.Event()
+    _review_cancel_events[job_id] = cancel_event
+    js = JobsStore()
+    js.update(job_id, status="running")
+    try:
+        progress: dict = {"partial": True}
+
+        def on_progress(graded: int, skipped: int, total: int) -> None:
+            progress.update(graded=graded, skipped=skipped, total=total)
+            js.update(job_id, result=progress)
+
+        def on_batch(status: dict) -> None:
+            progress["batch_status"] = status
+            js.update(job_id, result=progress)
+
+        result = service.vip_auto_cycle(on_progress=on_progress, on_batch=on_batch,
+                                        cancel_event=cancel_event)
+        grading = result.get("grading") or {}
+        js.update(job_id, status="cancelled" if grading.get("cancelled") else "done", result=result)
+    except Exception as e:
+        log.exception("VIP auto job failed")
+        js.update(job_id, status="error", error=str(e))
+    finally:
+        _review_cancel_events.pop(job_id, None)
+        js.close()
+
+
+def _maybe_vip_auto() -> str | None:
+    """Start a VIP cycle when the last one is older than VIP_AUTO_HOURS and nothing is grading."""
+    from datetime import datetime, timedelta, timezone
+
+    from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+    store = VipCasesStore()
+    try:
+        last = store.get_meta("vip.last_auto_at")
+    finally:
+        store.close()
+    due = datetime.now(timezone.utc) - timedelta(hours=settings.vip_auto_hours)
+    if last and datetime.fromisoformat(last) > due:
+        return None
+    js = JobsStore()
+    try:
+        if _active_grading_job(js):
+            return None
+        job_id = js.create("vip_auto", {"created_by": "scheduler"})
+    finally:
+        js.close()
+    log.info("VIP cycle due (last: %s) — starting job %s", last or "never", job_id)
+    _run_vip_auto_job(job_id)
+    return job_id
 
 
 def _run_vip_review_job(job_id: str, params: dict) -> None:

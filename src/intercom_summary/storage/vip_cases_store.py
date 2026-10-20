@@ -157,9 +157,21 @@ class VipCasesStore:
         }
 
     # ── Grades ─────────────────────────────────────────────────────────────────────────────
+    def _archive(self, case_id: str) -> None:
+        """Keep the grade about to be replaced (a case that grew), as grade_history does for chats."""
+        self._conn.execute(
+            """INSERT OR REPLACE INTO vip_grade_history
+               (case_id, archived_at, graded_at, overall_score, human_score, rules_version,
+                case_version, payload_json)
+               SELECT case_id, ?, graded_at, overall_score, human_score, rules_version,
+                      case_version, payload_json FROM vip_grades WHERE case_id=?""",
+            (_now(), case_id))
+
     def save_grade(self, grade, case_version: str, primary_manager: str = "") -> None:
         """Upsert the AI grade. An analyst override on the row survives a re-grade, as in
-        `grades` — the AI original changes, the human verdict does not."""
+        `grades` — the AI original changes, the human verdict does not. An Agree does not:
+        it was given on the earlier version of the case."""
+        self._archive(grade.conversation_id)
         self._conn.execute(
             """INSERT INTO vip_grades
                  (case_id, primary_manager, overall_score, overall_result, ruleset_id,
@@ -176,7 +188,8 @@ class VipCasesStore:
                  service_failure_flag=excluded.service_failure_flag,
                  manual_review_needed=excluded.manual_review_needed,
                  outcome_status=excluded.outcome_status, case_type=excluded.case_type,
-                 payload_json=excluded.payload_json""",
+                 payload_json=excluded.payload_json,
+                 human_confirmed_by=NULL, human_confirmed_at=NULL""",
             (grade.conversation_id, primary_manager or grade.agent_name, grade.overall_score,
              grade.overall_result, grade.ruleset_id, grade.rules_version, case_version,
              grade.model, grade.graded_at or _now(), int(bool(grade.critical_fail)),
@@ -195,17 +208,53 @@ class VipCasesStore:
         d = json.loads(row["payload_json"])
         d["ruleset_id"] = row["ruleset_id"]
         d["case_version"] = row["case_version"]
-        for k in ("human_score", "override_reason", "overridden_by", "overridden_at"):
+        for k in ("human_score", "override_reason", "overridden_by", "overridden_at",
+                  "human_confirmed_by", "human_confirmed_at"):
             d[k] = row[k]
         d["human_criteria"] = json.loads(row["human_criteria"]) if row["human_criteria"] else None
         d["rule_results"] = _normalize_criteria(d.get("rule_results"), d["ruleset_id"])
         return d
 
     def is_current(self, case_id: str, rules_version: str, case_version: str) -> bool:
+        """True when the case needs no grading. A graded case is never re-graded because the
+        rules changed (the client's rule, as for chats — `rules_version` is accepted and
+        ignored); it is graded again only when it grew (a new thread → new `case_version`)
+        and no human has re-scored or agreed with its grade. The earlier grade is archived."""
         row = self._conn.execute(
-            "SELECT rules_version, case_version FROM vip_grades WHERE case_id = ?",
+            "SELECT case_version, human_score, human_confirmed_at FROM vip_grades WHERE case_id = ?",
             (case_id,)).fetchone()
-        return bool(row) and row[0] == rules_version and row[1] == case_version
+        if not row:
+            return False
+        if row["human_score"] is not None or row["human_confirmed_at"]:
+            return True
+        return row["case_version"] == case_version
+
+    def confirm(self, case_id: str, confirmed_by: str | None) -> bool:
+        """A reviewer's Agree with the AI grade as it stands (None withdraws it). A case with a
+        human override already has a human verdict, so it cannot be confirmed."""
+        cur = self._conn.execute(
+            "UPDATE vip_grades SET human_confirmed_by=?, human_confirmed_at=? "
+            "WHERE case_id=? AND human_score IS NULL",
+            (confirmed_by, _now() if confirmed_by else None, case_id))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def get_meta(self, key: str) -> str | None:
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._conn.execute(
+            """INSERT INTO meta (key, value, updated_at) VALUES (?,?,?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+            (key, value, _now()))
+        self._conn.commit()
+
+    def history(self, case_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT archived_at, graded_at, overall_score, human_score, rules_version, case_version
+                 FROM vip_grade_history WHERE case_id=? ORDER BY archived_at DESC""", (case_id,))
+        return [dict(r) for r in rows]
 
     def save_override(self, case_id: str, human_score: int, reason: str, overridden_by: str,
                       human_criteria: dict[str, str] | None = None) -> bool:

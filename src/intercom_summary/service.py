@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import threading
 from typing import Any, Callable
 
@@ -564,8 +564,9 @@ def grade_vip_cases(
     """Grade VIP cases with the vip-v16 ruleset into `vip_grades` (never `grades`).
 
     Cases are regrouped from the current threads first (free), so a thread that arrived since
-    the last build lands in its case. A case is skipped while its grade is current: same
-    prompt (`rules_version`) and same threads (`case_version`). The engine is review_and_store
+    the last build lands in its case. A graded case is skipped unless it grew (a new thread),
+    and never because the rules changed; a case a human re-scored or agreed with is skipped
+    too (VipCasesStore.is_current). `regrade=True` is a person's deliberate choice. The engine is review_and_store
     with `conversations=` — the same grader, guards, batch path and cost accounting as chats.
     """
     from intercom_summary import vip_cases
@@ -599,6 +600,35 @@ def grade_vip_cases(
                 + len(rows) - len(convos)}
     finally:
         store.close()
+
+
+def vip_auto_cycle(since: str | None = None, until: str | None = None, *, batch: bool = True,
+                   on_progress: Callable[[int, int, int], None] | None = None,
+                   on_batch: Callable[[dict], None] | None = None,
+                   cancel_event: "threading.Event | None" = None) -> dict[str, Any]:
+    """One turn of the VIP loop: collect the VIP teams' threads for [since, until] (default:
+    yesterday to today, UTC), regroup them into cases, grade the cases without a current grade.
+    Existing grades are left alone (see grade_vip_cases). Paid: the grading."""
+    import asyncio
+
+    from intercom_summary import vip
+    from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+    today = datetime.now(timezone.utc).date()
+    until = until or today.isoformat()
+    since = since or (today - timedelta(days=1)).isoformat()
+    collected = asyncio.run(vip.collect(since, until))
+    graded = grade_vip_cases(batch=batch, on_progress=on_progress, on_batch=on_batch,
+                             cancel_event=cancel_event)
+    store = VipCasesStore()
+    try:
+        store.set_meta("vip.last_auto_at", datetime.now(timezone.utc).isoformat())
+    finally:
+        store.close()
+    log.info("VIP cycle %s..%s: collected %s; graded %d, skipped %d", since, until,
+             {k: collected.get(k) for k in ("fetched", "kept", "stored") if k in collected},
+             graded.get("graded", 0), graded.get("skipped", 0))
+    return {"since": since, "until": until, "collected": collected, "grading": graded}
 
 
 async def refresh_vip_staff() -> list[str]:

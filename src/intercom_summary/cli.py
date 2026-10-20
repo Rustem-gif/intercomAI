@@ -256,6 +256,20 @@ async def _vip_grade(args: argparse.Namespace):
              (result.get("usage") or {}).get("cost_usd", 0))
 
 
+async def _vip_auto(args: argparse.Namespace):
+    """One turn of the VIP loop: collect, regroup, grade the ungraded cases (paid)."""
+    settings.require_intercom()
+    settings.require_qa("api")
+    from intercom_summary import service
+
+    r = await asyncio.to_thread(service.vip_auto_cycle, args.since, args.until,
+                                batch=not args.live)
+    g = r["grading"]
+    log.info("VIP cycle %s..%s: %d graded, %d skipped, %d failed; $%.4f", r["since"], r["until"],
+             g.get("graded", 0), g.get("skipped", 0), g.get("failed", 0),
+             (g.get("usage") or {}).get("cost_usd", 0))
+
+
 async def _history_label(args: argparse.Namespace):
     """Label chats for the grader's historical context (qa/history_labeller.py)."""
     settings.require_anthropic()
@@ -408,6 +422,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
     k.set_defaults(func=_sync_kb)
+
+    va = sub.add_parser("vip-auto", help="One turn of the VIP loop: collect new threads, regroup "
+                        "into cases, grade the ungraded cases (paid). Default window: yesterday–today.")
+    va.add_argument("--since")
+    va.add_argument("--until")
+    va.add_argument("--live", action="store_true", help="grade live instead of through the Batch API")
+    va.set_defaults(func=_vip_auto)
 
     h = sub.add_parser("history", help="The grader's historical context: label chats, refresh "
                                        "the index, show its state.")

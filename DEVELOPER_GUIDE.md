@@ -446,9 +446,19 @@ several threads; the biggest is 20 — serial bonus requesters chain for two wee
   player (outside the few criteria where that is the right evidence) is reset to n/a, with a flag.
 - **Grading (paid)** — `intercom-summary vip-grade [--batch] [--case vc-…]`, or the admin
   **Grade cases** button in VIP → Cases (batch). Grades go to `vip_grades`
-  (`storage/vip_cases_store.py`), never `grades`; current grades (same prompt + same
-  `case_version`) are skipped. Rough cost: ~$0.05 per case live, half by batch. The override
-  (Re-score in the drawer) needs a written reason and keeps the AI original.
+  (`storage/vip_cases_store.py`), never `grades`. Rough cost: ~$0.05 per case live, half by batch.
+  The override (Re-score in the drawer) needs a written reason and keeps the AI original; **Agree**
+  (`POST|DELETE /api/vip/grades/<case>/confirm`, `vip_grades.human_confirmed_*`) records that a
+  reviewer checked the grade and it stands.
+- **Never re-graded on a rules change** (the client's rule, as for chats): `VipCasesStore.is_current`
+  ignores `rules_version`. A case is graded again only when it **grew** (a new thread → new
+  `case_version`) and nobody re-scored or agreed with its grade; the replaced grade is kept in
+  `vip_grade_history`. The majority vote (`QA_VOTES`) applies to VIP grades too; the fail verifier
+  and QA lessons do not (their rules are written for the chat criteria).
+- **The VIP loop** — `service.vip_auto_cycle`: collect the VIP teams' threads for yesterday–today,
+  regroup, grade the cases without a grade (batch). `VIP_AUTO=on` runs it in the web app every
+  `VIP_AUTO_HOURS` (24); it is **off by default** because every turn is paid. By hand:
+  `intercom-summary vip-auto [--since … --until …] [--live]` or `POST /api/vip/auto` (admin).
 - **Exception Report** — `vip_cases.exceptions()`, `GET /api/vip/exceptions`: a player's last
   message with no VIP-manager reply after it in any of their threads, and kept threads with no
   owner. Rule-based (sign-offs and mail-app footers are ignored), so expect the odd thank-you.
@@ -456,6 +466,9 @@ several threads; the biggest is 20 — serial bonus requesters chain for two wee
   `python scripts/import_calibration_sample.py "Untitled spreadsheet (1).xlsx" --lines --id vip-v16-70 --name "VIP Scorecard v1.6 calibration (70)" --ruleset vip-v16`.
   A run on it grades each member's whole case (63 cases for 70 threads); members of one case
   share the grade.
+  QA's verdicts on the sample go in with `--labels` (same script); the Calibration tab then shows
+  PASS/FAIL agreement per run. No VIP verdicts exist yet (Oct 2026): until they do, the VIP rules
+  are the scorecard as written, unmeasured against QA.
 
 ### AI ↔ QA agreement (the client's ≥ 95% PASS/FAIL bar)
 The client's requirement: the AI's PASS/FAIL agrees with QA's on at least 95% of chats.

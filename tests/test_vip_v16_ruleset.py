@@ -204,3 +204,31 @@ def test_review_job_and_override(client, fake_grader, monkeypatch):
     assert bad.status_code == 422
     g = client.get("/api/vip/cases/vc-1").json()["grade"]
     assert g["overall_score"] == 75 and g["human_score"] == 93
+
+
+def test_agree_on_a_case_grade_and_the_loop_endpoint(client, fake_grader, monkeypatch):
+    monkeypatch.setattr(type(settings), "require_qa", lambda self, backend=None: None)
+    assert client.post("/api/vip/grades/vc-1/confirm").status_code == 404   # not graded yet
+    client.post("/api/vip/review", json={})
+    assert client.post("/api/vip/grades/vc-1/confirm").json()["human_confirmed_by"] == "admin"
+    g = client.get("/api/vip/cases/vc-1").json()["grade"]
+    assert g["human_confirmed_by"] == "admin" and g["human_score"] is None
+    assert client.delete("/api/vip/grades/vc-1/confirm").status_code == 200
+    client.post("/api/vip/grades/vc-1/override", json={"reason": "Payments owned it", "score": 93})
+    assert client.post("/api/vip/grades/vc-1/confirm").status_code == 409   # re-scored already
+
+    # The loop by hand: collect (faked) → regroup → grade; nothing new, so nothing graded.
+    from intercom_summary import service, vip
+
+    async def fake_collect(since, until, reclassify=False):
+        return {"fetched": 0, "kept": 0, "since": since, "until": until}
+
+    monkeypatch.setattr(vip, "collect", fake_collect)
+    monkeypatch.setattr(type(settings), "require_intercom", lambda self: None)
+    monkeypatch.setattr(type(settings), "require_anthropic", lambda self: None)
+    job = client.post("/api/vip/auto").json()
+    assert job["kind"] == "vip_auto"
+    done = client.get(f"/api/jobs/{job['id']}").json()
+    assert done["status"] == "done" and done["result"]["grading"]["graded"] == 0
+    assert fake_grader.graded == ["vc-1"]                 # graded once; never re-graded
+    assert service.vip_auto_cycle.__doc__  # the same function the scheduler runs

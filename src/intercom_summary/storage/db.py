@@ -362,6 +362,19 @@ CREATE TABLE IF NOT EXISTS vip_grades (
     overridden_by        TEXT,
     overridden_at        TEXT
 );
+-- The VIP grade a re-grade replaced (a case that grew), so a changed score has a history.
+CREATE TABLE IF NOT EXISTS vip_grade_history (
+    case_id       TEXT NOT NULL,
+    archived_at   TEXT NOT NULL,
+    graded_at     TEXT,
+    overall_score INTEGER,
+    human_score   INTEGER,
+    rules_version TEXT,
+    case_version  TEXT,
+    payload_json  TEXT,
+    PRIMARY KEY (case_id, archived_at)
+);
+
 -- ── Historical context for the grader (qa/history_context.py) ─────────────────────────────
 -- One AI label per chat: the structured, English, searchable digest the grader's history
 -- context is built from. Rows come from the conversations cache ('cache') and from the raw
@@ -618,6 +631,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
                       ("labelled_by", "TEXT"), ("labelled_at", "TEXT")):
         if col not in item_cols:
             conn.execute(f"ALTER TABLE calibration_sample_items ADD COLUMN {col} {decl}")
+    conn.commit()
+
+    # A reviewer's Agree on a VIP case grade — the VIP counterpart of grades.human_confirmed_*.
+    vip_cols = {row[1] for row in conn.execute("PRAGMA table_info(vip_grades)").fetchall()}
+    for col in ("human_confirmed_by", "human_confirmed_at"):
+        if col not in vip_cols:
+            conn.execute(f"ALTER TABLE vip_grades ADD COLUMN {col} TEXT")
     conn.commit()
 
 

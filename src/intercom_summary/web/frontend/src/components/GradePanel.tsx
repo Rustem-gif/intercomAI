@@ -75,11 +75,14 @@ interface Props {
   overrideUrl?: string;
   /** What to say when there is no grade (the VIP tab's threads are never graded). */
   emptyText?: string;
+  /** Where "Agree" posts (and DELETE withdraws). Defaults to the live chat grade's confirm
+   *  endpoint; the VIP Cases view points it at the case grade. */
+  confirmUrl?: string;
 }
 
 export default function GradePanel({
   grade, conversationId, canOverride, onOverridden,
-  dispute, history, disputeUrl, readOnly, onDisputeChange, overrideUrl, emptyText,
+  dispute, history, disputeUrl, readOnly, onDisputeChange, overrideUrl, emptyText, confirmUrl,
 }: Props) {
   const displayName = useDisplayName();
   const [editing, setEditing] = useState(false);
@@ -230,8 +233,8 @@ export default function GradePanel({
     setConfirmBusy(true);
     setSaveError("");
     try {
-      const url = `/api/conversations/${conversationId}/confirm`;
-      if (overrideUrl) {
+      const url = confirmUrl ?? `/api/conversations/${conversationId}/confirm`;
+      if (overrideUrl && !confirmUrl) {
         // A sandboxed review (calibration) records QA's verdict as a re-score: agreeing is
         // re-scoring with the AI's own verdicts, which reproduces the AI's score.
         await api.post(overrideUrl, {

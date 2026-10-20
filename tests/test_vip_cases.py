@@ -138,7 +138,9 @@ def test_rebuild_store_grade_and_staleness(vip_env):
                               overall_result="FAIL", model="fake", graded_at="2026-10-20")
     store.save_grade(grade, case_version=case["case_version"], primary_manager="Vera VIP")
     assert store.is_current("vc-1", "r1", case["case_version"])
-    assert not store.is_current("vc-1", "r2", case["case_version"])
+    # A rules change never re-grades a graded case (the client's rule); growth does.
+    assert store.is_current("vc-1", "r2", case["case_version"])
+    assert not store.is_current("vc-1", "r1", "another-version")
     assert store.save_override("vc-1", 90, "Payments owned the delay", "qa")
     g = store.get_grade("vc-1")
     assert g["overall_score"] == 75 and g["human_score"] == 90       # AI original kept
@@ -180,3 +182,35 @@ def test_exceptions_unanswered_and_no_owner(vip_env):
     assert [e["thread_id"] for e in ex["unanswered"]] == ["3"]
     assert [e["thread_id"] for e in ex["no_owner"]] == ["3"]
     assert ex["as_of"]
+
+
+def test_a_grown_case_is_regraded_unless_a_human_signed_it_off(vip_env):
+    db = vip_env / "vip.db"
+    save_threads(db, [pair("1", 0)])
+    vip_cases.rebuild(db)
+    store = VipCasesStore(db)
+    v1 = store.get_case("vc-1")["case_version"]
+
+    def grade(score, version):
+        return ConversationGrade(conversation_id="vc-1", agent_name="Vera VIP", overall_score=score,
+                                 summary="s", rules_version="r1", ruleset_id="vip-v16",
+                                 overall_result="PASS" if score >= 85 else "FAIL", model="fake",
+                                 graded_at="2026-10-20")
+
+    store.save_grade(grade(75, v1), case_version=v1)
+    assert store.confirm("vc-1", "kate")                       # QA agrees with the grade
+    assert store.get_grade("vc-1")["human_confirmed_by"] == "kate"
+    assert store.is_current("vc-1", "r9", "grown-version")     # agreed → left alone even if grown
+
+    assert store.confirm("vc-1", None)                         # withdrawn
+    assert not store.is_current("vc-1", "r1", "grown-version")  # grown, nobody signed off → graded
+    store.save_grade(grade(92, "grown-version"), case_version="grown-version")
+    g = store.get_grade("vc-1")
+    assert g["overall_score"] == 92 and g["human_confirmed_at"] is None
+    hist = store.history("vc-1")
+    assert [h["overall_score"] for h in hist] == [75] and hist[0]["case_version"] == v1
+
+    assert store.save_override("vc-1", 60, "missed the payments handoff", "qa")
+    assert not store.confirm("vc-1", "kate")                   # a re-scored grade can't be agreed
+    assert store.is_current("vc-1", "r1", "grown-again")       # a human verdict is final
+    store.close()
