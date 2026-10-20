@@ -14,6 +14,16 @@ def _offline_jev():
 
 
 @pytest.fixture(autouse=True)
+def _no_fail_verifier():
+    """The fail verifier is on by default, which would add a second call to every FAIL a fake
+    client grades. Tests that exercise it inject a FailVerifier or switch it back on."""
+    old = settings.qa_fail_verifier
+    object.__setattr__(settings, "qa_fail_verifier", "off")
+    yield
+    object.__setattr__(settings, "qa_fail_verifier", old)
+
+
+@pytest.fixture(autouse=True)
 def _offline_kb():
     """Graders must not sync the Intercom Help Center from tests. Tests that exercise the
     knowledge base inject one with Grader(knowledge=...)."""

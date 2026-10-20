@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute, PastGrade, ScorePreview } from "@/lib/api";
 import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
-import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale } from "lucide-react";
+import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale, ThumbsUp } from "lucide-react";
 import { scoreColor, fmtDate } from "@/lib/utils";
 import { useDisplayName } from "@/lib/auth";
 
@@ -195,6 +195,34 @@ export default function GradePanel({
     }
   };
 
+  // "Agree": the reviewer checked the AI grade and it stands. Without it only disagreements
+  // leave a trace and AI ↔ QA agreement cannot be measured (Accuracy page).
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const isConfirmed = !isOverridden && !!grade.human_confirmed_at;
+  const canConfirm = !!canOverride && !!conversationId && !isOverridden && !editing;
+  const toggleConfirm = async () => {
+    setConfirmBusy(true);
+    setSaveError("");
+    try {
+      const url = `/api/conversations/${conversationId}/confirm`;
+      if (overrideUrl) {
+        // A sandboxed review (calibration) records QA's verdict as a re-score: agreeing is
+        // re-scoring with the AI's own verdicts, which reproduces the AI's score.
+        await api.post(overrideUrl, {
+          criteria: Object.fromEntries(grade.rule_results.map((r) => [r.rule_id, r.verdict])),
+          manual_deductions: [],
+          reason: "Agree — the AI grade is right",
+        });
+      } else if (isConfirmed) await api.delete(url);
+      else await api.post(url, {});
+      onOverridden?.();
+    } catch (e: any) {
+      setSaveError(e.message || "Save failed");
+    } finally {
+      setConfirmBusy(false);
+    }
+  };
+
   const submitDispute = async () => {
     if (!disputeReason.trim()) return;
     setDisputeBusy(true);
@@ -253,10 +281,24 @@ export default function GradePanel({
               </span>
             </div>
           )}
+          {canConfirm && (
+            <button
+              onClick={toggleConfirm}
+              disabled={confirmBusy}
+              className={`ml-auto flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
+                isConfirmed
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+              title={isConfirmed ? "Withdraw your agreement" : "The AI grade is right — record that you agree"}
+            >
+              <ThumbsUp className="h-3 w-3" /> {isConfirmed ? "Agreed" : "Agree"}
+            </button>
+          )}
           {canOverride && !editing && conversationId && (
             <button
               onClick={openEdit}
-              className="ml-auto flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={`${canConfirm ? "" : "ml-auto "}flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground`}
               title="Re-score this conversation"
             >
               <Pencil className="h-3 w-3" /> Re-score
@@ -326,6 +368,36 @@ export default function GradePanel({
               <span className="font-medium text-amber-600 dark:text-amber-400">Needs a QC check</span>
               {grade.manual_review_reason ? ` — ${grade.manual_review_reason}` : ""}
             </span>
+          </div>
+        )}
+
+        {/* The fail verifier took a second look because the grade was heading for FAIL. In `on`
+            mode the criteria it could not confirm were turned to pass (they show as passed
+            above); in shadow mode it only records, so say so. */}
+        {!editing && grade.fail_verifier && grade.fail_verifier.checked?.length > 0 && (
+          <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Second look at the FAIL</span>
+            {grade.fail_verifier.mode === "shadow" ? " (recorded only)" : ""}
+            {grade.fail_verifier.error ? (
+              <span> — did not run: {grade.fail_verifier.error}</span>
+            ) : (
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {grade.fail_verifier.checked.map((cid) => {
+                  const a = grade.fail_verifier!.answers?.[cid];
+                  return (
+                    <li key={cid}>
+                      <span className="font-mono">{cid}</span> —{" "}
+                      {a?.verdict === "not_proven"
+                        ? (grade.fail_verifier!.disputed_critical?.includes(cid)
+                            ? "not proven; critical, so sent to manual review"
+                            : grade.fail_verifier!.mode === "on" ? "not proven, turned to pass" : "not proven")
+                        : a ? "upheld" : "no answer"}
+                      {a?.reason ? `: ${a.reason}` : ""}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
         )}
 
@@ -408,6 +480,14 @@ export default function GradePanel({
             </ul>
           </div>
         )}
+
+        {isConfirmed && !editing && (
+          <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+            <ThumbsUp className="h-3 w-3" />
+            Agreed by {displayName(grade.human_confirmed_by ?? "")} · {fmtDate(grade.human_confirmed_at!)}
+          </div>
+        )}
+        {saveError && !editing && <p className="text-xs text-destructive">{saveError}</p>}
 
         {/* Override attribution */}
         {isOverridden && !editing && (

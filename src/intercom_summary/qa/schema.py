@@ -270,6 +270,9 @@ class ConversationGrade:
     # {} when the history was off. Recorded in shadow mode too, so "what would it have seen"
     # can be answered for a grade made without it.
     history_context: dict = field(default_factory=dict)
+    # The fail verifier's second look at a FAIL (qa/fail_verifier.py): mode, the criteria it
+    # checked, its answer per criterion and what it overturned. {} when it did not run.
+    fail_verifier: dict = field(default_factory=dict)
 
     @property
     def effective_score(self) -> int:
@@ -459,4 +462,5 @@ class ConversationGrade:
         g.usage = d.get("usage") or {}
         g.kb_version = d.get("kb_version") or ""
         g.history_context = d.get("history_context") or {}
+        g.fail_verifier = d.get("fail_verifier") or {}
         return g

@@ -521,6 +521,32 @@ def create_app() -> FastAPI:
             gstore.close()
         return {"ok": True, "human_score": score}
 
+    @app.post("/api/conversations/{conversation_id}/confirm")
+    def confirm_grade(conversation_id: str, user: dict = Depends(auth.require_write)):
+        """A QC manager agrees with the AI grade as it stands (counts toward AI ↔ QA agreement)."""
+        gstore = GradesStore()
+        try:
+            grade = gstore.get(conversation_id)
+            if not grade:
+                raise HTTPException(404, "No grade found for this conversation — grade it first")
+            if grade.get("human_score") is not None:
+                raise HTTPException(409, "This grade has a human re-score already")
+            gstore.confirm(conversation_id, user["username"])
+            grade = gstore.get(conversation_id)
+        finally:
+            gstore.close()
+        return {"ok": True, "human_confirmed_by": grade["human_confirmed_by"],
+                "human_confirmed_at": grade["human_confirmed_at"]}
+
+    @app.delete("/api/conversations/{conversation_id}/confirm")
+    def unconfirm_grade(conversation_id: str, user: dict = Depends(auth.require_write)):
+        gstore = GradesStore()
+        try:
+            gstore.confirm(conversation_id, None)
+        finally:
+            gstore.close()
+        return {"ok": True}
+
     def _open_grade_dispute(conversation_id: str, created_via: str, created_by: str,
                             reason: str) -> None:
         """Shared validation + creation for a grade dispute. Raises HTTPException on
@@ -636,7 +662,18 @@ def create_app() -> FastAPI:
                  user: dict = Depends(auth.current_user)):
         gstore = GradesStore()
         try:
-            return gstore.accuracy_stats(agents=_group_agents(group), brand=brand)
+            agents = _group_agents(group)
+            stats = gstore.accuracy_stats(agents=agents, brand=brand)
+            # The client's bar: PASS/FAIL agreement with QA ≥ 95%, measured on the current
+            # standard ruleset (v4.1) over the last 30 days of grades.
+            from datetime import datetime, timedelta, timezone
+
+            since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            stats["result_agreement"] = {
+                "ruleset_id": "kb-v41", "days": 30,
+                **gstore.result_agreement("kb-v41", since=since, agents=agents, brand=brand),
+            }
+            return stats
         finally:
             gstore.close()
 

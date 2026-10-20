@@ -39,6 +39,13 @@ def _jev_mode(value: str) -> str:
     return value
 
 
+def _fail_verifier_mode(value: str) -> str:
+    value = value.lower()
+    if value not in ("off", "shadow", "on"):
+        raise ValueError(f"QA_FAIL_VERIFIER must be off, shadow or on (got {value!r}).")
+    return value
+
+
 def _history_mode(value: str) -> str:
     value = value.lower()
     if value not in ("off", "shadow", "on"):
@@ -85,6 +92,14 @@ class Settings:
     # chat is never graded automatically under a newer version of the rules.
     qa_v41_effective_from: str = field(
         default_factory=lambda: _env("QA_V41_EFFECTIVE_FROM", "2026-10-05")
+    )
+
+    # A second look at every grade heading for FAIL (qa/fail_verifier.py): the same model
+    # checks each failed criterion against the manual and overturns the unproven ones.
+    #   off · shadow (record only) · on (default — measured 2026-10-20: AI ↔ QA agreement on the
+    #   QA-reviewed chats 63.6% → 72.9%, and run-to-run stability 90.7% → 94.7%)
+    qa_fail_verifier: str = field(
+        default_factory=lambda: _fail_verifier_mode(_env("QA_FAIL_VERIFIER", "on"))
     )
 
     # Jev (TypeSafe) — a calibrated second opinion on v4.1 verdicts; see qa/jev_verifier.py.
