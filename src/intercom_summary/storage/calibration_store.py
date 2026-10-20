@@ -132,17 +132,18 @@ class CalibrationStore:
     # replace.
     def start_run(self, sample_id: str, ruleset_id: str, rules_version: str = "",
                   model: str = "", effort: str = "", job_id: str | None = None,
-                  created_by: str = "") -> str:
+                  created_by: str = "", history_context: str = "off",
+                  history_index_version: str = "") -> str:
         import uuid
 
         run_id = uuid.uuid4().hex[:12]
         self._conn.execute(
             """INSERT INTO calibration_runs
                (id, sample_id, ruleset_id, rules_version, model, effort, started_at, job_id,
-                created_by)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                created_by, history_context, history_index_version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (run_id, sample_id, ruleset_id, rules_version, model, effort, _now(), job_id,
-             created_by),
+             created_by, history_context, history_index_version),
         )
         self._conn.commit()
         return run_id

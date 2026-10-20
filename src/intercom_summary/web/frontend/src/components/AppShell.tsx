@@ -12,6 +12,7 @@ import {
   GraduationCap,
   HardDrive,
   Crown,
+  History,
   Moon,
   Sun,
   LogOut,
@@ -37,6 +38,8 @@ const nav = [
   // data stay. To bring it back: { to: "/calibration", label: "Calibration 180", icon: FlaskConical }.
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
+  // The labelled chat history the grader reads for context (docs/history-context.md).
+  { to: "/history", label: "History index", icon: History },
   { to: "/coaching", label: "Coaching", icon: GraduationCap },
   { to: "/ruleset", label: "Ruleset", icon: ScrollText },
   { to: "/storage", label: "Storage", icon: HardDrive, adminOnly: true },

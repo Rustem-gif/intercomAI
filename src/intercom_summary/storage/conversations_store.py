@@ -148,8 +148,8 @@ class ConversationsStore:
             """INSERT OR REPLACE INTO conversations
                (id, agent_name, agent_email, customer_name, customer_email, state,
                 subject, created_at, updated_at, message_count, csat_rating, tags,
-                custom_tags, brand, payload_json, fetched_at, first_seen_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                custom_tags, brand, payload_json, fetched_at, first_seen_at, contact_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 convo.id,
                 convo.assignee_name,
@@ -168,6 +168,7 @@ class ConversationsStore:
                 json.dumps(payload),
                 now,
                 first_seen,
+                convo.contact.id or "",
             ),
         )
         self._conn.commit()

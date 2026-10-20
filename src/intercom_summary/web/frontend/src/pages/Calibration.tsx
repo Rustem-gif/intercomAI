@@ -68,6 +68,8 @@ export default function Calibration() {
   const [review, setReview] = useState<ReviewFilter>("all");
   const [sort, setSort] = useState<SortKey>("seq");
   const [batch, setBatch] = useState(false);
+  // Historical context for the next run: "" = the server's HISTORY_CONTEXT setting.
+  const [history, setHistory] = useState<"" | "off" | "shadow" | "on">("");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
 
@@ -131,7 +133,9 @@ export default function Calibration() {
     setStarting(true);
     setError("");
     try {
-      await api.post(`/api/calibration/samples/${sid}/run`, { ruleset_id: "kb-v41", batch });
+      await api.post(`/api/calibration/samples/${sid}/run`, {
+        ruleset_id: "kb-v41", batch, ...(history ? { history_context: history } : {}),
+      });
       setRunId(null);
       qc.invalidateQueries({ queryKey: ["calibration-results", sid] });
     } catch (e: any) {
@@ -171,6 +175,7 @@ export default function Calibration() {
             <p className="mt-1 text-xs text-muted-foreground">
               Run {run.id} · {run.model} ({run.effort}) · ruleset {run.ruleset_id} ·{" "}
               {fmtDate(run.started_at)}
+              {run.history_context && run.history_context !== "off" && ` · history ${run.history_context}`}
               {run.cost_usd != null && ` · $${run.cost_usd.toFixed(2)}`}
               {!run.finished_at && !running && " · unfinished"}
             </p>
@@ -212,6 +217,14 @@ export default function Calibration() {
           )}
           {writer && !running && (
             <>
+              <select className="h-8 rounded-md border bg-background px-2 text-xs" value={history}
+                      title="Historical context: the player's earlier chats and QA precedents in the prompt"
+                      onChange={(e) => setHistory(e.target.value as typeof history)}>
+                <option value="">history: default</option>
+                <option value="off">history: off</option>
+                <option value="shadow">history: shadow</option>
+                <option value="on">history: on</option>
+              </select>
               <label className="flex items-center gap-1.5 text-xs text-muted-foreground"
                      title="Message Batches API: half price, results in minutes to hours">
                 <input type="checkbox" checked={batch} onChange={(e) => setBatch(e.target.checked)} />

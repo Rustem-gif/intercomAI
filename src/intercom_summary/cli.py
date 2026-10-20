@@ -4,6 +4,9 @@
   intercom-summary review --agent ada@co.com --since 2026-05-01 --out qa_report.xlsx
   intercom-summary collect-batch msgbatch_01...   # save a Claude batch whose run died
   intercom-summary sync-kb                        # refresh the Help Center knowledge base now
+  intercom-summary history label --source all --batch   # label chats for the history index
+  intercom-summary history refresh                # the biweekly refresh, by hand
+  intercom-summary history stats
 """
 from __future__ import annotations
 
@@ -194,7 +197,8 @@ async def _calibrate(args: argparse.Namespace):
     # run_calibration drives its own event loops, so it runs off this one.
     result = await asyncio.to_thread(
         service.run_calibration, args.sample, ruleset_id=args.ruleset, batch=args.batch,
-        pilot_only=args.pilot, created_by="cli",
+        pilot_only=args.pilot, created_by="cli", history_context=args.history,
+        effort=args.effort,
     )
     log.info("Run %s: graded %d of %d member(s); %d ticket(s), %d unavailable, %d failed, $%.4f",
              result["run_id"], result["graded"], result["members"], result["tickets"],
@@ -211,6 +215,55 @@ async def _vip_collect(args: argparse.Namespace):
              "(%d AI-checked, %d reused); $%.4f",
              args.since, args.until, s["fetched"], s["kept"], s["excluded_rule"] or "{}",
              s["excluded_ai"], s["ai_checked"], s["reused"], s["cost_usd"])
+
+
+async def _history_label(args: argparse.Namespace):
+    """Label chats for the grader's historical context (qa/history_labeller.py)."""
+    settings.require_anthropic()
+    from intercom_summary import service
+
+    batch = True if args.batch else (False if args.live else None)
+    r = await asyncio.to_thread(
+        service.label_history, source=args.source, since=args.since, limit=args.limit,
+        batch=batch, relabel=args.relabel,
+        on_status=lambda st: log.info("Label batch: %s", st["counts"]),
+    )
+    log.info("History labels [%s]: %d candidate(s), %d labelled, %d failed, $%.4f%s",
+             r["label_version"], r["candidates"], r["labelled"], r["failed"], r["cost_usd"],
+             f"; batches {', '.join(r['batch_ids'])}" if r["batch_ids"] else "")
+
+
+async def _history_refresh(args: argparse.Namespace):
+    settings.require_anthropic()
+    from intercom_summary import service
+
+    batch = True if args.batch else (False if args.live else None)
+    r = await asyncio.to_thread(
+        service.refresh_history, batch=batch,
+        on_status=lambda st: log.info("Label batch: %s", st["counts"]))
+    log.info("Refreshed: %d labelled (%d failed, $%.4f), %d indexed, verdicts %s, index %s",
+             r["labelled"], r["failed"], r["cost_usd"], r["indexed"], r["verdicts"],
+             r["index_version"])
+
+
+async def _history_collect(args: argparse.Namespace):
+    """Save the labels of a labelling batch whose process died mid-wait (billed regardless)."""
+    settings.require_anthropic()
+    from intercom_summary import service
+
+    r = await asyncio.to_thread(
+        service.collect_label_batch, args.batch_id, source=args.source,
+        on_status=lambda st: log.info("Label batch: %s", st["counts"]))
+    log.info("Collected %d label(s) (%d unusable, %d unknown ids), $%.4f",
+             r["labelled"], r["failed"], r["unknown"], r["cost_usd"])
+
+
+async def _history_stats(args: argparse.Namespace):
+    import json as _json
+
+    from intercom_summary import service
+
+    print(_json.dumps(service.history_stats(), indent=2, ensure_ascii=False))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -244,6 +297,10 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--ruleset", default="kb-v41")
     c.add_argument("--batch", action="store_true", help="Message Batches API: half price, slower.")
     c.add_argument("--pilot", action="store_true", help="Only the sample's Pilot-20 members.")
+    c.add_argument("--history", choices=["off", "shadow", "on"],
+                   help="Historical context for this run (default: HISTORY_CONTEXT).")
+    c.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"],
+                   help="Effort for this run (default: QA_EFFORT).")
     c.set_defaults(func=_calibrate)
 
     v = sub.add_parser("vip-collect",
@@ -256,6 +313,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
     k.set_defaults(func=_sync_kb)
+
+    h = sub.add_parser("history", help="The grader's historical context: label chats, refresh "
+                                       "the index, show its state.")
+    hs = h.add_subparsers(dest="history_command", required=True)
+    hl = hs.add_parser("label", help="Label chats that have no label at the current version.")
+    hl.add_argument("--source", choices=["cache", "archive", "all"], default="cache",
+                    help="cache: the conversations table; archive: the raw client archives "
+                         "under EXPORT_DIR (labelled, never imported); all: both.")
+    hl.add_argument("--since", help="Only chats created on/after this date (YYYY-MM-DD).")
+    hl.add_argument("--limit", type=int, help="Cap the number of chats (smoke testing).")
+    hl.add_argument("--batch", action="store_true", help="Force the Message Batches API.")
+    hl.add_argument("--live", action="store_true", help="Force live calls (default: batch above 200).")
+    hl.add_argument("--relabel", action="store_true", help="Re-label chats that already have a label.")
+    hl.set_defaults(func=_history_label)
+    hr = hs.add_parser("refresh", help="Label new cached chats, regather human verdicts, rebuild the index.")
+    hr.add_argument("--batch", action="store_true")
+    hr.add_argument("--live", action="store_true")
+    hr.set_defaults(func=_history_refresh)
+    hc = hs.add_parser("collect-batch", help="Save the labels of an interrupted labelling batch.")
+    hc.add_argument("batch_id", nargs="+", help="msgbatch_… id(s) from the interrupted run's log.")
+    hc.add_argument("--source", choices=["cache", "archive"], default="cache",
+                    help="Where the batch's chats came from (default: the conversations cache).")
+    hc.set_defaults(func=_history_collect)
+    hst = hs.add_parser("stats", help="Index coverage, verdict counts, versions.")
+    hst.set_defaults(func=_history_stats)
     return parser
 
 

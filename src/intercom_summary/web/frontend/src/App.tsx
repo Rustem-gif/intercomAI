@@ -14,6 +14,7 @@ import Vip from "./pages/Vip";
 import NeedsAttention from "./pages/NeedsAttention";
 import Disputes from "./pages/Disputes";
 import KnowledgeBase from "./pages/KnowledgeBase";
+import HistoryIndex from "./pages/History";
 import Coaching from "./pages/Coaching";
 import Storage from "./pages/Storage";
 import AgentReview from "./pages/AgentReview";
@@ -45,6 +46,7 @@ function AuthenticatedApp() {
         <Route path="/needs-attention" element={<NeedsAttention />} />
         <Route path="/disputes" element={<Disputes />} />
         <Route path="/knowledge-base" element={<KnowledgeBase />} />
+        <Route path="/history" element={<HistoryIndex />} />
         <Route path="/coaching" element={<Coaching />} />
         {/* Storage exposes DB/housekeeping actions — the API gates it on admin too. */}
         {user.role === "admin" && <Route path="/storage" element={<Storage />} />}

@@ -265,6 +265,11 @@ class ConversationGrade:
     usage: dict = field(default_factory=dict)
     # "<brand>:<hash>" of the Help Center snapshot the grader judged accuracy against, or "".
     kb_version: str = ""
+    # The historical context the grader was given (qa/history_context.py): mode, the index
+    # snapshot, the ids of the player's earlier chats and the precedents, and the block itself.
+    # {} when the history was off. Recorded in shadow mode too, so "what would it have seen"
+    # can be answered for a grade made without it.
+    history_context: dict = field(default_factory=dict)
 
     @property
     def effective_score(self) -> int:
@@ -453,4 +458,5 @@ class ConversationGrade:
         g.jev = d.get("jev") or {}
         g.usage = d.get("usage") or {}
         g.kb_version = d.get("kb_version") or ""
+        g.history_context = d.get("history_context") or {}
         return g
