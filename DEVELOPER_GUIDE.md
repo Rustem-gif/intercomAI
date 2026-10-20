@@ -420,7 +420,7 @@ The client's requirement: the AI's PASS/FAIL agrees with QA's on at least 95% of
   or `python scripts/agreement_report.py`.
 - **The "Agree" button** (grade panel, next to Re-score) records that a QC manager checked the AI
   grade and it stands (`grades.human_confirmed_by/at`, `POST|DELETE /api/conversations/<id>/confirm`).
-  Without it only disagreements leave a trace. An AI re-grade clears it; a re-scored grade can't be
+  Without it only disagreements leave a trace. Like an override, it protects the grade from ordinary re-grading (a forced re-grade clears it); a re-scored grade can't be
   agreed with (it already has a human verdict). In the Calibration tab, Agree saves a re-score with
   the AI's own verdicts.
 - **False-PASS audit:** `scripts/pass_audit_sample.py` freezes 80 random unreviewed AI-PASS chats as

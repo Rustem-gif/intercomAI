@@ -157,7 +157,8 @@ class GradesStore:
         backend grades against support_rules.md and stamps that hash instead).
 
         Three cases count as current:
-        - **a human has already re-graded it** → never touched again by an ordinary run. QA's
+        - **a human has already re-graded it, or pressed Agree on it** → never touched again by
+          an ordinary run. QA's
           process is to manually re-grade every red/yellow chat in a period, and agents dispute
           individual scores; both are commitments made against a specific number. Re-grading
           underneath them is what caused the September incident: the rulebook was corrected on
@@ -176,12 +177,13 @@ class GradesStore:
         Editing a ruleset's prompt still marks that ruleset's own un-reviewed grades stale.
         """
         row = self._conn.execute(
-            "SELECT rules_version, ruleset_id, human_score FROM grades WHERE conversation_id=?",
+            "SELECT rules_version, ruleset_id, human_score, human_confirmed_at FROM grades "
+            "WHERE conversation_id=?",
             (conversation_id,),
         ).fetchone()
         if row is None:
             return False
-        if row["human_score"] is not None:
+        if row["human_score"] is not None or row["human_confirmed_at"]:
             return True
         if (row["ruleset_id"] or "default") != ruleset_id:
             return True

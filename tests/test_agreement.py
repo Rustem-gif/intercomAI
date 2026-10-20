@@ -66,6 +66,7 @@ def test_confirm_counts_as_agreement_and_a_regrade_clears_it(tmp_path):
     assert r["sides"]["FAIL"]["reviewed"] == 1 and r["sides"]["FAIL"]["agreed"] == 0
     assert r["confirmed"] == 1 and r["overridden"] == 1
     assert store.get("1")["human_confirmed_by"] == "qa"
-    _save(store, "1", 90)                            # the AI re-grades: the agreement was
+    assert store.is_current("1", "kb-v41", "a-newer-version")   # signed off: not re-graded
+    _save(store, "1", 90)                            # a forced re-grade: the agreement was
     assert store.get("1")["human_confirmed_by"] is None   # with a grade that no longer exists
     store.close()

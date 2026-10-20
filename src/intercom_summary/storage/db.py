@@ -406,7 +406,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("manual_review_needed", "INTEGER NOT NULL DEFAULT 0"),
         # A QC manager's "Agree": they reviewed the AI grade and it stands as it is. Without
         # it only disagreements (overrides) leave a trace, and AI ↔ QA agreement cannot be
-        # measured (qa/agreement.py). Cleared when the AI re-grades the chat.
+        # measured (qa/agreement.py). Protects the grade from ordinary re-grading like an
+        # override does (GradesStore.is_current); cleared if a forced re-grade replaces it.
         ("human_confirmed_by", "TEXT"),
         ("human_confirmed_at", "TEXT"),
     ]:
