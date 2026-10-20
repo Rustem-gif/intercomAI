@@ -152,7 +152,9 @@ class Settings:
     qa_prompt_path: Path = field(default_factory=lambda: Path(_env("QA_PROMPT_PATH", "./rules/qa_system_prompt.txt")))
     vip_prompt_path: Path = field(default_factory=lambda: Path(_env("VIP_PROMPT_PATH", "./rules/qa_system_prompt_vip.txt")))
     kbv41_prompt_path: Path = field(default_factory=lambda: Path(_env("KBV41_PROMPT_PATH", "./rules/qa_system_prompt_kb_v41.txt")))
+    vip_v16_prompt_path: Path = field(default_factory=lambda: Path(_env("VIP_V16_PROMPT_PATH", "./rules/qa_system_prompt_vip_v16.txt")))
     rulesets_path: Path = field(default_factory=lambda: Path(_env("RULESETS_PATH", "./config/rulesets.yaml")))
+    vip_staff_path: Path = field(default_factory=lambda: Path(_env("VIP_STAFF_PATH", "./config/vip_staff.yaml")))
     eval_dir: Path = field(default_factory=lambda: Path(_env("EVAL_DIR", "./data/eval")))
 
     @property

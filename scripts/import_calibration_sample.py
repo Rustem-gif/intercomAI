@@ -3,6 +3,12 @@
     python scripts/import_calibration_sample.py Vybirka_180_Chativ_King_Billy.docx \
         --id kb-v41-180 --name "King Billy v4.1 calibration (180)"
 
+A one-column list — "N. <chat id> — <date> — <agent> — <category>" per line, as in the VIP
+sample spreadsheet — is read with --lines (an .xlsx, or plain text):
+
+    python scripts/import_calibration_sample.py "Untitled spreadsheet (1).xlsx" --lines \
+        --id vip-v16-70 --name "VIP Scorecard v1.6 calibration (70)" --ruleset vip-v16
+
 The document is the authority on membership, so the import is a straight transcription of its
 table — no filtering, no de-duplication against what happens to be in the cache. It then
 *reports* which members cannot be graded rather than dropping them, because a short sample is
@@ -45,6 +51,31 @@ def rows_from_docx(path: str) -> list[list[str]]:
     return out
 
 
+# "12. 215561188112687 — 2026-10-07 09:07 — Walter Hofer — Deposit" (dashes may be - – —).
+_LINE = re.compile(r"^\s*(\d+)[.)]?\s+(\d{6,})\s*(?:[—–-]\s*(.*))?$")
+
+
+def rows_from_lines(path: str) -> list[list[str]]:
+    """Rows in parse_items' column order from a one-item-per-line list."""
+    if path.lower().endswith(".xlsx"):
+        import openpyxl
+
+        wb = openpyxl.load_workbook(path, read_only=True)
+        lines = [str(c) for ws in wb for row in ws.iter_rows(values_only=True)
+                 for c in row if c is not None]
+    else:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    out: list[list[str]] = []
+    for line in lines:
+        m = _LINE.match(line.strip())
+        if not m:
+            continue
+        rest = [p.strip() for p in re.split(r"\s+[—–-]\s+", m.group(3) or "")] if m.group(3) else []
+        out.append([m.group(1), m.group(2), *rest[:3]])
+    return out
+
+
 def parse_items(rows: list[list[str]]) -> list[dict]:
     """Pull the chat rows out of every table in the document.
 
@@ -75,7 +106,10 @@ def parse_items(rows: list[list[str]]) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("docx", help="the .docx list of chats")
+    ap.add_argument("docx", help="the .docx list of chats (or, with --lines, .xlsx / .txt)")
+    ap.add_argument("--lines", action="store_true",
+                    help="one 'N. id — date — agent — category' item per line")
+    ap.add_argument("--ruleset", help="the sample's default ruleset for runs (e.g. vip-v16)")
     ap.add_argument("--id", required=True, help="sample id, used to scope a review run")
     ap.add_argument("--name", required=True)
     ap.add_argument("--created-by", default="import script")
@@ -84,7 +118,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="parse and report, write nothing")
     args = ap.parse_args()
 
-    items = parse_items(rows_from_docx(args.docx))
+    items = parse_items(rows_from_lines(args.docx) if args.lines else rows_from_docx(args.docx))
     if not items:
         print(f"No chat rows found in {args.docx}", file=sys.stderr)
         return 1
@@ -99,7 +133,8 @@ def main() -> int:
 
     store = CalibrationStore()
     try:
-        store.create(args.id, args.name, source=args.docx, created_by=args.created_by)
+        store.create(args.id, args.name, source=args.docx, created_by=args.created_by,
+                     default_ruleset=args.ruleset)
         try:
             n = store.replace_items(args.id, items, force=args.force)
         except SampleFrozenError as e:
@@ -110,8 +145,8 @@ def main() -> int:
         missing = store.missing_conversations(args.id)
         trashed = store.trashed_conversations(args.id)
         if missing:
-            print(f"\n{len(missing)} of them are NOT in the conversations cache and cannot be "
-                  f"graded until they are fetched:")
+            print(f"\n{len(missing)} of them are in neither the conversations cache nor the "
+                  f"VIP threads and cannot be graded until they are fetched:")
             for cid in missing:
                 print(f"  {cid}{'   (in the trash)' if cid in set(trashed) else ''}")
         if trashed:

@@ -37,9 +37,16 @@ from intercom_summary.qa.jev_verifier import (
 )
 from intercom_summary.qa.pricing import UsageMeter
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
-from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset, strict_schema, validate_ruleset
+from intercom_summary.qa.rulesets import (
+    SCORING_GATED,
+    SCORING_VIP_GATED,
+    TRANSCRIPT_VIP_CASE,
+    get_ruleset,
+    strict_schema,
+    validate_ruleset,
+)
 from intercom_summary.qa.schema import ConversationGrade
-from intercom_summary.qa.verdict_guard import apply_guards
+from intercom_summary.qa.verdict_guard import apply_guards, apply_vip_guards
 from intercom_summary.settings import settings
 
 log = get_logger(__name__)
@@ -91,7 +98,9 @@ class Grader:
         # once per batch (refreshed if stale); a brand without one gets no KB block. Pass
         # knowledge={} to grade without it, or a {brand: KnowledgeBase} map to inject one.
         if knowledge is None:
-            use = self._ruleset.scoring_model == SCORING_GATED and settings.kb_enabled
+            # The VIP scorecard judges own-info / q-accuracy-minor against the same KB/T&C.
+            use = (self._ruleset.scoring_model in (SCORING_GATED, SCORING_VIP_GATED)
+                   and settings.kb_enabled)
             knowledge = knowledge_base.load_all() if use else {}
         self._kb: dict = knowledge
 
@@ -110,6 +119,10 @@ class Grader:
         return self._ruleset.version
 
     def messages_for(self, conversation: Conversation) -> list[dict]:
+        if self._ruleset.transcript == TRANSCRIPT_VIP_CASE:
+            from intercom_summary.qa.vip_transcript import case_block
+
+            return [{"role": "user", "content": case_block(conversation)}]
         return [{"role": "user", "content": trim_transcript(transcript_block(conversation))}]
 
     def knowledge_for(self, conversation: Conversation):
@@ -219,11 +232,13 @@ class Grader:
             f"No usable grade for conversation {conversation.id} after {_MAX_ATTEMPTS} attempts"
         )
 
-    @staticmethod
-    def _guard(conversation: Conversation, data: dict) -> None:
+    def _guard(self, conversation: Conversation, data: dict) -> None:
         # Overturn verdicts the transcript contradicts BEFORE the grade is built —
-        # from_model_output computes the score from these same criteria entries.
-        if guard_flags := apply_guards(conversation, data):
+        # from_model_output computes the score from these same criteria entries. A VIP case
+        # has its own roles (VIP MANAGER / OTHER STAFF) and no chat closing or greeting rules.
+        guard = (apply_vip_guards if self._ruleset.transcript == TRANSCRIPT_VIP_CASE
+                 else apply_guards)
+        if guard_flags := guard(conversation, data):
             data["flags"] = [*(data.get("flags") or []), *guard_flags]
 
     def _reconcile(self, conversation: Conversation, messages: list[dict], data: dict,

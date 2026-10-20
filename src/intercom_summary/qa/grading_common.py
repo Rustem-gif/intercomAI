@@ -13,7 +13,8 @@ class GradeParseError(Exception):
 # Verdicts that count as the model having actually looked at a criterion. "cannot_determine"
 # belongs here: it is a real, considered answer under the v4.1 evidence rules — "the data
 # cannot show me this" — not a refusal to evaluate.
-_EVALUATED = ("pass", "fail", "n/a", "cannot_determine")
+# "partial" is the VIP scorecard's half-defect on its two-level criteria (qa/vip_scoring.py).
+_EVALUATED = ("pass", "partial", "fail", "n/a", "cannot_determine")
 
 
 def is_valid_grade(data: dict) -> bool:
@@ -32,19 +33,19 @@ def is_valid_grade(data: dict) -> bool:
 # conversation is graded on the same evidence whichever backend runs it.
 _MAX_TRANSCRIPT_CHARS = 15_000
 _HEAD_CHARS = 2_000   # always keep the opening — greeting, name use, first impression
-_TAIL_CHARS = _MAX_TRANSCRIPT_CHARS - _HEAD_CHARS
 
 
-def trim_transcript(text: str) -> str:
-    """Keep head + tail so the greeting is never truncated away."""
-    if len(text) <= _MAX_TRANSCRIPT_CHARS:
+def trim_transcript(text: str, limit: int = _MAX_TRANSCRIPT_CHARS) -> str:
+    """Keep head + tail so the greeting is never truncated away. A VIP case spans several
+    email threads, so it passes a larger `limit` (qa/vip_transcript.py)."""
+    if len(text) <= limit:
         return text
     head = text[:_HEAD_CHARS]
     # Avoid cutting mid-line at the head boundary.
     last_nl = head.rfind("\n")
     if last_nl > 0:
         head = head[:last_nl]
-    tail = text[-_TAIL_CHARS:]
+    tail = text[-(limit - _HEAD_CHARS):]
     # Avoid cutting mid-line at the tail boundary.
     first_nl = tail.find("\n")
     if first_nl > 0:

@@ -54,6 +54,7 @@ from intercom_summary.web.schemas import (
     TagsUpdate,
     TrashActionRequest,
     UserOut,
+    VipReviewRequest,
 )
 
 log = get_logger("web.api")
@@ -1209,7 +1210,7 @@ def create_app() -> FastAPI:
         from intercom_summary.qa.rulesets import known_ruleset_ids
         from intercom_summary.storage.calibration_store import CalibrationStore
 
-        if body.ruleset_id not in known_ruleset_ids():
+        if body.ruleset_id is not None and body.ruleset_id not in known_ruleset_ids():
             raise HTTPException(400, f"Unknown ruleset '{body.ruleset_id}'")
         cal = CalibrationStore()
         try:
@@ -1269,12 +1270,21 @@ def create_app() -> FastAPI:
         res, grade = _calibration_grade(run_id, conversation_id)
         if not res.get("conversation_json"):
             raise HTTPException(404, "No transcript stored for this chat in this run")
-        convo = Conversation.from_dict(res["conversation_json"])
+        if "case_id" in res["conversation_json"]:
+            # A VIP calibration member was graded as part of its case — show the case.
+            from intercom_summary.qa.vip_transcript import case_block
+            from intercom_summary.vip_cases import CaseConversation
+
+            convo = CaseConversation.from_dict(res["conversation_json"])
+            transcript = case_block(convo)
+        else:
+            convo = Conversation.from_dict(res["conversation_json"])
+            transcript = convo.transcript_text()
         convo_dict = convo.to_dict()
         convo_dict["custom_tags"] = ""
         return {
             "conversation": convo_dict,
-            "transcript": convo.transcript_text(),
+            "transcript": transcript,
             "grade": grade,
             "grade_history": [],
             "sla": convo.sla_summary(settings.sla_first_response_sec, settings.sla_followup_sec),
@@ -1407,8 +1417,130 @@ def create_app() -> FastAPI:
             "sla": convo.sla_summary(settings.sla_first_response_sec, settings.sla_followup_sec),
             "iconic": None,
             "grade_dispute": None,
-            "vip": {k: row[k] for k in ("keep", "filter_stage", "reason", "topic", "delivered_as")},
+            "vip": {**{k: row[k] for k in ("keep", "filter_stage", "reason", "topic",
+                                           "delivered_as")},
+                    "case_id": _vip_case_of(conversation_id)},
         }
+
+    # ── VIP cases (Scorecard v1.6; see vip_cases.py) ───────────────────────────────────
+    @app.get("/api/vip/cases")
+    def vip_cases_list(manager: str | None = None, brand: str | None = None,
+                       search: str | None = None, since: str | None = None,
+                       until: str | None = None, result: str | None = None,
+                       flag: str | None = None, user: dict = Depends(auth.current_user)):
+        from intercom_summary import vip_cases, vip_staff
+        from intercom_summary.qa.rulesets import VIP_V16_RULESET_ID, get_ruleset
+        from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+        store = VipCasesStore()
+        try:
+            if not store.count():
+                store.close()
+                vip_cases.rebuild()
+                store = VipCasesStore()
+            items = store.cases(manager=manager, brand=brand, search=search, since=since,
+                                until=until, result=result, flag=flag)
+            version = get_ruleset(VIP_V16_RULESET_ID).version
+            for it in items:
+                if it["grade"]:
+                    it["grade"]["stale"] = (it["grade"]["stale"]
+                                            or it["grade"]["rules_version"] != version)
+            # Across every case, not just the filtered ones: "Grade cases" grades them all.
+            to_grade = sum(1 for it in (store.cases() if any(
+                (manager, brand, search, since, until, result, flag)) else items)
+                if not it["grade"] or it["grade"]["stale"]
+                or it["grade"]["rules_version"] != version)
+            return {"items": items, "summary": {**store.summary(), "to_grade": to_grade,
+                                                "rules_version": version,
+                                                "shifts_known": vip_staff.shifts_known()}}
+        finally:
+            store.close()
+
+    @app.get("/api/vip/cases/{case_id}")
+    def vip_case_detail(case_id: str, user: dict = Depends(auth.current_user)):
+        """The case in the shape of /api/conversations/{id}, so the drawer reuses it: the
+        merged threads, the transcript exactly as the grader reads it, and the grade."""
+        from intercom_summary import vip_cases
+        from intercom_summary.qa.vip_transcript import case_block
+        from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+        convo = vip_cases.load_case_conversations([case_id]).get(case_id)
+        if convo is None:
+            raise HTTPException(404, "VIP case not found")
+        store = VipCasesStore()
+        try:
+            meta = store.get_case(case_id)
+            grade = store.get_grade(case_id)
+        finally:
+            store.close()
+        convo_dict = convo.to_dict()
+        convo_dict["custom_tags"] = ""
+        if grade:
+            grade["stale"] = grade.get("case_version") != convo.case_version
+        return {
+            "conversation": convo_dict,
+            "transcript": case_block(convo),
+            "grade": grade,
+            "grade_history": [],
+            "sla": None,
+            "iconic": None,
+            "grade_dispute": None,
+            "vip_case": meta,
+        }
+
+    @app.post("/api/vip/review", response_model=JobOut)
+    def vip_review(body: VipReviewRequest, background: BackgroundTasks,
+                   user: dict = Depends(auth.require_admin)):
+        """Grade VIP cases (paid: Claude API). One grading run at a time, as for chats."""
+        try:
+            settings.require_qa("api")
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        js = JobsStore()
+        try:
+            existing = _active_grading_job(js)
+            if existing:
+                return JobOut(id=existing["id"], kind=existing["kind"], status=existing["status"],
+                              result=existing["result"], error=existing["error"])
+            params = body.model_dump()
+            job_id = js.create("vip_review", params)
+        finally:
+            js.close()
+        background.add_task(_run_vip_review_job, job_id, params)
+        return JobOut(id=job_id, kind="vip_review", status="queued")
+
+    @app.post("/api/vip/grades/{case_id}/override")
+    def vip_override(case_id: str, body: OverrideRequest,
+                     user: dict = Depends(auth.require_write)):
+        """A reviewer's verdict on a VIP case grade — the AI original is kept (§11)."""
+        from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+        if not body.reason.strip():
+            raise HTTPException(422, "Reason is required")
+        store = VipCasesStore()
+        try:
+            grade = store.get_grade(case_id)
+            if grade is None:
+                raise HTTPException(404, "This case has no grade")
+            diff: dict | None = None
+            if body.criteria is not None or body.manual_deductions:
+                score, diff, _deductions = _score_override(grade, body)
+            else:
+                if body.score is None or not (0 <= body.score <= 100):
+                    raise HTTPException(422, "Score must be 0–100")
+                score = body.score
+            store.save_override(case_id, score, body.reason, user["username"],
+                                human_criteria=diff)
+        finally:
+            store.close()
+        return {"ok": True, "human_score": score}
+
+    @app.get("/api/vip/exceptions")
+    def vip_exceptions(user: dict = Depends(auth.current_user)):
+        """Exception Report v1: unanswered player messages and threads with no owner."""
+        from intercom_summary import vip_cases
+
+        return vip_cases.exceptions()
 
     @app.get("/api/vip/export.xlsx")
     def vip_export(user: dict = Depends(auth.current_user)):
@@ -2225,8 +2357,10 @@ def _run_fetch_job(job_id: str, params: dict) -> None:
 
 
 def _active_grading_job(js: JobsStore) -> dict | None:
-    """The review or calibration run in flight, if any — only one grading run at a time."""
-    jobs = js.list_recent(kind="review", limit=10) + js.list_recent(kind="calibration", limit=10)
+    """The grading run in flight (review, calibration or VIP cases), if any — only one at a
+    time: they share the API rate limit and the cost meter."""
+    jobs = (js.list_recent(kind="review", limit=10) + js.list_recent(kind="calibration", limit=10)
+            + js.list_recent(kind="vip_review", limit=10))
     return next((j for j in jobs if j["status"] in ("queued", "running", "cancelling")), None)
 
 
@@ -2363,6 +2497,7 @@ def _score_override(grade: dict, body) -> tuple[int, dict, list[dict]]:
     """
     from intercom_summary.qa.rulesets import get_ruleset
     from intercom_summary.qa.schema import score_from_verdicts
+    from intercom_summary.qa.vip_scoring import NOT_ASSESSABLE
 
     ruleset_id = grade.get("ruleset_id") or "default"
     manual_deduction_ids = get_ruleset(ruleset_id).manual_deduction_ids
@@ -2371,10 +2506,14 @@ def _score_override(grade: dict, body) -> tuple[int, dict, list[dict]]:
     # manual's whole point is that "I could not check this" is a legitimate answer, so the
     # override form must be able to say it.
     valid = {"pass", "fail", "n/a", "cannot_determine"}
+    # VIP Scorecard v1.6: `partial` on its two-level criteria; `not_assessable` is the code's
+    # label for evidence outside Intercom, which a reviewer may keep.
+    partial_ok = get_ruleset(ruleset_id).partial_deductions
     for cid, v in (body.criteria or {}).items():
         if cid not in ai_verdicts:
             raise HTTPException(422, f"Unknown criterion '{cid}'")
-        if v not in valid:
+        if not (v in valid or (v == "partial" and cid in partial_ok)
+                or (v == NOT_ASSESSABLE and ai_verdicts.get(cid) == NOT_ASSESSABLE)):
             raise HTTPException(422, f"Invalid verdict '{v}' for '{cid}'")
     diff = {cid: v for cid, v in (body.criteria or {}).items() if ai_verdicts.get(cid) != v}
     # Validate manual deductions (analyst-chosen points the AI can't judge).
@@ -2428,6 +2567,49 @@ def _run_review_job(job_id: str, params: dict) -> None:
             js.update(job_id, status=final_status, result=result)
     except Exception as e:
         log.exception("review job failed")
+        js.update(job_id, status="error", error=str(e))
+    finally:
+        _review_cancel_events.pop(job_id, None)
+        js.close()
+
+
+def _vip_case_of(thread_id: str) -> str | None:
+    from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+    store = VipCasesStore()
+    try:
+        return store.case_for_thread(thread_id)
+    finally:
+        store.close()
+
+
+def _run_vip_review_job(job_id: str, params: dict) -> None:
+    cancel_event = threading.Event()
+    _review_cancel_events[job_id] = cancel_event
+    js = JobsStore()
+    js.update(job_id, status="running")
+    try:
+        progress: dict = {"partial": True}
+
+        def on_progress(graded: int, skipped: int, total: int) -> None:
+            progress.update(graded=graded, skipped=skipped, total=total)
+            js.update(job_id, result=progress)
+
+        def on_batch(status: dict) -> None:
+            progress["batch_status"] = status
+            js.update(job_id, result=progress)
+
+        result = service.grade_vip_cases(**params, on_progress=on_progress,
+                                         on_batch=on_batch, cancel_event=cancel_event)
+        if result.get("backend_unreachable"):
+            js.update(job_id, status="error", result=result,
+                      error="Claude API became unreachable (or the key was rejected) — run "
+                            "aborted. Start a new run once it is back.")
+        else:
+            js.update(job_id, status="cancelled" if result.get("cancelled") else "done",
+                      result=result)
+    except Exception as e:
+        log.exception("VIP review job failed")
         js.update(job_id, status="error", error=str(e))
     finally:
         _review_cancel_events.pop(job_id, None)

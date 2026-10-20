@@ -97,7 +97,8 @@ class VipStore:
         c = self._conn
         total = c.execute("SELECT COUNT(*) FROM vip_conversations").fetchone()[0]
         kept = c.execute("SELECT COUNT(*) FROM vip_conversations WHERE keep = 1").fetchone()[0]
-        span = c.execute("SELECT MIN(created_at), MAX(created_at) FROM vip_conversations").fetchone()
+        span = c.execute("SELECT MIN(created_at), MAX(created_at), MAX(fetched_at) "
+                         "FROM vip_conversations").fetchone()
         excluded = c.execute(
             """SELECT filter_stage, reason, COUNT(*) AS n FROM vip_conversations
                 WHERE keep = 0 GROUP BY filter_stage, reason ORDER BY n DESC"""
@@ -108,7 +109,7 @@ class VipStore:
         ).fetchall()
         return {
             "total": total, "kept": kept, "excluded": total - kept,
-            "first": span[0], "last": span[1],
+            "first": span[0], "last": span[1], "last_fetched": span[2],
             # Stage-1 reasons are a short fixed list; AI reasons are free text, so they are
             # grouped as one line here and shown per row in the table.
             "excluded_by_rule": [dict(r) for r in excluded if r["filter_stage"] == "rule"],

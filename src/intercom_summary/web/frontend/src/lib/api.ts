@@ -224,6 +224,18 @@ export interface RuleResult {
   severity?: string;
   /** Gated rulesets only: the capped block this criterion shares (e.g. "communication"). */
   group?: string;
+  // ── VIP Scorecard v1.6 only ──
+  /** Points for a `partial` verdict on the two-level criteria (q-clarity −7 of −14, …). */
+  partial_deduction?: number;
+  /** "intercom" | "external" — whether the evidence lives in Intercom at all. */
+  scope?: string;
+  /** A timing SLA: judged only once a shift schedule is configured. */
+  timing?: boolean;
+  /** The message or event a fail is about, the VIP manager responsible, and — for a pass
+   *  because the episode was already penalised — the criterion it was counted in. */
+  episode?: string;
+  who?: string;
+  counted_in?: string;
 }
 
 export interface JevFinding {
@@ -295,7 +307,20 @@ export interface Grade {
   /** The model that produced the grade (differs from QA_MODEL when a fallback served it). */
   model?: string;
   /** Each thing the player asked for, and what became of it. */
-  requests?: { text: string; status: string; material?: boolean }[];
+  requests?: { text: string; status: string; material?: boolean; from?: string }[];
+
+  // ── VIP Scorecard v1.6 (vip-v16; absent elsewhere) ──
+  step0?: Record<string, string>;
+  major_count?: number;
+  /** 3+ independent Majors: a service failure, reported apart from Critical. */
+  service_failure_flag?: boolean;
+  /** Failed criticals that need an intent check before the 0 is final. */
+  critical_intent_check?: string[];
+  /** Criteria whose evidence lives outside Intercom (or timing without shifts): no deduction. */
+  not_assessable?: string[];
+  score_breakdown?: { cap?: number; quality?: number; process?: number; style?: number };
+  /** VIP case grades: the case gained a message since it was graded. */
+  stale?: boolean;
 }
 
 /** What a set of verdicts would score. Computed server-side so there is only one copy of the
@@ -556,6 +581,8 @@ export interface EvalStats {
 export interface CalibrationSample {
   id: string;
   name: string;
+  /** What a run grades the sample with by default ("vip-v16" for the VIP sample). */
+  default_ruleset?: string | null;
   size: number;
   pilot_size: number;
   missing: number;
@@ -655,6 +682,7 @@ export interface VipSummary {
   excluded: number;
   first: string | null;
   last: string | null;
+  last_fetched?: string | null;
   excluded_by_rule: { reason: string; n: number }[];
   excluded_by_ai: number;
   managers: { agent_name: string; total: number; kept: number }[];
@@ -663,4 +691,71 @@ export interface VipSummary {
 export interface VipList {
   items: VipRow[];
   summary: VipSummary;
+}
+
+/** A VIP case (vip_cases.py): one player's topic across threads, the unit the VIP Scorecard
+ *  v1.6 grades. */
+export interface VipCaseThread {
+  id: string;
+  created_at: string;
+  last_at: string;
+  subject: string;
+  agent_name: string;
+  delivered_as: string;
+  opened_by: string;        // "player" | "staff"
+  message_count: number;
+}
+
+export interface VipCaseGrade {
+  overall_score: number;
+  overall_result: string;
+  critical_flag: boolean;
+  service_failure_flag: boolean;
+  manual_review_needed: boolean;
+  outcome_status: string | null;
+  case_type: string | null;
+  human_score: number | null;
+  graded_at: string;
+  rules_version: string;
+  stale: boolean;
+}
+
+export interface VipCase {
+  case_id: string;
+  contact_id: string;
+  contact_name: string;
+  contact_email: string;
+  brand: string;
+  topic: string;
+  first_at: string;
+  last_at: string;
+  thread_count: number;
+  threads: VipCaseThread[];
+  thread_ids: string[];
+  managers: string[];
+  primary_manager: string;
+  case_version: string;
+  grade: VipCaseGrade | null;
+}
+
+export interface VipCaseList {
+  items: VipCase[];
+  summary: {
+    cases: number; multi_thread: number; threads: number; graded: number; passed: number;
+    critical: number; service_failure: number; manual_review: number; stale: number;
+    avg_score: number | null; to_grade: number; rules_version: string; shifts_known: boolean;
+  };
+}
+
+export interface VipExceptions {
+  as_of: string | null;
+  unanswered: {
+    thread_id: string; contact_name: string; contact_email: string; brand: string;
+    agent_name: string; topic: string; player_message_at: string;
+    last_manager_reply_at: string | null; snippet: string;
+  }[];
+  no_owner: {
+    thread_id: string; contact_name: string; contact_email: string; brand: string;
+    topic: string; created_at: string; subject: string;
+  }[];
 }

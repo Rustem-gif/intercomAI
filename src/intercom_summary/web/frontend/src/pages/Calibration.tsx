@@ -117,18 +117,23 @@ export default function Calibration() {
     return out;
   }, [data, pilotOnly, category, review, sort]);
 
+  // A VIP sample is graded case by case on the VIP Scorecard — a longer prompt and transcript.
+  const vipSample = data?.sample.default_ruleset === "vip-v16";
+  const perChat = vipSample ? 0.05 : 0.035;
+
   const start = async () => {
     if (!sid) return;
     // A new run starts with no QA verdicts; the ones already entered stay on their own run.
     const reviewed = data?.summary?.reviewed ?? 0;
     if (data?.run && !window.confirm(
-      `Start a new run of ${data.sample.size} chats (~$${(data.sample.size * 0.035).toFixed(0)})?` +
+      `Start a new run of ${data.sample.size} chats (~$${(data.sample.size * perChat).toFixed(0)})?` +
       (reviewed ? `\n\n${reviewed} QA verdict(s) on the current run will stay on that run — ` +
         "pick it in the run selector to see them." : ""))) return;
     setStarting(true);
     setError("");
     try {
-      await api.post(`/api/calibration/samples/${sid}/run`, { ruleset_id: "kb-v41", batch });
+      // No ruleset: the server uses the sample's own default (kb-v41 unless the sample says).
+      await api.post(`/api/calibration/samples/${sid}/run`, { batch });
       setRunId(null);
       qc.invalidateQueries({ queryKey: ["calibration-results", sid] });
     } catch (e: any) {
@@ -160,8 +165,10 @@ export default function Calibration() {
             <Badge className="border-amber-500/40 bg-amber-500/10 text-amber-600">temporary</Badge>
           </div>
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-            {data?.sample.name ?? "Calibration sample"} graded by Claude on the v4.1 model,
-            exactly as live chats are. These grades are kept apart from the dashboards. Open a
+            {data?.sample.name ?? "Calibration sample"} graded by Claude
+            {vipSample
+              ? " on the VIP Scorecard v1.6 — each chat as part of its whole case."
+              : " on the v4.1 model, exactly as live chats are."} These grades are kept apart from the dashboards. Open a
             chat to record your own verdict; the gap to the AI is shown here.
           </p>
           {run && (
@@ -371,6 +378,7 @@ export default function Calibration() {
           onClose={() => setOpenId(null)}
           detailUrl={`/api/calibration/runs/${run.id}/conversations/${openId}`}
           overrideUrl={`/api/calibration/runs/${run.id}/conversations/${openId}/review`}
+          transcriptText={vipSample}
           onOverridden={() => qc.invalidateQueries({ queryKey: ["calibration-results", sid] })}
         />
       )}

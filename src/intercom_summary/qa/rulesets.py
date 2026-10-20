@@ -1,11 +1,15 @@
 """Ruleset registry — which criteria + system prompt a conversation is graded against.
 
 A ruleset is a system prompt (the text the grading model follows) plus its criteria catalogue
-(ids, titles, deduction points, which ones are critical). There are three:
+(ids, titles, deduction points, which ones are critical). There are four:
 
     kb-v41   standard support (QA Manual v4.1, gated)  rules/qa_system_prompt_kb_v41.txt  (seed: kbv41_prompt.py)
     default  standard support before v4.1 (flat)       rules/qa_system_prompt.txt         (seed: casino_prompt.py)
-    vip      the VIP department                        rules/qa_system_prompt_vip.txt     (seed: vip_prompt.py)
+    vip      support agents in the VIP group (flat)    rules/qa_system_prompt_vip.txt     (seed: vip_prompt.py)
+    vip-v16  VIP managers' cases (Scorecard v1.6)      rules/qa_system_prompt_vip_v16.txt (seed: vip_v16_prompt.py)
+
+`vip-v16` is no agent group's ruleset: it grades the VIP managers' email cases (vip_cases.py),
+which never enter the chat grading queue.
 
 Which one applies is decided by the assigned agent's group (see storage/agent_groups_store.py)
 and, for standard agents, the conversation's date: chats from QA_V41_EFFECTIVE_FROM onward get
@@ -43,6 +47,7 @@ log = get_logger(__name__)
 DEFAULT_RULESET_ID = "default"
 VIP_RULESET_ID = "vip"
 KBV41_RULESET_ID = "kb-v41"
+VIP_V16_RULESET_ID = "vip-v16"
 
 # Scoring models a ruleset can declare. "flat" is the original deduction model
 # (score = 100 − Σ deductions); "gated" is the v4.1 three-gate model with caps and floors
@@ -50,6 +55,14 @@ KBV41_RULESET_ID = "kb-v41"
 # rulesets keep behaving exactly as before.
 SCORING_FLAT = "flat"
 SCORING_GATED = "gated"
+# The VIP Scorecard v1.6 model: Critical → 0, a stepped Major cap, partial deductions, a style
+# cap (see qa/vip_scoring.py).
+SCORING_VIP_GATED = "vip-gated"
+
+# How the conversation is rendered for the grader: "chat" (qa/prompt.py transcript_block) or
+# "vip_case" (qa/vip_transcript.py — a multi-thread email case with dated lines and roles).
+TRANSCRIPT_CHAT = "chat"
+TRANSCRIPT_VIP_CASE = "vip_case"
 
 # Agent groups. An agent with no row in `agent_groups` is standard.
 GROUP_STANDARD = "standard"
@@ -99,6 +112,7 @@ class QaRuleset:
     criteria: list[dict]         # ordered [{id, title, deduction, critical, gate, severity, group}]
     manual_deductions: list[dict]
     scoring: dict = field(default_factory=dict)   # {model, pass_threshold, major_cap, …}
+    transcript: str = TRANSCRIPT_CHAT             # how a conversation is rendered for it
 
     @property
     def scoring_model(self) -> str:
@@ -143,6 +157,12 @@ class QaRuleset:
         return {c["id"]: int(c.get("deduction", 0)) for c in self.criteria}
 
     @property
+    def partial_deductions(self) -> dict[str, int]:
+        """criterion id → points for a `partial` verdict, for the two-level criteria only."""
+        return {c["id"]: int(c["partial_deduction"]) for c in self.criteria
+                if c.get("partial_deduction") is not None}
+
+    @property
     def critical(self) -> frozenset[str]:
         return frozenset(c["id"] for c in self.criteria if c.get("critical"))
 
@@ -163,6 +183,11 @@ def _seed_config() -> dict:
         KBV41_CRITERIA,
         KBV41_MANUAL_DEDUCTION_CATALOG,
         KBV41_SCORING,
+    )
+    from intercom_summary.qa.vip_v16_prompt import (
+        VIP_V16_CRITERIA,
+        VIP_V16_MANUAL_DEDUCTION_CATALOG,
+        VIP_V16_SCORING,
     )
     from intercom_summary.qa.vip_prompt import (
         VIP_CRITERION_DEDUCTIONS,
@@ -204,11 +229,23 @@ def _seed_config() -> dict:
                 "criteria": [dict(c) for c in KBV41_CRITERIA],
                 "manual_deductions": KBV41_MANUAL_DEDUCTION_CATALOG,
             },
+            VIP_V16_RULESET_ID: {
+                "name": "VIP Scorecard v1.6",
+                "prompt_path": str(settings.vip_v16_prompt_path),
+                "transcript": TRANSCRIPT_VIP_CASE,
+                "scoring": VIP_V16_SCORING,
+                "criteria": [dict(c) for c in VIP_V16_CRITERIA],
+                "manual_deductions": VIP_V16_MANUAL_DEDUCTION_CATALOG,
+            },
         }
     }
 
 
 def _seed_prompt_text(ruleset_id: str) -> str:
+    if ruleset_id == VIP_V16_RULESET_ID:
+        from intercom_summary.qa.vip_v16_prompt import VIP_V16_QA_SYSTEM_PROMPT
+
+        return VIP_V16_QA_SYSTEM_PROMPT
     if ruleset_id == KBV41_RULESET_ID:
         from intercom_summary.qa.kbv41_prompt import KBV41_QA_SYSTEM_PROMPT
 
@@ -233,6 +270,10 @@ def output_schema_for(ruleset_id: str | None) -> dict:
         from intercom_summary.qa.kbv41_prompt import KBV41_OUTPUT_SCHEMA
 
         return KBV41_OUTPUT_SCHEMA
+    if ruleset_id == VIP_V16_RULESET_ID:
+        from intercom_summary.qa.vip_v16_prompt import VIP_V16_OUTPUT_SCHEMA
+
+        return VIP_V16_OUTPUT_SCHEMA
     from intercom_summary.qa.casino_prompt import CASINO_OUTPUT_SCHEMA
 
     return CASINO_OUTPUT_SCHEMA
@@ -346,6 +387,7 @@ def get_ruleset(ruleset_id: str | None = None) -> QaRuleset:
         criteria=list(entry.get("criteria") or []),
         manual_deductions=list(entry.get("manual_deductions") or []),
         scoring=dict(entry.get("scoring") or {}),
+        transcript=str(entry.get("transcript") or TRANSCRIPT_CHAT),
     )
     _cache[rid] = (stamps[0], stamps[1], rs)
     return rs
