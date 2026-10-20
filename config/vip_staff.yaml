@@ -1,0 +1,11 @@
+# VIP managers (Intercom teams 'VIP managers' / 'pre-VIP') and their shifts — see
+# src/intercom_summary/vip_staff.py. `staff` is refreshed by `intercom-summary vip-staff --refresh`.
+staff:
+- Alisa Morgan
+- Eric Dougal
+- Jasmine Brooks
+- Sam Serban
+- Taylor Robinson
+- Victoria Vance
+- Walter Hofer
+shifts: {}

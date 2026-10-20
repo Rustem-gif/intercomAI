@@ -108,7 +108,7 @@ intercomSummary/
 | Agents (`/agents`) | `pages/Agents.tsx` | Per-agent performance |
 | Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress (Ollama restart only when Qwen is picked) |
 | Calibration 180 (`/calibration`) — **temporary, hidden from the menu since 2026-10-16** (URL still works) | `pages/Calibration.tsx` | Claude's v4.1 grades of a calibration sample next to the QA managers' own verdicts |
-| VIP chats (`/vip`) | `pages/Vip.tsx` | The VIP managers' email threads, filtered to real dialogues; read-only, not graded |
+| VIP chats (`/vip`) | `pages/Vip.tsx` | The VIP managers' email threads (Threads), the cases they group into with their VIP Scorecard grades (Cases), and the Exception Report (Exceptions) |
 | AI Accuracy (`/accuracy`) | `pages/Accuracy.tsx` | AI-vs-human override stats |
 | Knowledge Base (`/knowledge-base`) | `pages/KnowledgeBase.tsx` | Reference content |
 | Coaching (`/coaching`) | `pages/Coaching.tsx` | Coaching sessions |
@@ -388,9 +388,13 @@ are one mistake counted twice (manual §10), and Step 0. One request per chat, ~
 The VIP managers (Alisa, Jasmine, Eric, Taylor, Victoria, Walter, Sam) are not tracked agents. Their
 work lives in the Intercom teams **VIP managers** (`50006396`) and **pre-VIP** (`50006577`), listed in
 `vip.VIP_TEAM_IDS`. "VIP Players Chats" / "(DE)" hold no conversations, so ignore them.
+The collector fetches threads assigned to those teams **or to a VIP manager personally**
+(`vip.collect_query`): in Oct 2026, 617 of the 1,508 emails assigned to a manager carried no
+team at all (outbound offers and follow-ups mostly), so a team-only search had missed them.
 **Every one of these threads is an email**, so they are stored in their own table,
 `vip_conversations` (`storage/vip_store.py`), and never in `conversations`. Nothing there reaches
-the Overview, the grading queue or agent stats, and nothing is graded.
+the Overview, the grading queue or agent stats. They are graded per **case**, on their own
+scorecard, into their own table — see *VIP cases and the VIP Scorecard v1.6* below.
 
 - Collect a range: `intercom-summary vip-collect --since 2026-10-01 --until 2026-10-14` (UTC, end
   inclusive). It is safe to re-run: rows are upserted, and the AI verdicts already given are reused
@@ -409,6 +413,65 @@ the Overview, the grading queue or agent stats, and nothing is graded.
      exchange? The check also returns a topic label. It costs about $0.11 for 550 threads.
 - 1–14 Oct 2026: 916 fetched, **538 kept**. Rules dropped 185 duplicates, 115 with no player
   message, 31 one-word replies and 36 with no manager reply. The AI dropped 11.
+
+### VIP cases and the VIP Scorecard v1.6 (`vip-v16`)
+The client's `VIP-QA-Scorecard_King_Billy_v1.6.docx` grades a **case**, not a thread: one player's
+request followed across emails and days. On 1–14 Oct, 538 kept threads make 278 cases (78 span
+several threads; the biggest is 20 — serial bonus requesters chain for two weeks).
+
+- **Grouping** — `vip_cases.py`, free: same Intercom contact + same topic (the Haiku label), sorted
+  by start; a thread joins the open case if it starts within `CHAIN_DAYS` (7) of that case's last
+  human message. Topic `Other` is never chained. `case_id` = `vc-<first thread id>`;
+  `case_version` hashes the threads and their message counts, so a grade goes stale when the case
+  grows. Rebuild: `intercom-summary vip-cases` (also done before every grading run). Tables
+  `vip_cases`, `vip_case_threads`.
+- **Who is a VIP manager** — `config/vip_staff.yaml` (`vip_staff.py`). `staff:` is refreshed from
+  Intercom by `intercom-summary vip-staff --refresh` (admins in the two VIP teams). Everyone else
+  who writes in a thread ("Pay Dep", "Head of CS", support agents) is **OTHER STAFF** and is never
+  graded. `shifts:` is empty until the client sends the schedule; while it is empty the timing
+  criteria (`proc-first-response`, `proc-next-response`) are **not assessable**. Shape is in the
+  module docstring.
+- **What the grader reads** — `qa/vip_transcript.py`: header (threads, managers, other staff,
+  evidence scope, shift note), a computed **REPLY GAPS** table, then dated UTC lines labelled
+  `VIP MANAGER` / `OTHER STAFF` / `PLAYER` / `(internal note)`, with a separator per thread.
+  Bots are dropped. The drawer shows exactly this text.
+- **Ruleset** — `vip-v16`: catalogue + prompt + output schema in `qa/vip_v16_prompt.py`, live
+  prompt `rules/qa_system_prompt_vip_v16.txt` (after editing the Python constant, delete the .txt
+  so it re-seeds — `validate_ruleset` catches drift). It is no agent group's ruleset.
+- **Score** — `qa/vip_scoring.py` (`vip-gated`): Critical → provisional 0 (a reviewer confirms;
+  intent criticals are listed); otherwise `cap − quality − process − min(6, style)`, cap
+  100 → 75 → 65 → 55 → 45 for 0/1/2/3/4+ Majors; PASS ≥ 85; `service_failure_flag` at 3+ Majors.
+  `partial` costs the `partial_deduction` on the four two-level criteria. A `cannot_determine` on
+  a criterion whose evidence is outside Intercom (`scope: external`), or on a timing criterion
+  without shifts, becomes **`not_assessable`**: no deduction and no manual review.
+  `tests/test_vip_scoring.py` holds every worked example from the scorecard.
+- **Guard** — `verdict_guard.apply_vip_guards`: a fail/partial quoting a bot, OTHER STAFF or the
+  player (outside the few criteria where that is the right evidence) is reset to n/a, with a flag.
+- **Grading (paid)** — `intercom-summary vip-grade [--batch] [--case vc-…]`, or the admin
+  **Grade cases** button in VIP → Cases (batch). Grades go to `vip_grades`
+  (`storage/vip_cases_store.py`), never `grades`. Rough cost: ~$0.05 per case live, half by batch.
+  The override (Re-score in the drawer) needs a written reason and keeps the AI original; **Agree**
+  (`POST|DELETE /api/vip/grades/<case>/confirm`, `vip_grades.human_confirmed_*`) records that a
+  reviewer checked the grade and it stands.
+- **Never re-graded on a rules change** (the client's rule, as for chats): `VipCasesStore.is_current`
+  ignores `rules_version`. A case is graded again only when it **grew** (a new thread → new
+  `case_version`) and nobody re-scored or agreed with its grade; the replaced grade is kept in
+  `vip_grade_history`. The majority vote (`QA_VOTES`) applies to VIP grades too; the fail verifier
+  and QA lessons do not (their rules are written for the chat criteria).
+- **The VIP loop** — `service.vip_auto_cycle`: collect the threads assigned to a VIP team or to a VIP manager for yesterday–today,
+  regroup, grade the cases without a grade (batch). `VIP_AUTO=on` runs it in the web app every
+  `VIP_AUTO_HOURS` (24); it is **off by default** because every turn is paid. By hand:
+  `intercom-summary vip-auto [--since … --until …] [--live]` or `POST /api/vip/auto` (admin).
+- **Exception Report** — `vip_cases.exceptions()`, `GET /api/vip/exceptions`: a player's last
+  message with no VIP-manager reply after it in any of their threads, and kept threads with no
+  owner. Rule-based (sign-offs and mail-app footers are ignored), so expect the odd thank-you.
+- **Calibration** — the sample `vip-v16-70` comes from the spreadsheet:
+  `python scripts/import_calibration_sample.py "Untitled spreadsheet (1).xlsx" --lines --id vip-v16-70 --name "VIP Scorecard v1.6 calibration (70)" --ruleset vip-v16`.
+  A run on it grades each member's whole case (63 cases for 70 threads); members of one case
+  share the grade.
+  QA's verdicts on the sample go in with `--labels` (same script); the Calibration tab then shows
+  PASS/FAIL agreement per run. No VIP verdicts exist yet (Oct 2026): until they do, the VIP rules
+  are the scorecard as written, unmeasured against QA.
 
 ### AI ↔ QA agreement (the client's ≥ 95% PASS/FAIL bar)
 The client's requirement: the AI's PASS/FAIL agrees with QA's on at least 95% of chats.

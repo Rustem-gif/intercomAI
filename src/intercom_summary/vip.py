@@ -203,20 +203,33 @@ def _row(convo: Conversation, delivered_as: str, c: dict, verdict: dict) -> dict
     }
 
 
+def vip_member_ids(admins: list[dict]) -> list[int]:
+    """Intercom admin ids of everyone in the VIP teams (the managers)."""
+    teams = {str(t) for t in VIP_TEAM_IDS}
+    return sorted(int(a["id"]) for a in admins
+                  if a.get("id") and teams & {str(t) for t in a.get("team_ids") or []})
+
+
+def collect_query(lo: int, hi: int, member_ids: list[int]) -> dict:
+    """The Intercom search: created in the window, and assigned to a VIP team or to a VIP
+    manager personally (an email answered from the manager's own inbox carries no team)."""
+    assigned = [{"field": "team_assignee_id", "operator": "=", "value": t} for t in VIP_TEAM_IDS]
+    assigned += [{"field": "admin_assignee_id", "operator": "=", "value": i} for i in member_ids]
+    return {"operator": "AND", "value": [
+        {"field": "created_at", "operator": ">", "value": lo - 1},
+        {"field": "created_at", "operator": "<", "value": hi},
+        {"operator": "OR", "value": assigned},
+    ]}
+
+
 async def collect(since: str, until: str, reclassify: bool = False) -> dict:
-    """Fetch the VIP teams' threads created in [since, until] (inclusive, UTC), filter, store."""
+    """Fetch the threads created in [since, until] (inclusive, UTC) that are assigned to a VIP
+    team or to a VIP manager, filter, store."""
     from anthropic import AsyncAnthropic
 
     from intercom_summary.storage.vip_store import VipStore
 
     lo, hi = _window(since, until)
-    query = {"operator": "AND", "value": [
-        {"field": "created_at", "operator": ">", "value": lo - 1},
-        {"field": "created_at", "operator": "<", "value": hi},
-        {"operator": "OR", "value": [
-            {"field": "team_assignee_id", "operator": "=", "value": t} for t in VIP_TEAM_IDS
-        ]},
-    ]}
 
     store = VipStore()
     known = {} if reclassify else store.classified()
@@ -225,9 +238,15 @@ async def collect(since: str, until: str, reclassify: bool = False) -> dict:
              "excluded_ai": 0, "ai_checked": 0, "reused": 0}
     try:
         async with IntercomClient() as ic:
+            raw_admins = await ic.list_admins()
             admins = {str(a["id"]): Admin(id=str(a["id"]), name=a.get("name", ""),
                                           email=a.get("email", ""))
-                      for a in await ic.list_admins()}
+                      for a in raw_admins}
+            # A thread assigned to the VIP team, OR straight to a VIP manager with no team:
+            # in Oct 2026, 617 of the 1,508 emails assigned to a manager had no team at all
+            # (outbound offers and follow-ups mostly), so a team-only search missed them.
+            members = vip_member_ids(raw_admins)
+            query = collect_query(lo, hi, members)
             stubs = []
             async for s in ic.search_conversations(query):
                 stats["matched"] += 1

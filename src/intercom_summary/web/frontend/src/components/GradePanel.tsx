@@ -3,36 +3,59 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Grade, RuleResult, ManualDeduction, ManualDeductionPreset, GradeDispute, PastGrade, ScorePreview } from "@/lib/api";
 import { api } from "@/lib/api";
 import { Badge, Button } from "./ui/primitives";
-import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale, ThumbsUp } from "lucide-react";
+import { Check, X, Minus, HelpCircle, Pencil, RotateCcw, SlidersHorizontal, Plus, Scale, CircleDot, EyeOff, ShieldAlert, ThumbsUp } from "lucide-react";
 import { scoreColor, fmtDate } from "@/lib/utils";
 import { useDisplayName } from "@/lib/auth";
 
 /** "cannot_determine" is a real answer under QA Manual v4.1, not a missing one: the evidence a
  * criterion needs (a chat tag, a CRM escalation record, a transaction status) often lives
  * outside the transcript, and the model is required to say so rather than guess a fail. */
-type Verdict = "pass" | "fail" | "n/a" | "cannot_determine";
+/** The VIP Scorecard v1.6 adds two: `partial` (half the deduction, on its two-level criteria
+ * only) and `not_assessable` — set in code, never by the model, when the evidence lives outside
+ * Intercom (Slack, back office, Jira, the VIP tables) or a timing SLA has no shift schedule. */
+type Verdict = "pass" | "partial" | "fail" | "n/a" | "cannot_determine" | "not_assessable";
 
 const VERDICTS: Verdict[] = ["pass", "fail", "n/a", "cannot_determine"];
+
+/** The verdicts a criterion can be re-scored to. */
+function verdictsFor(r: RuleResult): Verdict[] {
+  const out: Verdict[] = r.partial_deduction != null
+    ? ["pass", "partial", "fail", "n/a", "cannot_determine"]
+    : [...VERDICTS];
+  if (r.verdict === "not_assessable") out.push("not_assessable");
+  return out;
+}
 
 const verdictIcon: Record<string, React.ReactNode> = {
   pass: <Check className="h-4 w-4 text-emerald-500" />,
   fail: <X className="h-4 w-4 text-destructive" />,
   "n/a": <Minus className="h-4 w-4 text-muted-foreground" />,
   cannot_determine: <HelpCircle className="h-4 w-4 text-amber-500" />,
+  partial: <CircleDot className="h-4 w-4 text-orange-500" />,
+  not_assessable: <EyeOff className="h-4 w-4 text-muted-foreground" />,
 };
 
 const verdictLabel: Record<string, string> = {
   pass: "pass", fail: "fail", "n/a": "n/a", cannot_determine: "can't tell",
+  partial: "partial", not_assessable: "not in Intercom",
 };
 
 /** What a Gate 2 Major costs is not a number of points — it caps the whole chat. Saying "−0"
  *  next to it, which is literally what the catalogue holds, would read as "free". */
-function costLabel(r: RuleResult): string | null {
+function costLabel(r: RuleResult, vip: boolean): string | null {
   if (r.critical) return null;
-  if (r.severity === "major") return "caps the score";
+  if (r.severity === "major") return vip ? "caps 75→65→55→45" : "caps the score";
+  if (r.partial_deduction != null && typeof r.deduction === "number") {
+    return `−${r.partial_deduction} / −${r.deduction}`;
+  }
   if (typeof r.deduction === "number" && r.deduction > 0) return `−${r.deduction}`;
   return null;
 }
+
+const STEP0_LABELS: Record<string, string> = {
+  segment_state: "segment", expected_handling: "expected", bonus_eligibility: "bonus",
+  data_sufficiency: "data",
+};
 
 interface Props {
   grade: Grade | null;
@@ -52,11 +75,14 @@ interface Props {
   overrideUrl?: string;
   /** What to say when there is no grade (the VIP tab's threads are never graded). */
   emptyText?: string;
+  /** Where "Agree" posts (and DELETE withdraws). Defaults to the live chat grade's confirm
+   *  endpoint; the VIP Cases view points it at the case grade. */
+  confirmUrl?: string;
 }
 
 export default function GradePanel({
   grade, conversationId, canOverride, onOverridden,
-  dispute, history, disputeUrl, readOnly, onDisputeChange, overrideUrl, emptyText,
+  dispute, history, disputeUrl, readOnly, onDisputeChange, overrideUrl, emptyText, confirmUrl,
 }: Props) {
   const displayName = useDisplayName();
   const [editing, setEditing] = useState(false);
@@ -112,6 +138,9 @@ export default function GradePanel({
   }
 
   const effectiveScore = grade.human_score ?? grade.overall_score;
+  // A VIP Scorecard v1.6 grade: a case of email threads, graded by its own model.
+  const vip = grade.ruleset_id === "vip-v16" || !!(grade.step0 && Object.keys(grade.step0).length);
+  const bd = grade.score_breakdown;
   // While editing, the verdict shown is the one a save would produce, not the stored one.
   const result = editing && mode === "criteria"
     ? (preview?.result ?? grade.overall_result)
@@ -204,8 +233,8 @@ export default function GradePanel({
     setConfirmBusy(true);
     setSaveError("");
     try {
-      const url = `/api/conversations/${conversationId}/confirm`;
-      if (overrideUrl) {
+      const url = confirmUrl ?? `/api/conversations/${conversationId}/confirm`;
+      if (overrideUrl && !confirmUrl) {
         // A sandboxed review (calibration) records QA's verdict as a re-score: agreeing is
         // re-scoring with the AI's own verdicts, which reproduces the AI's score.
         await api.post(overrideUrl, {
@@ -347,6 +376,40 @@ export default function GradePanel({
                 {grade.confidence} confidence
               </span>
             )}
+            {vip && grade.step0 && Object.entries(STEP0_LABELS).map(([k, label]) =>
+              grade.step0![k] && grade.step0![k] !== "unknown" ? (
+                <span key={k} className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">
+                  {label}: {grade.step0![k]}
+                </span>
+              ) : null)}
+          </div>
+        )}
+
+        {/* Scorecard §6: the AI only proposes a Critical — the 0 is final once a reviewer
+            confirms it, and the intent criticals need the reviewer to judge intent too. */}
+        {vip && grade.critical_fail && !editing && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            <div className="flex items-center gap-1.5 font-medium">
+              <ShieldAlert className="h-3.5 w-3.5" /> Critical: provisional 0 until a reviewer confirms
+            </div>
+            {grade.critical_intent_check && grade.critical_intent_check.length > 0 && (
+              <p className="mt-1">Intent check needed: {grade.critical_intent_check.join(", ")}</p>
+            )}
+          </div>
+        )}
+
+        {/* 3+ independent Majors. Not a compliance breach, and kept apart from Critical so a
+            0 from a breach and a collapse of service never read as the same problem. */}
+        {grade.service_failure_flag && !editing && (
+          <div className="rounded-md border border-orange-500/30 bg-orange-500/5 px-3 py-2 text-xs text-orange-700 dark:text-orange-400">
+            <span className="font-medium">Service failure</span> — {grade.major_count ?? 3} independent
+            Majors in one case. Mandatory review; not a Critical.
+          </div>
+        )}
+
+        {vip && grade.stale && !editing && (
+          <div className="rounded-md border px-3 py-2 text-xs text-muted-foreground">
+            The case has grown since this grade — it will be re-graded on the next run.
           </div>
         )}
 
@@ -714,6 +777,24 @@ export default function GradePanel({
 
       <p className="text-sm">{grade.summary}</p>
 
+      {vip && !editing && bd && !grade.critical_fail && (
+        <p className="text-[11px] tabular-nums text-muted-foreground"
+           title="Scorecard §5: cap (by Majors) − help quality − process − min(6, style)">
+          cap {bd.cap} − quality {bd.quality ?? 0} − process {bd.process ?? 0} − style {bd.style ?? 0}
+          {" "}= {grade.overall_score}
+        </p>
+      )}
+      {vip && !editing && grade.not_assessable && grade.not_assessable.length > 0 && (
+        <p className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+          <EyeOff className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>
+            Not assessable from Intercom ({grade.not_assessable.length}): {grade.not_assessable.join(", ")}.
+            No deduction — the evidence lives in Slack, the back office, Jira, the VIP tables or the
+            shift schedule.
+          </span>
+        </p>
+      )}
+
       {/* What this grade cost to produce, summed over every model call behind it. */}
       {!editing && grade.usage?.calls ? (
         <p className="text-[11px] text-muted-foreground">
@@ -769,8 +850,8 @@ export default function GradePanel({
                 <div className="flex items-center gap-2">
                   {verdictIcon[current] ?? verdictIcon["n/a"]}
                   <span className="text-sm font-medium">{r.title || r.rule_id}</span>
-                  {costLabel(r) && (
-                    <span className="text-[10px] text-muted-foreground">{costLabel(r)}</span>
+                  {costLabel(r, vip) && (
+                    <span className="text-[10px] text-muted-foreground">{costLabel(r, vip)}</span>
                   )}
                   {r.group && (
                     <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground"
@@ -778,7 +859,7 @@ export default function GradePanel({
                   )}
                   {r.gate && (
                     <span className="rounded bg-muted px-1 text-[10px] text-muted-foreground"
-                          title="Which gate of the v4.1 model this sits in">gate {r.gate}</span>
+                          title="Which gate of the scoring model this sits in">gate {r.gate}</span>
                   )}
                   {r.critical && (
                     <span className="rounded bg-destructive/10 px-1 text-[10px] font-medium text-destructive">critical</span>
@@ -798,20 +879,31 @@ export default function GradePanel({
                   </p>
                 )}
                 {r.comment && <p className="mt-1 text-xs text-muted-foreground">{r.comment}</p>}
+                {(r.episode || r.who || r.counted_in) && (
+                  <p className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-muted-foreground">
+                    {r.episode && <span>episode: {r.episode}</span>}
+                    {r.who && <span>who: {r.who}</span>}
+                    {r.counted_in && <span>counted in: {r.counted_in}</span>}
+                  </p>
+                )}
 
                 {editing && mode === "criteria" && (
                   <div className="mt-2 flex gap-1">
-                    {VERDICTS.map((v) => (
+                    {verdictsFor(r).map((v) => (
                       <button
                         key={v}
                         onClick={() => setVerdicts((prev) => ({ ...prev, [r.rule_id]: v }))}
                         title={v === "cannot_determine"
                           ? "The evidence this criterion needs is not in the available data"
-                          : undefined}
+                          : v === "partial" && r.partial_deduction != null
+                            ? `Half the defect: −${r.partial_deduction} instead of −${r.deduction}`
+                            : undefined}
                         className={`flex items-center gap-1 rounded-md border px-2 py-1 text-xs ${
                           verdicts[r.rule_id] === v
                             ? v === "fail"
                               ? "border-destructive bg-destructive/10 text-destructive"
+                              : v === "partial"
+                                ? "border-orange-500 bg-orange-500/10 text-orange-600 dark:text-orange-400"
                               : v === "pass"
                                 ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                                 : v === "cannot_determine"

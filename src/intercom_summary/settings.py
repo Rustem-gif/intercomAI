@@ -225,9 +225,18 @@ class Settings:
     export_dir: Path = field(default_factory=lambda: Path(_env("EXPORT_DIR", "./data/exports")))
     web_users_path: Path = field(default_factory=lambda: Path(_env("WEB_USERS_PATH", "./config/web_users.yaml")))
     qa_prompt_path: Path = field(default_factory=lambda: Path(_env("QA_PROMPT_PATH", "./rules/qa_system_prompt.txt")))
+    # The VIP loop (service.vip_auto_cycle): every VIP_AUTO_HOURS the web app collects the VIP
+    # teams' new threads from Intercom, regroups them into cases and grades the cases that have
+    # no grade (batch). Off by default because grading is paid (~$0.025 a case in batch).
+    vip_auto: bool = field(
+        default_factory=lambda: _env("VIP_AUTO", "off").lower() in ("on", "1", "true", "yes")
+    )
+    vip_auto_hours: int = field(default_factory=lambda: int(_env("VIP_AUTO_HOURS", "24") or "24"))
     vip_prompt_path: Path = field(default_factory=lambda: Path(_env("VIP_PROMPT_PATH", "./rules/qa_system_prompt_vip.txt")))
     kbv41_prompt_path: Path = field(default_factory=lambda: Path(_env("KBV41_PROMPT_PATH", "./rules/qa_system_prompt_kb_v41.txt")))
+    vip_v16_prompt_path: Path = field(default_factory=lambda: Path(_env("VIP_V16_PROMPT_PATH", "./rules/qa_system_prompt_vip_v16.txt")))
     rulesets_path: Path = field(default_factory=lambda: Path(_env("RULESETS_PATH", "./config/rulesets.yaml")))
+    vip_staff_path: Path = field(default_factory=lambda: Path(_env("VIP_STAFF_PATH", "./config/vip_staff.yaml")))
     eval_dir: Path = field(default_factory=lambda: Path(_env("EVAL_DIR", "./data/eval")))
 
     @property

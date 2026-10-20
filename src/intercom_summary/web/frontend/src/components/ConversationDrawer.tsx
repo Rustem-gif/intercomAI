@@ -26,10 +26,20 @@ interface DrawerProps {
   onOverridden?: () => void;
   /** Passed to the grade panel when the conversation has no grade. */
   noGradeText?: string;
+  /** Where the grade panel's "Agree" posts; defaults to the live chat grade's confirm endpoint. */
+  confirmUrl?: string;
+  /** Show the server's text transcript instead of message bubbles — a VIP case, where the
+   *  text is exactly what the grader read: dated lines, VIP MANAGER / OTHER STAFF labels,
+   *  thread separators and the reply-gap table. */
+  transcriptText?: boolean;
+  /** Drawer heading; defaults to "Conversation <id>". */
+  title?: string;
 }
 
 export default function ConversationDrawer({
   id, onClose, readOnly = false, detailUrl, disputeUrl, overrideUrl, onOverridden, noGradeText,
+  confirmUrl,
+  transcriptText = false, title,
 }: DrawerProps) {
   const { user, displayName } = useAuth();
   const qc = useQueryClient();
@@ -94,7 +104,7 @@ export default function ConversationDrawer({
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40">
       <div className="flex h-full w-full max-w-4xl flex-col bg-background shadow-xl">
         <div className="flex h-14 shrink-0 items-center justify-between border-b px-5">
-          <h2 className="font-semibold">Conversation {id}</h2>
+          <h2 className="font-semibold">{title ?? `Conversation ${id}`}</h2>
           <div className="flex items-center gap-1">
             {sideWriter && data && (
               <Button
@@ -263,6 +273,11 @@ export default function ConversationDrawer({
                   />
                 </div>
               )}
+              {transcriptText ? (
+                <pre className="whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs leading-relaxed">
+                  {data.transcript}
+                </pre>
+              ) : (
               <div className="space-y-3">
                 {data.conversation.messages.map((m: any, i: number) => {
                   const agent = m.author_type === "admin";
@@ -299,6 +314,7 @@ export default function ConversationDrawer({
                   );
                 })}
               </div>
+              )}
 
               {/* Manager comments */}
               {!sideReadOnly && (
@@ -405,6 +421,7 @@ export default function ConversationDrawer({
                       disputeUrl={disputeUrl}
                       readOnly={readOnly}
                       overrideUrl={overrideUrl}
+                      confirmUrl={confirmUrl}
                       emptyText={noGradeText}
                       onDisputeChange={afterDisputeChange}
                       onOverridden={() => {

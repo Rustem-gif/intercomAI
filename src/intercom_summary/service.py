@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import threading
 from typing import Any, Callable
 
@@ -549,6 +549,94 @@ def review_and_store(
         grades_store.close()
 
 
+# ── VIP cases (Scorecard v1.6) ──────────────────────────────────────────────────
+def grade_vip_cases(
+    case_ids: list[str] | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    manager: str | None = None,
+    regrade: bool = False,
+    batch: bool = False,
+    on_progress: Callable[[int, int, int], None] | None = None,
+    on_batch: Callable[[dict], None] | None = None,
+    cancel_event: "threading.Event | None" = None,
+) -> dict[str, Any]:
+    """Grade VIP cases with the vip-v16 ruleset into `vip_grades` (never `grades`).
+
+    Cases are regrouped from the current threads first (free), so a thread that arrived since
+    the last build lands in its case. A graded case is skipped unless it grew (a new thread),
+    and never because the rules changed; a case a human re-scored or agreed with is skipped
+    too (VipCasesStore.is_current). `regrade=True` is a person's deliberate choice. The engine is review_and_store
+    with `conversations=` — the same grader, guards, batch path and cost accounting as chats.
+    """
+    from intercom_summary import vip_cases
+    from intercom_summary.qa.rulesets import VIP_V16_RULESET_ID, get_ruleset
+    from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+    vip_cases.rebuild()
+    store = VipCasesStore()
+    try:
+        rows = store.cases(manager=manager, since=since, until=until)
+        if case_ids:
+            wanted = set(case_ids)
+            rows = [r for r in rows if r["case_id"] in wanted]
+        version = get_ruleset(VIP_V16_RULESET_ID).version
+        todo = [r for r in rows if regrade
+                or not store.is_current(r["case_id"], version, r["case_version"])]
+        convos = vip_cases.load_case_conversations([r["case_id"] for r in todo])
+
+        def save(grade) -> None:
+            case = convos[grade.conversation_id]
+            store.save_grade(grade, case_version=case.case_version,
+                             primary_manager=case.assignee_name)
+
+        log.info("VIP grading: %d case(s) in scope, %d to grade", len(rows), len(convos))
+        result = review_and_store(
+            conversations=list(convos.values()), save_grade=save,
+            ruleset_id=VIP_V16_RULESET_ID, backend="api", batch=batch,
+            on_progress=on_progress, on_batch=on_batch, cancel_event=cancel_event,
+        )
+        return {**result, "cases": len(rows), "skipped": result.get("skipped", 0)
+                + len(rows) - len(convos)}
+    finally:
+        store.close()
+
+
+def vip_auto_cycle(since: str | None = None, until: str | None = None, *, batch: bool = True,
+                   on_progress: Callable[[int, int, int], None] | None = None,
+                   on_batch: Callable[[dict], None] | None = None,
+                   cancel_event: "threading.Event | None" = None) -> dict[str, Any]:
+    """One turn of the VIP loop: collect the VIP teams' threads for [since, until] (default:
+    yesterday to today, UTC), regroup them into cases, grade the cases without a current grade.
+    Existing grades are left alone (see grade_vip_cases). Paid: the grading."""
+    import asyncio
+
+    from intercom_summary import vip
+    from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+    today = datetime.now(timezone.utc).date()
+    until = until or today.isoformat()
+    since = since or (today - timedelta(days=1)).isoformat()
+    collected = asyncio.run(vip.collect(since, until))
+    graded = grade_vip_cases(batch=batch, on_progress=on_progress, on_batch=on_batch,
+                             cancel_event=cancel_event)
+    store = VipCasesStore()
+    try:
+        store.set_meta("vip.last_auto_at", datetime.now(timezone.utc).isoformat())
+    finally:
+        store.close()
+    log.info("VIP cycle %s..%s: collected %s; graded %d, skipped %d", since, until,
+             {k: collected.get(k) for k in ("fetched", "kept", "stored") if k in collected},
+             graded.get("graded", 0), graded.get("skipped", 0))
+    return {"since": since, "until": until, "collected": collected, "grading": graded}
+
+
+async def refresh_vip_staff() -> list[str]:
+    from intercom_summary import vip_staff
+
+    return await vip_staff.refresh_from_intercom()
+
+
 # ── Calibration: grade a frozen sample without touching live grades ─────────────
 async def _fetch_from_intercom(ids: list[str], concurrency: int = 8) -> dict[str, Any]:
     """{id: Conversation | "not_found" | "error: …"} straight from Intercom, never cached.
@@ -592,7 +680,7 @@ async def _fetch_from_intercom(ids: list[str], concurrency: int = 8) -> dict[str
 
 def run_calibration(
     sample_id: str,
-    ruleset_id: str = "kb-v41",
+    ruleset_id: str | None = None,
     batch: bool = False,
     pilot_only: bool = False,
     job_id: str | None = None,
@@ -610,18 +698,28 @@ def run_calibration(
     (trashed and never-fetched chats alike). Grades go to `calibration_results` only — the
     live `grades` table, its history and its human overrides are not touched. Tickets are
     recorded and not graded (chats only). `fetch` swaps the Intercom fetch (tests).
+
+    `ruleset_id` None = the sample's `default_ruleset`, else kb-v41. A ruleset that grades VIP
+    cases (`transcript: vip_case`) grades each member's whole case — see _vip_case_members.
     """
     import asyncio
 
-    from intercom_summary.qa.rulesets import get_ruleset
+    from intercom_summary.qa.rulesets import TRANSCRIPT_VIP_CASE, get_ruleset
     from intercom_summary.storage.calibration_store import CalibrationStore
 
     cal = CalibrationStore()
     cstore = ConversationsStore()
     try:
-        if cal.get(sample_id) is None:
+        sample = cal.get(sample_id)
+        if sample is None:
             raise KeyError(f"No calibration sample {sample_id!r}")
+        ruleset_id = ruleset_id or sample.get("default_ruleset") or "kb-v41"
         ids = cal.conversation_ids(sample_id, pilot_only=pilot_only)
+        if get_ruleset(ruleset_id).transcript == TRANSCRIPT_VIP_CASE:
+            return _calibrate_vip_cases(
+                cal, sample_id, ids, ruleset_id, batch=batch, job_id=job_id,
+                created_by=created_by, on_progress=on_progress, on_batch=on_batch,
+                cancel_event=cancel_event)
         # The run records the context mode and the index snapshot it read, so two runs that
         # differ only in the context can be told apart (and compared) in the Calibration tab.
         mode = history_context or settings.history_context
@@ -694,6 +792,64 @@ def run_calibration(
     finally:
         cal.close()
         cstore.close()
+
+
+def _calibrate_vip_cases(cal, sample_id: str, ids: list[str], ruleset_id: str, *,
+                         batch: bool, job_id: str | None, created_by: str,
+                         on_progress, on_batch, cancel_event) -> dict[str, Any]:
+    """A calibration run over VIP cases. Members are VIP threads; each is graded as part of
+    its case (vip_cases.py), because that is what the scorecard grades. Two members of one
+    case share a single grade, stored against each member. Members that are not collected
+    VIP threads are recorded as not_found — nothing is fetched, a case needs its siblings."""
+    from intercom_summary import vip_cases
+    from intercom_summary.qa.rulesets import get_ruleset
+    from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+    run_id = cal.start_run(
+        sample_id, ruleset_id, rules_version=get_ruleset(ruleset_id).version,
+        model=settings.qa_model, effort=settings.qa_effort, job_id=job_id,
+        created_by=created_by,
+    )
+    vip_cases.rebuild()
+    store = VipCasesStore()
+    try:
+        case_of = {cid: store.case_for_thread(cid) for cid in ids}
+    finally:
+        store.close()
+    unavailable = 0
+    for cid, case_id in case_of.items():
+        if case_id is None:
+            cal.save_result(run_id, cid, "not_found", source="vip-case",
+                            error="not a kept thread in the VIP chats tab")
+            unavailable += 1
+    convos = vip_cases.load_case_conversations(sorted({c for c in case_of.values() if c}))
+    members: dict[str, list[str]] = defaultdict(list)
+    for cid, case_id in case_of.items():
+        if case_id in convos:
+            members[case_id].append(cid)
+
+    def save(grade) -> None:
+        for cid in members.get(grade.conversation_id, []):
+            cal.save_result(run_id, cid, "graded", source="vip-case", grade=grade,
+                            conversation=convos[grade.conversation_id])
+
+    log.info("Calibration run %s on %r: %d member(s) in %d VIP case(s), %d unavailable",
+             run_id, sample_id, sum(len(m) for m in members.values()), len(convos), unavailable)
+    result = review_and_store(
+        conversations=list(convos.values()), save_grade=save, ruleset_id=ruleset_id,
+        backend="api", batch=batch, on_progress=on_progress, on_batch=on_batch,
+        cancel_event=cancel_event,
+    )
+    graded = {r["conversation_id"] for r in cal.results(run_id) if r["status"] == "graded"}
+    for case_id, cids in members.items():
+        for cid in cids:
+            if cid not in graded:
+                cal.save_result(run_id, cid, "failed", source="vip-case",
+                                conversation=convos[case_id],
+                                error="grading failed or was cancelled")
+    cal.finish_run(run_id, cost_usd=(result.get("usage") or {}).get("cost_usd"))
+    return {**result, "run_id": run_id, "sample_id": sample_id, "members": len(ids),
+            "cases": len(convos), "tickets": 0, "unavailable": unavailable}
 
 
 def build_conversation_snapshot(conversation_id: str) -> dict[str, Any] | None:

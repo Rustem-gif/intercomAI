@@ -220,6 +220,56 @@ async def _vip_collect(args: argparse.Namespace):
              s["excluded_ai"], s["ai_checked"], s["reused"], s["cost_usd"])
 
 
+async def _vip_cases(args: argparse.Namespace):
+    """Regroup the kept VIP threads into cases (free, no API calls)."""
+    from intercom_summary import vip_cases
+
+    s = vip_cases.rebuild()
+    log.info("VIP cases: %d thread(s) → %d case(s), %d with several threads; sizes %s",
+             s["threads"], s["cases"], s["multi_thread_cases"], s["sizes"])
+
+
+async def _vip_staff(args: argparse.Namespace):
+    """Show the VIP staff list, or rewrite it from Intercom's admins with --refresh."""
+    from intercom_summary import vip_staff
+
+    if args.refresh:
+        settings.require_intercom()
+        names = await vip_staff.refresh_from_intercom()
+    else:
+        names = sorted(vip_staff.staff_names())
+    log.info("VIP staff (%d): %s; shift schedule %s", len(names), ", ".join(names) or "—",
+             "configured" if vip_staff.shifts_known() else "not configured")
+
+
+async def _vip_grade(args: argparse.Namespace):
+    """Grade VIP cases with the Scorecard v1.6 ruleset (paid: Claude API)."""
+    settings.require_qa("api")
+    from intercom_summary import service
+
+    result = await asyncio.to_thread(
+        service.grade_vip_cases, case_ids=args.case or None, since=args.since,
+        until=args.until, manager=args.manager, regrade=args.regrade, batch=args.batch,
+    )
+    log.info("VIP grading: %d graded, %d skipped, %d failed of %d case(s); $%.4f",
+             result["graded"], result["skipped"], result["failed"], result["cases"],
+             (result.get("usage") or {}).get("cost_usd", 0))
+
+
+async def _vip_auto(args: argparse.Namespace):
+    """One turn of the VIP loop: collect, regroup, grade the ungraded cases (paid)."""
+    settings.require_intercom()
+    settings.require_qa("api")
+    from intercom_summary import service
+
+    r = await asyncio.to_thread(service.vip_auto_cycle, args.since, args.until,
+                                batch=not args.live)
+    g = r["grading"]
+    log.info("VIP cycle %s..%s: %d graded, %d skipped, %d failed; $%.4f", r["since"], r["until"],
+             g.get("graded", 0), g.get("skipped", 0), g.get("failed", 0),
+             (g.get("usage") or {}).get("cost_usd", 0))
+
+
 async def _history_label(args: argparse.Namespace):
     """Label chats for the grader's historical context (qa/history_labeller.py)."""
     settings.require_anthropic()
@@ -335,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("calibrate",
                        help="Grade a calibration sample with Claude into a separate run.")
     c.add_argument("sample", help="Calibration sample id, e.g. kb-v41-180.")
-    c.add_argument("--ruleset", default="kb-v41")
+    c.add_argument("--ruleset", help="Default: the sample's own default ruleset, else kb-v41.")
     c.add_argument("--batch", action="store_true", help="Message Batches API: half price, slower.")
     c.add_argument("--pilot", action="store_true", help="Only the sample's Pilot-20 members.")
     c.add_argument("--history", choices=["off", "shadow", "on"],
@@ -352,8 +402,33 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Re-run the AI check on threads that already have a verdict.")
     v.set_defaults(func=_vip_collect)
 
+    vc = sub.add_parser("vip-cases", help="Regroup the VIP threads into cases (free).")
+    vc.set_defaults(func=_vip_cases)
+
+    vs = sub.add_parser("vip-staff", help="Show the VIP managers list (config/vip_staff.yaml).")
+    vs.add_argument("--refresh", action="store_true",
+                    help="Rewrite the list from Intercom's admins in the VIP teams.")
+    vs.set_defaults(func=_vip_staff)
+
+    vg = sub.add_parser("vip-grade",
+                        help="Grade VIP cases with the VIP Scorecard v1.6 (paid, Claude API).")
+    vg.add_argument("--case", action="append", help="Case id (vc-…); repeatable. Default: all.")
+    vg.add_argument("--since", help="Cases active on/after this day, YYYY-MM-DD.")
+    vg.add_argument("--until", help="Cases started on/before this day, YYYY-MM-DD.")
+    vg.add_argument("--manager", help="Only cases whose primary VIP manager is this name.")
+    vg.add_argument("--regrade", action="store_true", help="Re-grade even current grades.")
+    vg.add_argument("--batch", action="store_true", help="Message Batches API: half price, slower.")
+    vg.set_defaults(func=_vip_grade)
+
     k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
     k.set_defaults(func=_sync_kb)
+
+    va = sub.add_parser("vip-auto", help="One turn of the VIP loop: collect new threads, regroup "
+                        "into cases, grade the ungraded cases (paid). Default window: yesterday–today.")
+    va.add_argument("--since")
+    va.add_argument("--until")
+    va.add_argument("--live", action="store_true", help="grade live instead of through the Batch API")
+    va.set_defaults(func=_vip_auto)
 
     h = sub.add_parser("history", help="The grader's historical context: label chats, refresh "
                                        "the index, show its state.")

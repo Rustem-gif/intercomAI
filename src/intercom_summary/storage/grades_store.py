@@ -86,9 +86,20 @@ def _normalize_criteria(rule_results: list | None, ruleset_id: str | None = None
     rs = get_ruleset(ruleset_id)
     deductions, critical, titles = rs.deductions, rs.critical, rs.titles
     gates, severities, groups = rs.gates, rs.severities, rs.groups
+    partials = rs.partial_deductions
+    # VIP Scorecard v1.6: whether the evidence lives in Intercom at all, and whether the
+    # criterion is a timing SLA (both decide `not_assessable` — qa/vip_scoring.py).
+    scopes = {c["id"]: c["scope"] for c in rs.criteria if c.get("scope")}
+    timing = {c["id"] for c in rs.criteria if c.get("timing")}
 
     def _meta(cid: str) -> dict:
         meta = {"deduction": deductions.get(cid, 0), "critical": cid in critical}
+        if cid in partials:
+            meta["partial_deduction"] = partials[cid]
+        if cid in scopes:
+            meta["scope"] = scopes[cid]
+        if cid in timing:
+            meta["timing"] = True
         if gates.get(cid):
             meta["gate"] = gates[cid]
         if severities.get(cid):

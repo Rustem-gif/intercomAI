@@ -277,3 +277,62 @@ def apply_guards(conversation: Conversation, data: dict[str, Any]) -> list[str]:
             log.info("Guard dropped ungrounded %s fail on %s", cid, conversation.id)
 
     return flags
+
+
+# ── VIP Scorecard v1.6 (vip-v16, a multi-thread email case — qa/vip_transcript.py) ───────────
+# A player line is the right evidence where the criterion is about what the player was left
+# with: an unanswered message, an ignored complaint, a player made to repeat themselves, an RG
+# signal answered with an offer.
+VIP_PLAYER_EVIDENCED_CRITERIA: frozenset[str] = frozenset({
+    "own-lost", "q-complaint", "q-effort", "crit-rg-commerce",
+})
+# Where another department's line is the right evidence: the manager told the player something
+# Payments' own line contradicts, or left a Payments request without reaction.
+VIP_STAFF_EVIDENCED_CRITERIA: frozenset[str] = frozenset({
+    "crit-false-status", "pay-handoff", "proc-handoff", "proc-payments-context",
+})
+_VIP_LINE_PREFIX = re.compile(
+    r"^\s*(\[[^\]]*\]\s*)?(?P<role>vip manager|other staff|player)\b[^:]{0,60}:\s*",
+    re.IGNORECASE,
+)
+_VIP_PROBE = 40
+
+
+def _vip_evidence_role(evidence: str, case) -> str | None:
+    """Who wrote the cited line: VIP MANAGER, OTHER STAFF, PLAYER or BOT; None if it matches
+    nothing. Email replies quote earlier messages, so a manager's sentence can also sit inside
+    a player's reply — any match on a VIP manager's own message wins."""
+    from intercom_summary.qa.vip_transcript import role_of
+
+    ev = (evidence or "").strip()
+    labelled = _VIP_LINE_PREFIX.match(ev)
+    probe = _norm(ev[labelled.end():] if labelled else ev)[:_VIP_PROBE]
+    if len(probe) < 8:
+        return labelled.group("role").upper() if labelled else None
+    roles = {role_of(m, case) for m in case.messages
+             if m.text and m.text.strip() and probe in _norm(m.text)}
+    for role in ("VIP MANAGER", "OTHER STAFF", "PLAYER", "BOT"):
+        if role in roles:
+            return role
+    return labelled.group("role").upper() if labelled else None
+
+
+def apply_vip_guards(case, data: dict[str, Any]) -> list[str]:
+    """The mis-attribution backstop for a VIP case: a fail or partial whose only evidence is
+    automation, another department (outside VIP_STAFF_EVIDENCED_CRITERIA) or the player
+    (outside VIP_PLAYER_EVIDENCED_CRITERIA) is not a VIP manager's failure — the scorecard says so in as many words. Reset to n/a with a
+    flag, in place, before the score is computed."""
+    flags: list[str] = []
+    for c in data.get("criteria") or []:
+        if not isinstance(c, dict) or c.get("v") not in ("fail", "partial"):
+            continue
+        cid = c.get("id", "")
+        role = _vip_evidence_role(c.get("ev", ""), case)
+        if (role == "BOT"
+                or (role == "OTHER STAFF" and cid not in VIP_STAFF_EVIDENCED_CRITERIA)
+                or (role == "PLAYER" and cid not in VIP_PLAYER_EVIDENCED_CRITERIA)):
+            flags.append(f"guard:{cid} {c['v']} dropped — the cited quote is a "
+                         f"{role.lower()} line, not a VIP manager's")
+            log.info("Guard dropped %s %s on %s (%s line)", c["v"], cid, case.id, role)
+            c["v"] = "n/a"
+    return flags

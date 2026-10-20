@@ -27,13 +27,19 @@ class CalibrationStore:
 
     # ── samples ──────────────────────────────────────────────────────────────────────
     def create(self, sample_id: str, name: str, source: str = "",
-               created_by: str = "", frozen: bool = True) -> None:
+               created_by: str = "", frozen: bool = True,
+               default_ruleset: str | None = None) -> None:
+        """`default_ruleset` is what a run grades the sample with when none is chosen —
+        a VIP sample is meaningless under the chat rulesets, and vice versa."""
         self._conn.execute(
-            """INSERT INTO calibration_samples (id, name, source, created_at, created_by, frozen)
-               VALUES (?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET name=excluded.name, source=excluded.source""",
+            """INSERT INTO calibration_samples
+                 (id, name, source, created_at, created_by, frozen, default_ruleset)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name, source=excluded.source,
+                 default_ruleset=COALESCE(excluded.default_ruleset,
+                                          calibration_samples.default_ruleset)""",
             (sample_id, name, source, datetime.now(timezone.utc).isoformat(),
-             created_by, int(frozen)),
+             created_by, int(frozen), default_ruleset),
         )
         self._conn.commit()
 
@@ -147,7 +153,8 @@ class CalibrationStore:
         return [i["conversation_id"] for i in self.items(sample_id, pilot_only)]
 
     def missing_conversations(self, sample_id: str) -> list[str]:
-        """Sample members that are not in the conversations cache, so cannot be graded.
+        """Sample members that are in neither the conversations cache nor the VIP threads
+        (vip_conversations — a VIP sample's members live there), so cannot be graded.
 
         A member can also be missing because it was soft-deleted: a conversation sitting in
         the trash silently blocks its own re-import from Intercom, so a caller checking why
@@ -156,7 +163,8 @@ class CalibrationStore:
         rows = self._conn.execute(
             """SELECT i.conversation_id FROM calibration_sample_items i
                 LEFT JOIN conversations c ON c.id = i.conversation_id
-               WHERE i.sample_id=? AND c.id IS NULL
+                LEFT JOIN vip_conversations v ON v.id = i.conversation_id
+               WHERE i.sample_id=? AND c.id IS NULL AND v.id IS NULL
                ORDER BY i.seq""",
             (sample_id,),
         ).fetchall()

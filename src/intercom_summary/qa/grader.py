@@ -42,8 +42,16 @@ from intercom_summary.qa.jev_verifier import (
 )
 from intercom_summary.qa.pricing import UsageMeter
 from intercom_summary.qa.prompt import extract_grade_dict, transcript_block
-from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset, strict_schema, validate_ruleset
+from intercom_summary.qa.rulesets import (
+    SCORING_GATED,
+    SCORING_VIP_GATED,
+    TRANSCRIPT_VIP_CASE,
+    get_ruleset,
+    strict_schema,
+    validate_ruleset,
+)
 from intercom_summary.qa.schema import ConversationGrade
+from intercom_summary.qa.verdict_guard import apply_vip_guards
 from intercom_summary.settings import settings
 
 log = get_logger(__name__)
@@ -102,7 +110,9 @@ class Grader:
         # once per batch (refreshed if stale); a brand without one gets no KB block. Pass
         # knowledge={} to grade without it, or a {brand: KnowledgeBase} map to inject one.
         if knowledge is None:
-            use = self._ruleset.scoring_model == SCORING_GATED and settings.kb_enabled
+            # The VIP scorecard judges own-info / q-accuracy-minor against the same KB/T&C.
+            use = (self._ruleset.scoring_model in (SCORING_GATED, SCORING_VIP_GATED)
+                   and settings.kb_enabled)
             knowledge = knowledge_base.load_all() if use else {}
         self._kb: dict = knowledge
         # Historical context (qa/history_context.py): the player's earlier chats and QA
@@ -123,7 +133,8 @@ class Grader:
         # a grade in the vote band, or one the verifier changed, is made again and the
         # majority PASS/FAIL decides. Gated rulesets only; votes=1 switches it off.
         if votes is None:
-            votes = settings.qa_votes if self._ruleset.scoring_model == SCORING_GATED else 1
+            votes = (settings.qa_votes
+                     if self._ruleset.scoring_model in (SCORING_GATED, SCORING_VIP_GATED) else 1)
         self._votes = max(1, int(votes))
         self._history_memo: dict[str, HistoryContext | None] = {}
         self._history_lock = threading.Lock()
@@ -168,6 +179,10 @@ class Grader:
         return self._ruleset.version
 
     def messages_for(self, conversation: Conversation) -> list[dict]:
+        if self._ruleset.transcript == TRANSCRIPT_VIP_CASE:
+            from intercom_summary.qa.vip_transcript import case_block
+
+            return [{"role": "user", "content": case_block(conversation)}]
         text = trim_transcript(transcript_block(conversation))
         ctx = self.history_for(conversation)
         if ctx is not None and ctx.mode == "on" and ctx.text:
@@ -286,8 +301,13 @@ class Grader:
     def _guard(self, conversation: Conversation, data: dict) -> None:
         # Overturn verdicts the transcript contradicts, and derive the ones the model's own
         # problem/request lists decide, BEFORE the grade is built — from_model_output computes
-        # the score from these same criteria entries.
-        if flags := check_verdicts(conversation, data, self._ruleset):
+        # the score from these same criteria entries. A VIP case has its own roles (VIP MANAGER /
+        # OTHER STAFF) and no chat closing or greeting rules, so it gets its own guard only.
+        if self._ruleset.transcript == TRANSCRIPT_VIP_CASE:
+            flags = apply_vip_guards(conversation, data)
+        else:
+            flags = check_verdicts(conversation, data, self._ruleset)
+        if flags:
             data["flags"] = [*(data.get("flags") or []), *flags]
 
     def _reconcile(self, conversation: Conversation, messages: list[dict], data: dict,

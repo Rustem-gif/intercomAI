@@ -108,9 +108,20 @@ def score_from_verdicts(
 
     A FAIL on any critical criterion forces 0 (matches the grader's CRITICAL FAIL rule).
     """
-    from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset
+    from intercom_summary.qa.rulesets import SCORING_GATED, SCORING_VIP_GATED, get_ruleset
 
     rs = get_ruleset(ruleset_id)
+
+    if rs.scoring_model == SCORING_VIP_GATED:
+        # Same model as the AI's score (qa/vip_scoring.py), `partial` included. The analyst's
+        # extra deduction comes off the finished score, like the v4.1 branch below.
+        from intercom_summary.qa.vip_scoring import score_vip
+
+        r = score_vip([{"id": cid, "v": v} for cid, v in verdicts.items()], rs)
+        if extra_deduction and not r.critical_fail:
+            score = max(0, r.score - abs(extra_deduction))
+            return score, r.band, "PASS" if score >= rs.pass_threshold else "FAIL"
+        return r.score, r.band, r.result
 
     if rs.scoring_model == SCORING_GATED:
         # The gated model cannot be expressed as a sum, so it is computed on the verdicts
@@ -216,6 +227,12 @@ class RuleResult:
     verdict: str           # "pass" | "fail" | "n/a"
     evidence: str = ""     # quote / reference from the conversation
     comment: str = ""
+    # VIP Scorecard v1.6 only (empty elsewhere): the message or event a fail/partial is about,
+    # the VIP manager responsible, and — for a pass because the episode was already
+    # penalised — the criterion it was counted in (scorecard §9).
+    episode: str = ""
+    who: str = ""
+    counted_in: str = ""
 
 
 @dataclass
@@ -265,6 +282,13 @@ class ConversationGrade:
     usage: dict = field(default_factory=dict)
     # "<brand>:<hash>" of the Help Center snapshot the grader judged accuracy against, or "".
     kb_version: str = ""
+    # VIP Scorecard v1.6 (vip-gated ruleset only; empty elsewhere — see qa/vip_scoring.py):
+    step0: dict = field(default_factory=dict)            # case_type, channel, segment_state, …
+    major_count: int = 0                                 # independent Majors
+    service_failure_flag: bool = False                   # 3+ Majors; NOT critical_fail
+    critical_intent_check: list = field(default_factory=list)   # failed crits needing intent
+    not_assessable: list = field(default_factory=list)   # ids the grader cannot see evidence for
+    score_breakdown: dict = field(default_factory=dict)  # cap / quality / process / style
     # The historical context the grader was given (qa/history_context.py): mode, the index
     # snapshot, the ids of the player's earlier chats and the precedents, and the block itself.
     # {} when the history was off. Recorded in shadow mode too, so "what would it have seen"
@@ -299,6 +323,9 @@ class ConversationGrade:
                 verdict=r.get("verdict", "n/a"),
                 evidence=_as_text(r.get("evidence", "")),
                 comment=_as_text(r.get("comment", "")),
+                episode=_as_text(r.get("episode", "")),
+                who=_as_text(r.get("who", "")),
+                counted_in=_as_text(r.get("counted_in", "")),
             )
             for r in data.get("rule_results", [])
         ]
@@ -325,13 +352,22 @@ class ConversationGrade:
         The Claude and Ollama graders are asked for the same JSON (rulesets.output_schema_for),
         so this is the single place a model's answer becomes a grade and gets its score.
         """
-        from intercom_summary.qa.rulesets import SCORING_GATED, get_ruleset
+        from intercom_summary.qa.rulesets import SCORING_GATED, SCORING_VIP_GATED, get_ruleset
 
         ruleset = get_ruleset(ruleset_id)
         titles = ruleset.titles
 
         criteria = data.get("criteria") or []
         critical_fail = bool(data.get("critical_fail"))
+
+        not_assessable: list[str] = []
+        if ruleset.scoring_model == SCORING_VIP_GATED:
+            # Before anything reads the verdicts: questions the grader could never answer
+            # from Intercom are not open questions for a reviewer (qa/vip_scoring.py).
+            from intercom_summary.qa.vip_scoring import mark_not_assessable
+            from intercom_summary.vip_staff import shifts_known
+
+            not_assessable = mark_not_assessable(criteria, ruleset, shifts_known())
 
         rule_results = [
             RuleResult(
@@ -340,6 +376,9 @@ class ConversationGrade:
                 verdict=c.get("v", "n/a"),
                 evidence=_as_text(c.get("ev", "")),
                 comment="",
+                episode=_as_text(c.get("episode", "")),
+                who=_as_text(c.get("who", "")),
+                counted_in=_as_text(c.get("counted_in", "")),
             )
             for c in criteria
         ]
@@ -349,7 +388,13 @@ class ConversationGrade:
         # applies is the ruleset's own declaration: the two original rulesets are flat, the
         # v4.1 ruleset is gated (caps and floors, which no sum can express).
         gated = None
-        if ruleset.scoring_model == SCORING_GATED:
+        vip = None
+        if ruleset.scoring_model == SCORING_VIP_GATED:
+            from intercom_summary.qa.vip_scoring import score_vip
+
+            vip = score_vip(criteria, ruleset)
+            score, band, result = vip.score, vip.band, vip.result
+        elif ruleset.scoring_model == SCORING_GATED:
             from intercom_summary.qa.gated_scoring import score_gated
 
             gated = score_gated(criteria, ruleset)
@@ -376,7 +421,46 @@ class ConversationGrade:
         grade.business_risk = data.get("risk", "")
         grade.confidence = _as_text(data.get("confidence", ""))
 
-        if gated is not None:
+        if vip is not None:
+            step0 = data.get("step0") if isinstance(data.get("step0"), dict) else {}
+            grade.step0 = {k: _as_text(v) for k, v in step0.items()}
+            grade.case_type = grade.step0.get("case_type", "")
+            grade.risk_flag = grade.step0.get("risk_flag", "")
+            grade.expected_handling = grade.step0.get("expected_handling", "")
+            grade.data_sufficiency = grade.step0.get("data_sufficiency", "")
+            grade.requests = [r for r in (data.get("requests") or []) if isinstance(r, dict)]
+            grade.severity = vip.severity
+            grade.critical_fail = vip.critical_fail
+            grade.critical_intent_check = vip.intent_check
+            grade.major_count = len(vip.major_ids)
+            grade.service_failure_flag = vip.service_failure_flag
+            grade.not_assessable = not_assessable
+            grade.score_breakdown = vip.breakdown
+            grade.outcome_status = (
+                "Critical" if vip.critical_fail else _as_text(data.get("outcome_status", ""))
+            )
+            # §11 / Appendix Е: every Critical and every service failure is checked by a
+            # reviewer, and so is anything Intercom could have shown but did not.
+            undetermined = [c.get("id", "") for c in criteria if c.get("v") == "cannot_determine"]
+            reasons = [_as_text(data.get("manual_review_reason", ""))]
+            if vip.critical_fail:
+                reasons.append("Critical " + ", ".join(vip.critical_ids)
+                               + " — provisional 0 until a reviewer confirms")
+            if vip.intent_check:
+                reasons.append("intent check needed: " + ", ".join(vip.intent_check))
+            if vip.service_failure_flag:
+                reasons.append(f"service failure ({len(vip.major_ids)} Majors)")
+            if undetermined:
+                reasons.append("Cannot determine: " + ", ".join(sorted(undetermined)))
+            insufficient = grade.data_sufficiency == "Insufficient"
+            if insufficient:
+                reasons.append("data insufficient")
+            grade.manual_review_needed = bool(
+                data.get("manual_review_needed") or vip.critical_fail
+                or vip.service_failure_flag or undetermined or insufficient
+            )
+            grade.manual_review_reason = "; ".join(r for r in reasons if r)
+        elif gated is not None:
             grade.severity = gated.severity
             grade.critical_fail = gated.critical_fail
             grade.catastrophic_service_failure = gated.catastrophic_service_failure
@@ -469,6 +553,12 @@ class ConversationGrade:
         g.jev = d.get("jev") or {}
         g.usage = d.get("usage") or {}
         g.kb_version = d.get("kb_version") or ""
+        g.step0 = d.get("step0") or {}
+        g.major_count = int(d.get("major_count") or 0)
+        g.service_failure_flag = bool(d.get("service_failure_flag"))
+        g.critical_intent_check = d.get("critical_intent_check") or []
+        g.not_assessable = d.get("not_assessable") or []
+        g.score_breakdown = d.get("score_breakdown") or {}
         g.history_context = d.get("history_context") or {}
         g.fail_verifier = d.get("fail_verifier") or {}
         g.votes = d.get("votes") or {}

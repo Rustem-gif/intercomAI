@@ -309,3 +309,253 @@ rulesets:
       description: The QC manager checked a source the AI could not see (CRM, action
         log, backend transaction status) and it changes the verdict — see section
         13 of the manual.
+  vip-v16:
+    name: VIP Scorecard v1.6
+    prompt_path: rules/qa_system_prompt_vip_v16.txt
+    transcript: vip_case
+    scoring:
+      model: vip-gated
+      pass_threshold: 85
+      major_caps:
+      - 75
+      - 65
+      - 55
+      - 45
+      service_failure_majors: 3
+      group_caps:
+        style: 6
+    criteria:
+    - id: crit-rg-commerce
+      title: Commerce after an RG signal / SE
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: intercom
+    - id: crit-closure-breach
+      title: Closure procedure breached
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: external
+    - id: crit-lost-email-gate
+      title: Lost-email stop-gate breached
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: external
+    - id: crit-data-security
+      title: Prohibited data requested or leaked
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: intercom
+    - id: crit-payment-retention
+      title: Withdrawal held to retain the player
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: external
+      intent: true
+    - id: crit-false-status
+      title: Knowingly false payment / KYC status
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: external
+      intent: true
+    - id: crit-policy-promise
+      title: Guaranteed win / manual credit
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: intercom
+    - id: crit-compliance-bypass
+      title: Compliance bypass advised
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: intercom
+      intent: true
+    - id: crit-abuse
+      title: Abuse of the player
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: intercom
+    - id: crit-records
+      title: Records deliberately falsified
+      deduction: 0
+      critical: true
+      gate: 1
+      severity: critical
+      scope: external
+      intent: true
+    - id: own-lost
+      title: Player lost
+      deduction: 0
+      gate: 2
+      severity: major
+      scope: intercom
+    - id: pay-handoff
+      title: Payments handoff
+      deduction: 0
+      gate: 2
+      severity: major
+      scope: external
+    - id: action-missed
+      title: Escalation / flow step missed
+      deduction: 0
+      gate: 2
+      severity: major
+      scope: external
+    - id: own-info
+      title: Wrong information
+      deduction: 0
+      gate: 2
+      severity: major
+      scope: intercom
+    - id: bonus-unjustified
+      title: Bonus without logic
+      deduction: 0
+      gate: 2
+      severity: major
+      scope: external
+    - id: q-clarity
+      title: Clarity of the decision
+      deduction: 14
+      partial_deduction: 7
+      gate: 2
+      severity: minor
+      scope: intercom
+    - id: q-expectations
+      title: Managing expectations
+      deduction: 8
+      partial_deduction: 4
+      gate: 2
+      severity: minor
+      scope: intercom
+    - id: q-effort
+      title: Player effort
+      deduction: 8
+      partial_deduction: 4
+      gate: 2
+      severity: minor
+      scope: intercom
+    - id: q-complaint
+      title: Complaint, negativity, churn signal
+      deduction: 8
+      partial_deduction: 4
+      gate: 2
+      severity: minor
+      scope: intercom
+    - id: q-accuracy-minor
+      title: Minor inaccuracy
+      deduction: 4
+      gate: 2
+      severity: minor
+      scope: intercom
+    - id: proc-first-response
+      title: First response
+      deduction: 5
+      gate: 3
+      severity: minor
+      scope: intercom
+      timing: true
+    - id: proc-next-response
+      title: Follow-up responses
+      deduction: 3
+      gate: 3
+      severity: minor
+      scope: intercom
+      timing: true
+    - id: proc-update
+      title: Update on an open case
+      deduction: 3
+      gate: 3
+      severity: minor
+      scope: intercom
+    - id: proc-resolution
+      title: Own action on time
+      deduction: 4
+      gate: 3
+      severity: minor
+      scope: intercom
+    - id: proc-handoff
+      title: Slack handoff action
+      deduction: 3
+      gate: 3
+      severity: minor
+      scope: external
+    - id: proc-payments-context
+      title: Payments business context
+      deduction: 3
+      gate: 3
+      severity: minor
+      scope: external
+    - id: proc-notes
+      title: Notes
+      deduction: 5
+      gate: 3
+      severity: minor
+      scope: external
+    - id: proc-handover
+      title: Shift handover
+      deduction: 5
+      gate: 3
+      severity: minor
+      scope: external
+    - id: proc-route
+      title: Routing, tags, statuses
+      deduction: 4
+      gate: 3
+      severity: minor
+      scope: external
+    - id: proc-outbound
+      title: Outbound contact
+      deduction: 6
+      gate: 3
+      severity: minor
+      scope: intercom
+    - id: style-tone
+      title: Tone
+      deduction: 3
+      gate: 3
+      severity: minor
+      group: style
+      scope: intercom
+    - id: style-personal
+      title: Personalisation
+      deduction: 2
+      gate: 3
+      severity: minor
+      group: style
+      scope: intercom
+    - id: style-writing
+      title: Writing quality
+      deduction: 2
+      gate: 3
+      severity: minor
+      group: style
+      scope: intercom
+    - id: style-first-reply
+      title: First reply (WhatsApp / Telegram)
+      deduction: 2
+      gate: 3
+      severity: minor
+      group: style
+      scope: intercom
+    manual_deductions:
+    - id: system-evidence
+      label: System evidence
+      description: The reviewer checked a source the AI cannot see (Slack vip_cs, back
+        office, Jira, notes / VIP table, Closure_Reopen, Email_Change, daily_report)
+        and it changes the verdict.

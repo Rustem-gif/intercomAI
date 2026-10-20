@@ -118,13 +118,24 @@ class OverrideRequest(BaseModel):
 
 class CalibrationRunRequest(BaseModel):
     """Grade a frozen calibration sample into a new run (never into live grades)."""
-    ruleset_id: str = "kb-v41"
+    # None = the sample's own default ruleset (calibration_samples.default_ruleset), else kb-v41.
+    ruleset_id: str | None = None
     batch: bool = False
     pilot_only: bool = False
     # Historical context for this run only: "off" | "shadow" | "on" (None = HISTORY_CONTEXT),
     # and the effort level (None = QA_EFFORT). An A/B is two runs differing in one of these.
     history_context: str | None = None
     effort: str | None = None
+
+
+class VipReviewRequest(BaseModel):
+    """Grade VIP cases with the VIP Scorecard v1.6 (vip-v16) into vip_grades."""
+    case_ids: list[str] | None = None
+    since: str | None = None
+    until: str | None = None
+    manager: str | None = None
+    regrade: bool = False
+    batch: bool = False
 
 class ScorePreviewRequest(BaseModel):
     """Ask the server what a set of verdicts would score, before saving an override."""
