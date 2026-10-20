@@ -88,28 +88,14 @@ function Editor({
         <p className={`text-sm ${isError ? "text-destructive" : "text-emerald-500"}`}>{msg}</p>
       )}
 
-      {/* What saving an edit actually costs. The version is a hash of this text, so changing a
-          single word marks every grade this ruleset produced stale and the next run re-grades
-          them with different scores. In September that landed on work QA had already reviewed
-          and agents had already disputed, and nothing here said it was about to happen. */}
+      {/* Saving an edit never re-grades existing chats: they keep their scores, and only chats
+          graded afterwards use the new text (GradesStore.is_current). */}
       {blast && blast.graded_at_current_version > 0 && (
-        <Card className="border-amber-500/50 bg-amber-500/5 p-3">
-          <div className="mb-1 flex items-center gap-2 text-sm font-medium text-amber-600 dark:text-amber-400">
-            <AlertTriangle className="h-4 w-4" />
-            Editing this prompt re-grades {blast.would_regrade.toLocaleString()} conversations
-          </div>
+        <Card className="p-3">
           <p className="text-xs text-muted-foreground">
-            Any change to the text below — even one word — creates a new version, which marks
-            all {blast.graded_at_current_version.toLocaleString()} grades from this ruleset
-            outdated. The next grading run re-scores them, and the new scores will not match
-            the old ones.
-            {blast.protected_by_human_review > 0 && (
-              <>
-                {" "}
-                {blast.protected_by_human_review.toLocaleString()} of them have already been
-                re-graded by an analyst and are left alone.
-              </>
-            )}
+            Saving a change applies to chats graded from now on. The{" "}
+            {blast.graded_at_current_version.toLocaleString()} chats already graded with this
+            version keep their scores — old chats are never re-graded.
           </p>
         </Card>
       )}

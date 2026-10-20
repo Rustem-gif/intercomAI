@@ -323,8 +323,8 @@ def test_eval_stats_counts_grades_under_older_ruleset(client):
     stats = client.get("/api/evaluation/stats").json()
     assert stats["graded"] == 1
     assert stats["pending"] == 0
-    # And it is flagged as graded under an older ruleset.
-    assert stats["stale"] == 1
+    # It is kept as it is — an old grade is never re-graded, so nothing is stale.
+    assert stats["stale"] == 0
 
 
 def test_eval_stats_current_ruleset_not_stale(client):

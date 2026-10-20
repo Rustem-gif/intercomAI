@@ -19,6 +19,10 @@ The client's bar: the AI's PASS/FAIL agrees with QA's on at least 95% of chats.
 | Population-weighted agreement on the Accuracy page | `qa/agreement.py`, `/api/accuracy` |
 | Measurement tools | `scripts/accuracy_ab.py`, `scripts/agreement_report.py`, `scripts/pass_audit_sample.py` |
 
+**Old chats are never re-graded.** The new rules and the verifier apply only to chats graded
+after the merge; every existing grade keeps its score (PR #47, `GradesStore.is_current`). The live
+agreement number therefore moves as new chats are graded and reviewed.
+
 ## Measured
 
 **Method.** All runs were Sonnet 5.5 at high effort, in batch, on a copy of the prod DB; no grade was saved. The rules were written from the **dev** split only, and the 35-chat **holdout** was checked afterwards.
@@ -74,6 +78,9 @@ The client's bar: the AI's PASS/FAIL agrees with QA's on at least 95% of chats.
 
 ## Next steps
 
-1. QA reviews `kb-v41-pass-audit` (80 chats) with Agree or Re-score. This measures false PASSes.
-2. QA confirms or corrects points 1–5. Re-measure with `accuracy_ab.py --set holdout` after any change.
+1. Run `scripts/pass_audit_sample.py` on prod. QA opens the 80 chats
+   (`/api/conversations?sample=kb-v41-pass-audit`) and presses Agree or Re-score on the stored
+   grade. This measures false PASSes. No model run is needed, and nothing is re-graded.
+2. QA confirms or corrects points 1–5. Re-measure with `accuracy_ab.py --set holdout` (on a DB
+   copy; it never writes grades) after any change.
 3. QA presses Agree on reviewed chats going forward, so the Accuracy page tracks the live number.

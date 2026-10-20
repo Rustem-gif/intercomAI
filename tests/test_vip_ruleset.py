@@ -60,12 +60,12 @@ def test_agent_group_membership_and_ruleset_resolution(tmp_path):
 
 
 # ── staleness ─────────────────────────────────────────────────────────────────────────
-def test_grade_is_current_only_for_its_own_ruleset_version(tmp_path):
+def test_an_existing_grade_is_always_current(tmp_path):
     gs = GradesStore(tmp_path / "t.db")
     gs.save(_grade(ruleset_id="default", rules_version="v1"))
 
     assert gs.is_current("42", "default", "v1") is True    # same ruleset, same version
-    assert gs.is_current("42", "default", "v2") is False   # its ruleset was edited → re-grade
+    assert gs.is_current("42", "default", "v2") is True    # its ruleset was edited → kept
     assert gs.is_current("99", "default", "v1") is False   # never graded
     gs.close()
 

@@ -69,19 +69,20 @@ def stored_split(ruleset: str) -> tuple[int, int]:
 
 
 def pass_side_from_sample(sample_id: str) -> float | None:
-    """Share of the audit's AI-PASS chats QA also passed (newest reviewed run)."""
+    """Share of the audit's AI-PASS chats QA also passed — read from the stored grades QA
+    agreed with or re-scored (the audit never re-grades anything)."""
     db = sqlite3.connect(settings.db_path)
     try:
         rows = db.execute(
-            "SELECT r.conversation_id, r.human_score FROM calibration_results r "
-            "JOIN calibration_runs u ON u.id = r.run_id WHERE u.sample_id = ? "
-            "AND r.human_score IS NOT NULL ORDER BY u.started_at", (sample_id,)).fetchall()
+            "SELECT g.overall_score, g.human_score FROM grades g "
+            "JOIN calibration_sample_items i ON i.conversation_id = g.conversation_id "
+            "WHERE i.sample_id = ? AND (g.human_score IS NOT NULL OR g.human_confirmed_at IS NOT NULL)",
+            (sample_id,)).fetchall()
     finally:
         db.close()
-    labels = {cid: hs for cid, hs in rows}
-    if not labels:
+    if not rows:
         return None
-    return sum(result_of(hs) == "PASS" for hs in labels.values()) / len(labels)
+    return sum(result_of(hs if hs is not None else s) == "PASS" for s, hs in rows) / len(rows)
 
 
 def with_verifier(row: dict, ruleset: str) -> str:

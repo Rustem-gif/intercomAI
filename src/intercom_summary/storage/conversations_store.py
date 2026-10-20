@@ -467,9 +467,9 @@ class ConversationsStore:
         a chat tagged e.g. 'spam' that was graded in the past is excluded from both total
         and graded, so coverage can still reach 100%.
 
-        `versions` is {ruleset_id: live version} for every ruleset. A grade is *current* when
-        it carries the live version of the ruleset that produced it — so editing the VIP prompt
-        doesn't mark standard grades stale, and vice versa.
+        `versions` ({ruleset_id: live version}) is accepted for compatibility and ignored:
+        every existing grade is current, because an existing grade is never re-graded
+        (GradesStore.is_current). Editing a prompt only changes how new chats are graded.
 
         `vip_agents` are the agent names currently in the VIP group. `wrong_ruleset` counts
         grades produced by a ruleset other than the one their agent's group would use today —
@@ -477,10 +477,7 @@ class ConversationsStore:
         NOT counted as stale (they were graded correctly at the time); they're reported
         separately so an analyst can choose to re-grade them.
 
-        `human_reviewed` counts grades an analyst has re-scored. Those are never re-graded by
-        an ordinary run — QA's verdict is a commitment, and re-running the model underneath it
-        is what made scores move after their September review pass — so they count as current
-        however old their rules_version is.
+        `human_reviewed` counts grades an analyst has re-scored.
 
         `agents` scopes every count to a subset of agents (the UI's group switcher).
         """
@@ -517,23 +514,14 @@ class ConversationsStore:
         ).fetchone()["n"]
         graded = self._conn.execute(f"SELECT COUNT(*) AS n {graded_base}", args).fetchone()["n"]
 
-        # A chat an analyst has re-graded is never re-graded by an ordinary run, so it is
-        # current whatever the rulebook says. Keep this in step with GradesStore.is_current —
-        # if the two disagree, the page reports work that no run will ever do.
         human_reviewed = self._conn.execute(
             f"SELECT COUNT(*) AS n {graded_base} AND g.human_score IS NOT NULL", args
         ).fetchone()["n"]
 
-        if versions:
-            # A grade is current if it matches the live version of its OWN ruleset.
-            clauses = " OR ".join(["(g.ruleset_id = ? AND g.rules_version = ?)"] * len(versions))
-            vargs = [v for rid, ver in versions.items() for v in (rid, ver)]
-            graded_current = self._conn.execute(
-                f"SELECT COUNT(*) AS n {graded_base} AND (g.human_score IS NOT NULL OR ({clauses}))",
-                [*args, *vargs],
-            ).fetchone()["n"]
-        else:
-            graded_current = graded
+        # Every grade is current: an existing grade is never re-graded, whatever the rulebook
+        # says now. Keep this in step with GradesStore.is_current — if the two disagree, the
+        # page reports work that no run will ever do.
+        graded_current = graded
 
         # Grades whose ruleset doesn't match what their agent's group would use today.
         if vip_agents:

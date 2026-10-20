@@ -3,8 +3,9 @@
 QA opens the AI's FAILs far more often than its PASSes, so how often a PASS is wrong is
 unknown, and without it AI ↔ QA agreement cannot be certified (qa/agreement.py). This picks N
 random kb-v41 grades the AI passed and no human has reviewed, reproducibly (--seed), and
-stores them as a frozen calibration sample. QA then reviews them in the Calibration tab after
-one run (Agree, or Re-score), and scripts/accuracy_ab.py --set sample:<id> reads the verdicts.
+stores them as a frozen calibration sample. QA then opens each chat and presses Agree or
+Re-score on its stored grade — nothing is re-graded — and scripts/agreement_report.py reads the
+verdicts from `grades`.
 
     .venv/bin/python scripts/pass_audit_sample.py                 # 80 chats → kb-v41-pass-audit
     .venv/bin/python scripts/pass_audit_sample.py -n 100 --since 2026-10-05 --dry-run
