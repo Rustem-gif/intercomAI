@@ -7,6 +7,9 @@
   intercom-summary history label --source all --batch   # label chats for the history index
   intercom-summary history refresh                # the biweekly refresh, by hand
   intercom-summary history stats
+  intercom-summary lessons sync [--since 2026-10-01] [--no-draft]   # QA lessons, by hand
+  intercom-summary lessons list [--status draft]
+  intercom-summary lessons approve ql-… | reject ql-…
 """
 from __future__ import annotations
 
@@ -266,6 +269,44 @@ async def _history_stats(args: argparse.Namespace):
     print(_json.dumps(service.history_stats(), indent=2, ensure_ascii=False))
 
 
+async def _lessons_sync(args: argparse.Namespace):
+    import json as _json
+
+    from intercom_summary.qa import lessons
+
+    r = await asyncio.to_thread(lessons.sync, since=args.since, draft=not args.no_draft)
+    print(_json.dumps(r, indent=2, ensure_ascii=False))
+
+
+async def _lessons_list(args: argparse.Namespace):
+    from intercom_summary.storage.lessons_store import LessonsStore
+
+    store = LessonsStore()
+    try:
+        rows = store.list(status=args.status)
+    finally:
+        store.close()
+    for r in rows:
+        ids = ", ".join(e["conversation_id"] for e in r["evidence"])
+        print(f"{r['id']}  [{r['status']}] {r['criterion_id']} · {r['kind']}\n  {r['text']}\n  chats: {ids}\n")
+
+
+async def _lessons_decide(args: argparse.Namespace):
+    from intercom_summary.qa import lessons
+    from intercom_summary.storage.lessons_store import LessonsStore
+
+    if args.lessons_command == "approve":
+        r = lessons.approve(args.lesson_id, decided_by="cli")
+        print(f"Approved {r['id']} — rules version now {r['rules_version']} (new chats only)")
+        return
+    store = LessonsStore()
+    try:
+        ok = store.decide(args.lesson_id, "rejected", "cli")
+    finally:
+        store.close()
+    print("Rejected" if ok else "Not a draft (already decided, or unknown id)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="intercom-summary", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -338,6 +379,21 @@ def build_parser() -> argparse.ArgumentParser:
     hc.set_defaults(func=_history_collect)
     hst = hs.add_parser("stats", help="Index coverage, verdict counts, versions.")
     hst.set_defaults(func=_history_stats)
+
+    ls = sub.add_parser("lessons", help="QA lessons: rule changes drafted from QA's re-scores.")
+    lss = ls.add_subparsers(dest="lessons_command", required=True)
+    lsy = lss.add_parser("sync", help="Collect re-scores since the last sync and draft lessons.")
+    lsy.add_argument("--since", help="ISO date; default: the last sync")
+    lsy.add_argument("--no-draft", action="store_true",
+                     help="collect and report only — no model call")
+    lsy.set_defaults(func=_lessons_sync)
+    lsl = lss.add_parser("list", help="List lessons.")
+    lsl.add_argument("--status", choices=["draft", "approved", "rejected"])
+    lsl.set_defaults(func=_lessons_list)
+    for name in ("approve", "reject"):
+        lsd = lss.add_parser(name, help=f"{name.capitalize()} a draft lesson.")
+        lsd.add_argument("lesson_id")
+        lsd.set_defaults(func=_lessons_decide)
     return parser
 
 

@@ -273,6 +273,10 @@ class ConversationGrade:
     # The fail verifier's second look at a FAIL (qa/fail_verifier.py): mode, the criteria it
     # checked, its answer per criterion and what it overturned. {} when it did not run.
     fail_verifier: dict = field(default_factory=dict)
+    # The majority vote on a borderline grade (qa/grader.py): how many gradings were made,
+    # each one's score and result, the majority, and whether it changed the first result.
+    # {} when the grade was not voted on.
+    votes: dict = field(default_factory=dict)
 
     @property
     def effective_score(self) -> int:
@@ -405,7 +409,7 @@ class ConversationGrade:
                 c.get("id", "") for c in criteria if c.get("v") == "cannot_determine"
             ]
             # Some failures are always confirmed by a person (qa/gated_rules.py).
-            from intercom_summary.qa.gated_rules import MANUAL_REVIEW_ON_FAIL
+            from intercom_summary.qa.gated_rules import MANUAL_REVIEW_ON_FAIL, narrative_conflict
 
             must_review = sorted({c.get("id", "") for c in criteria if c.get("v") == "fail"}
                                  & MANUAL_REVIEW_ON_FAIL)
@@ -414,6 +418,10 @@ class ConversationGrade:
                 or _as_text(data.get("data_sufficiency", "")) == "Insufficient"
             )
             reason = _as_text(data.get("manual_review_reason", ""))
+            conflict = narrative_conflict(narrative, grade.overall_result)
+            if conflict:
+                grade.manual_review_needed = True
+                reason = reason or f'Narrative contradicts the {grade.overall_result}: "{conflict}"'
             if not reason and must_review:
                 reason = "Churn signal ignored — confirm"
             if not reason and undetermined:
@@ -463,4 +471,5 @@ class ConversationGrade:
         g.kb_version = d.get("kb_version") or ""
         g.history_context = d.get("history_context") or {}
         g.fail_verifier = d.get("fail_verifier") or {}
+        g.votes = d.get("votes") or {}
         return g

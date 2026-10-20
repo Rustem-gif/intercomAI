@@ -163,6 +163,25 @@ CREATE TABLE IF NOT EXISTS calibration_sample_items (
 );
 CREATE INDEX IF NOT EXISTS idx_cal_items_sample ON calibration_sample_items(sample_id);
 
+-- "QA lessons": rule changes drafted from QA's re-scores (qa/lessons.py). A draft becomes part
+-- of the grading rules only when an admin approves it, and then only for chats graded after.
+CREATE TABLE IF NOT EXISTS qa_lessons (
+    id            TEXT PRIMARY KEY,
+    created_at    TEXT NOT NULL,
+    ruleset_id    TEXT NOT NULL,
+    criterion_id  TEXT NOT NULL,
+    kind          TEXT NOT NULL,            -- 'not_a_fail' | 'is_a_fail'
+    text          TEXT NOT NULL,            -- the rule, as it would read in the prompt
+    rationale     TEXT NOT NULL DEFAULT '',
+    evidence_json TEXT NOT NULL DEFAULT '[]', -- [{conversation_id, ai, human, note, ...}]
+    status        TEXT NOT NULL DEFAULT 'draft',  -- 'draft' | 'approved' | 'rejected'
+    eval_json     TEXT,                     -- measurement before approval (scripts/accuracy_ab)
+    sync_id       TEXT,                     -- the weekly sync that drafted it
+    decided_by    TEXT,
+    decided_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_qa_lessons_status ON qa_lessons(status, ruleset_id);
+
 -- A calibration run: one pass of the AI over a frozen sample. Its grades live in
 -- calibration_results, never in `grades` — grading the sample must not replace the live grade
 -- (or sit under the human override) of a chat that is also on the dashboards.
@@ -528,6 +547,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col in ("history_context", "history_index_version"):
         if col not in run_cols:
             conn.execute(f"ALTER TABLE calibration_runs ADD COLUMN {col} TEXT")
+    conn.commit()
+
+    # QA's reference verdict on a sample member, imported from QA's own grading of the sample
+    # (scripts/import_calibration_sample.py --labels). It belongs to the chat, not to a run, so
+    # every run of the sample is measured against the same answer key.
+    item_cols = {row[1] for row in conn.execute(
+        "PRAGMA table_info(calibration_sample_items)").fetchall()}
+    for col, decl in (("human_score", "INTEGER"), ("human_result", "TEXT"),
+                      ("human_criteria", "TEXT"), ("human_note", "TEXT"),
+                      ("labelled_by", "TEXT"), ("labelled_at", "TEXT")):
+        if col not in item_cols:
+            conn.execute(f"ALTER TABLE calibration_sample_items ADD COLUMN {col} {decl}")
     conn.commit()
 
 

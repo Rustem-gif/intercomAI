@@ -40,6 +40,31 @@ SOURCED_PASS_CRITERIA: frozenset[str] = frozenset({"action-escalation-missed"})
 # I play elsewhere" — dissatisfaction alone no longer counts (see the prompt's CHURN VERSUS RG).
 MANUAL_REVIEW_ON_FAIL: frozenset[str] = frozenset({"churn-rg-signal-ignored"})
 
+# The narrative (`what_happened`) and the verdict are made separately — the verdict from the
+# criteria, the narrative from the model's prose — and QA has seen them part ways: "no mistakes
+# by the agent" over a FAIL, or "two messages left unanswered" over a PASS (QA feedback,
+# Oct 2026). The verdict is not changed on wording alone; the chat goes to a QC manager.
+_PASS_CONFLICT = re.compile(
+    r"\bno agent (?:reply|response|answer)\b"
+    r"|\bwithout (?:an? |any )?agent(?:'s)? (?:reply|response|answer)\b"
+    r"|\bagent (?:never|did not|didn't|failed to) (?:answer|reply|respond|acknowledge|pass|escalate|forward)\b"
+    r"|\b(?:player|customer)(?:['’]s)? (?:(?:last|final|two|three|further|other|own) )*(?:messages?|questions?|requests?)\b"
+    r"[^.]{0,60}?\b(?:went |was |were |remained |left )?unanswered\b"
+    r"|\bnot (?:answered|passed on|escalated|forwarded) (?:by the agent|before the chat (?:was )?closed)\b",
+    re.I)
+_FAIL_CONFLICT = re.compile(
+    r"\bno (?:agent )?(?:errors?|mistakes?|defects?)\b"
+    r"|\bhandled (?:it |this |the (?:case|request|chat) )?correctly\b"
+    r"|\bdid everything (?:right|correctly)\b"
+    r"|\bagent (?:acted|responded|reacted) correctly\b", re.I)
+
+
+def narrative_conflict(narrative: str, result: str) -> str | None:
+    """The phrase in the narrative that contradicts a PASS or a FAIL, if any."""
+    pattern = _PASS_CONFLICT if result == "PASS" else _FAIL_CONFLICT if result == "FAIL" else None
+    m = pattern.search(narrative or "") if pattern else None
+    return m.group(0) if m else None
+
 # Minor criteria that, when failed, say the agent left part of a request open themselves — so an
 # unresolved request in that chat is the agent's, not one waiting on the player.
 _EXPLAINS_OPEN_REQUEST = frozenset({"info-completeness", "ownership-effort"})

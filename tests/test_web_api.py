@@ -1113,3 +1113,20 @@ def test_accuracy_reports_result_agreement(client):
     _login(client)
     ra = client.get("/api/accuracy").json()["result_agreement"]
     assert ra["ruleset_id"] == "kb-v41" and ra["target"] == 0.95 and ra["estimate"] is None
+
+
+def test_qa_lessons_list_and_decide(client):
+    from intercom_summary.storage.lessons_store import LessonsStore
+
+    store = LessonsStore()
+    lid = store.add(ruleset_id="kb-v41", criterion_id="comm-tone", kind="is_a_fail", text="x")
+    store.close()
+    _login(client, "ana", "pw")                    # an analyst reads, but only an admin decides
+    body = client.get("/api/lessons?status=draft").json()
+    assert [r["id"] for r in body["lessons"]] == [lid] and body["last_sync"] is None
+    assert client.post(f"/api/lessons/{lid}/reject").status_code == 403
+    _login(client)
+    assert client.put(f"/api/lessons/{lid}", json={"text": "y"}).json()["text"] == "y"
+    assert client.post(f"/api/lessons/{lid}/reject").json()["status"] == "rejected"
+    assert client.post(f"/api/lessons/{lid}/reject").status_code == 409
+    assert client.post("/api/lessons/nope/approve").status_code == 404

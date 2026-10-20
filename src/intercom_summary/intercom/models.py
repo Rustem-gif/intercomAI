@@ -313,6 +313,45 @@ class Conversation:
             ),
         }
 
+    def menu_choices(self) -> set[int]:
+        """`seq` of the customer lines that are bot-menu buttons, not typed words.
+
+        Intercom records a button click as an ordinary customer `comment` carrying the
+        button's label ("My deposit did not come"), so the grader read it as a request the
+        agent then ignored (QA feedback, Oct 2026). Two patterns identify a click: the bot
+        posted a `quick_reply` part (the menu) and the customer's next line is the label; or
+        the chat's opening line is a short label the bot answered within two seconds — the
+        opening menu leaves no quick_reply part. Checked on 1,500 October chats: 1,429 of the
+        1,437 opening lines the bot answered that fast were menu labels.
+        """
+        out: set[int] = set()
+        menu_open = False
+        first_seen = False
+        for i, m in enumerate(self.messages):
+            if m.author_type == "bot":
+                if m.part_type == "quick_reply":
+                    menu_open = True
+                continue
+            if self._role_of(m.author_type) != "CUSTOMER":
+                menu_open = False
+                continue
+            if m.part_type not in ("", "comment"):
+                continue
+            if menu_open:
+                out.add(m.seq)
+            elif not first_seen:
+                nxt = next((n for n in self.messages[i + 1:]
+                            if n.author_type != m.author_type and (n.text or "").strip()), None)
+                text = (m.text or "").strip()
+                if (nxt is not None and nxt.author_type == "bot" and nxt.part_type == "comment"
+                        and m.created_at and nxt.created_at
+                        and (nxt.created_at - m.created_at).total_seconds() <= 2
+                        and len(text.split()) <= 5 and "?" not in text):
+                    out.add(m.seq)
+            first_seen = True
+            menu_open = False
+        return out
+
     def transcript_text(self, include_bots: bool = True) -> str:
         """Flatten the thread into a single readable string.
 
@@ -361,6 +400,7 @@ class Conversation:
             meaningful = kept
 
         lines: list[str] = []
+        menu = self.menu_choices()
         prev: Message | None = None
         first_reply = self._first_agent_reply
         for m in meaningful:
@@ -383,6 +423,8 @@ class Conversation:
                     waited = " waited" if role == "AGENT" and after == "customer" else ""
                     gap = f" | +{fmt_duration(secs)}{waited} after {after}"
             tag = f" ({m.part_type})" if m.part_type and m.part_type != "comment" else ""
+            if m.seq in menu:
+                tag += " (bot-menu choice)"
             lines.append(f"[{when}{gap}] {role} {m.author_name}{tag}: {m.text}")
             prev = m
         return "\n".join(lines)

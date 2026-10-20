@@ -9,6 +9,7 @@ FAILs / false PASSes and the criteria behind them. Arms are `+`-joined switches:
     jev       + Jev in reconcile mode
     verify    + the fail verifier (qa/fail_verifier.py) in `on` mode
     vshadow   + the fail verifier in `shadow` mode (records, changes nothing)
+    vote      + the majority vote on borderline chats (QA_VOTES=3; off in every other arm)
 
     .venv/bin/python scripts/accuracy_ab.py --set dev --arms base,verify
     .venv/bin/python scripts/accuracy_ab.py --set holdout --arms verify --live
@@ -65,23 +66,42 @@ def reviewed(ruleset: str) -> dict[str, dict]:
 
 
 def sample_labels(sample_id: str) -> dict[str, dict]:
-    """A calibration sample's members, with QA's verdict from its newest reviewed run."""
+    """A calibration sample's members with QA's verdict: the sample's imported reference label
+    (CalibrationStore.labels), else the newest review made on one of its runs."""
+    from intercom_summary.storage.calibration_store import CalibrationStore
+
     db = sqlite3.connect(settings.db_path)
     try:
         ids = [r[0] for r in db.execute(
             "SELECT conversation_id FROM calibration_sample_items WHERE sample_id = ? ORDER BY seq",
             (sample_id,))]
-        labels = {}
-        for cid, hs in db.execute(
-                "SELECT r.conversation_id, r.human_score FROM calibration_results r "
-                "JOIN calibration_runs u ON u.id = r.run_id WHERE u.sample_id = ? "
-                "AND r.human_score IS NOT NULL ORDER BY u.started_at", (sample_id,)):
-            labels[cid] = hs          # newest run last, so it wins
+        reviews = {}
+        for cid, hs, crit, note in db.execute(
+                "SELECT r.conversation_id, r.human_score, r.human_criteria, r.human_note "
+                "FROM calibration_results r JOIN calibration_runs u ON u.id = r.run_id "
+                "WHERE u.sample_id = ? AND r.human_score IS NOT NULL ORDER BY u.started_at",
+                (sample_id,)):
+            reviews[cid] = {"human": hs, "human_result": result_of(hs),   # newest run wins
+                            "human_criteria": json.loads(crit) if crit else {}, "reason": note or ""}
     finally:
         db.close()
-    return {cid: {"human": labels.get(cid), "human_result": result_of(labels.get(cid)),
-                  "stored_ai": None, "stored_result": None, "human_criteria": {}, "reason": "",
-                  "confirmed": False} for cid in ids}
+    cal = CalibrationStore()
+    try:
+        ref = cal.labels(sample_id)
+    finally:
+        cal.close()
+    out = {}
+    for cid in ids:
+        lab = ref.get(cid)
+        if lab:
+            hum = {"human": lab["human_score"],
+                   "human_result": lab["human_result"] or result_of(lab["human_score"]),
+                   "human_criteria": lab["human_criteria"], "reason": lab["human_note"] or ""}
+        else:
+            hum = reviews.get(cid) or {"human": None, "human_result": None,
+                                       "human_criteria": {}, "reason": ""}
+        out[cid] = {**hum, "stored_ai": None, "stored_result": None, "confirmed": False}
+    return out
 
 
 def record(c, g, hum: dict, dt: float) -> dict:
@@ -92,6 +112,7 @@ def record(c, g, hum: dict, dt: float) -> dict:
         "human": hum.get("human"), "human_result": hum.get("human_result"),
         "stored_ai": hum.get("stored_ai"), "reason": hum.get("reason", ""),
         "human_criteria": hum.get("human_criteria", {}),
+        "votes": g.votes,
         "fails": sorted(r.rule_id for r in g.rule_results if r.verdict == "fail"),
         "cannot": sorted(r.rule_id for r in g.rule_results if r.verdict == "cannot_determine"),
         "criteria": {r.rule_id: [r.verdict, r.evidence] for r in g.rule_results
@@ -121,7 +142,8 @@ def build_grader(switches: set[str], ruleset: str, effort: str | None):
     if "verify" in switches or "vshadow" in switches:
         verifier = FailVerifier(mode="on" if "verify" in switches else "shadow")
     return Grader(ruleset_id=ruleset, effort=effort, jev=jev, fail_verifier=verifier,
-                  history=HistoryProvider(mode="on") if "hist" in switches else False)
+                  history=HistoryProvider(mode="on") if "hist" in switches else False,
+                  votes=settings.qa_votes if "vote" in switches else 1)
 
 
 def run_arm(arm: str, convos: list, hum: dict, *, ruleset: str, effort: str | None,
