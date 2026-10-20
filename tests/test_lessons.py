@@ -168,3 +168,25 @@ def test_only_a_draft_can_be_edited_or_decided(db):
     with pytest.raises(ValueError):
         store.add(ruleset_id="kb-v41", criterion_id="c", kind="maybe", text="x")
     store.close()
+
+
+def test_feedback_reads_reference_labels_against_the_newest_run(db):
+    from intercom_summary.storage.calibration_store import CalibrationStore
+
+    cal = CalibrationStore(db)
+    cal.create("s", "sample")
+    cal.replace_items("s", [{"conversation_id": "r1", "seq": 1}])
+    cal.set_labels("s", [{"conversation_id": "r1", "human_score": 95, "human_note": "player's turn"}])
+    payload = json.dumps({"overall_result": "FAIL", "rule_results": [
+        {"rule_id": "resp-no-ghost", "verdict": "fail", "evidence": "x"}]})
+    for score in (75, 70):                        # two runs; the newest (70) is what counts
+        run_id = cal.start_run("s", "kb-v41")
+        cal._conn.execute(
+            "INSERT INTO calibration_results (run_id, conversation_id, status, overall_score, "
+            "payload_json) VALUES (?,?,?,?,?)", (run_id, "r1", "graded", score, payload))
+    cal._conn.commit()
+    cal.close()
+    fb = lessons.collect_feedback("2000-01-01")
+    [c] = fb["chats"]
+    assert c["source"] == "reference" and c["ai_score"] == 70 and c["human_result"] == "PASS"
+    assert c["flips"][0]["criterion_id"] == "resp-no-ghost" and c["flips"][0]["inferred"]

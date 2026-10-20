@@ -405,7 +405,7 @@ class ConversationGrade:
                 c.get("id", "") for c in criteria if c.get("v") == "cannot_determine"
             ]
             # Some failures are always confirmed by a person (qa/gated_rules.py).
-            from intercom_summary.qa.gated_rules import MANUAL_REVIEW_ON_FAIL
+            from intercom_summary.qa.gated_rules import MANUAL_REVIEW_ON_FAIL, narrative_conflict
 
             must_review = sorted({c.get("id", "") for c in criteria if c.get("v") == "fail"}
                                  & MANUAL_REVIEW_ON_FAIL)
@@ -414,6 +414,10 @@ class ConversationGrade:
                 or _as_text(data.get("data_sufficiency", "")) == "Insufficient"
             )
             reason = _as_text(data.get("manual_review_reason", ""))
+            conflict = narrative_conflict(narrative, grade.overall_result)
+            if conflict:
+                grade.manual_review_needed = True
+                reason = reason or f'Narrative contradicts the {grade.overall_result}: "{conflict}"'
             if not reason and must_review:
                 reason = "Churn signal ignored — confirm"
             if not reason and undetermined:

@@ -110,6 +110,36 @@ def collect_feedback(since: str | None, ruleset_id: str = "kb-v41",
                           "ai_result": ai_res, "human_result": hum_res,
                           "note": r["human_note"] or "",
                           "flips": _flips(_verdicts(p), human, ai_res, hum_res)})
+        # Reference labels: QA's verdict on a sample member (imported from their own grading,
+        # or from their written feedback), compared with the newest run that graded the chat.
+        seen = {c["conversation_id"] for c in chats}
+        if _has_column(db, "calibration_sample_items", "labelled_at"):
+            for r in db.execute(
+                    """SELECT i.conversation_id, i.human_score, i.human_result, i.human_criteria,
+                              i.human_note, r.overall_score, r.payload_json
+                         FROM calibration_sample_items i
+                         JOIN calibration_runs u ON u.sample_id = i.sample_id AND u.ruleset_id = ?
+                         JOIN calibration_results r ON r.run_id = u.id
+                              AND r.conversation_id = i.conversation_id AND r.status = 'graded'
+                        WHERE (i.human_score IS NOT NULL OR i.human_result IS NOT NULL)
+                          AND i.labelled_at >= ?
+                          AND u.started_at = (SELECT MAX(u2.started_at) FROM calibration_runs u2
+                                               JOIN calibration_results r2 ON r2.run_id = u2.id
+                                                AND r2.conversation_id = i.conversation_id
+                                                AND r2.status = 'graded'
+                                              WHERE u2.sample_id = i.sample_id AND u2.ruleset_id = ?)""",
+                    (ruleset_id, since, ruleset_id)):
+                if r["conversation_id"] in seen:
+                    continue
+                p = json.loads(r["payload_json"] or "{}")
+                ai_res = result_of(r["overall_score"], p.get("overall_result"))
+                hum_res = result_of(r["human_score"], r["human_result"])
+                human = json.loads(r["human_criteria"]) if r["human_criteria"] else {}
+                chats.append({"conversation_id": r["conversation_id"], "source": "reference",
+                              "ai_score": r["overall_score"], "human_score": r["human_score"],
+                              "ai_result": ai_res, "human_result": hum_res,
+                              "note": r["human_note"] or "",
+                              "flips": _flips(_verdicts(p), human, ai_res, hum_res)})
         agreed = db.execute(
             "SELECT COUNT(*) FROM grades WHERE ruleset_id = ? AND human_confirmed_at >= ?",
             (ruleset_id, since)).fetchone()[0] if _has_column(db, "grades", "human_confirmed_at") else 0

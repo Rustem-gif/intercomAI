@@ -477,6 +477,7 @@ sample that already has members.
   columns, and stores them on the members (`calibration_sample_items.human_*`). Every run of the
   sample is then compared against them in the Calibration tab (PASS/FAIL agreement card, "PASS/FAIL
   differs from QA" filter). A review made in the tab on a run overrides the reference for that run.
+  QA's written feedback on a run is kept as `docs/qa-feedback/<date>-<sample>.csv` and imported the same way.
 - **Where to start:** `python scripts/worst_disagreements.py --sample <id> -n 10` (or `--rescored`)
   ranks the chats furthest from QA from grades that already exist; `--freeze <id>` saves them as a sample.
 - Browse one: `/api/conversations?sample=<id>`. List them with their gradeable counts:

@@ -137,3 +137,17 @@ corrected ≥ `QA_LESSONS_MIN_CASES` (3) times, asks Sonnet for one general rule
 Drafts wait on the page; an admin edits, approves or rejects. Approval adds the rule to the
 prompt's QA PRACTICE section and (NOT-A-FAIL rules) to the verifier — for new chats only.
 `intercom-summary lessons sync --no-draft` reports the week's corrections without a model call.
+
+## QA feedback in writing → reference labels
+
+QA's written feedback on a calibration run (Slack, 8 Oct: four chats of the 180 sample with the
+score they expect) is kept as `docs/qa-feedback/<date>-<sample>.csv` and loaded as reference
+labels: `python scripts/import_calibration_sample.py docs/qa-feedback/2026-10-08-calibration-180.csv --id kb-v41-180 --labels`.
+From then on every run of the sample is checked against them in the Calibration tab, and the
+weekly QA-lessons sync reads them too. Those four chats have graded as QA expects since the
+9 Oct rules (runs `5cec4875c67e` onward); the 8 Oct run they were written about was `52bd706b3797`.
+
+**Narrative vs verdict** (QA's point 1): the story and the verdict are produced separately. When
+the story says the player was left unanswered over a PASS, or "no mistakes" over a FAIL, the
+grade now goes to manual review with the contradicting phrase as the reason
+(`gated_rules.narrative_conflict`). The verdict itself is never changed on wording alone.

@@ -40,7 +40,8 @@ UPHELD, NOT_PROVEN = "upheld", "not_proven"
 BOUNDARIES: dict[str, list[str]] = {
     "resp-no-ghost": [
         "The player's last messages are thanks, ok, goodbye, an emoji, or a statement that needs "
-        "no answer — nothing was left to reply to.",
+        "no answer — nothing was left to reply to. (An 'are you still there?', 'I have sent the "
+        "email' or a new question DOES need a reply; see WHO STOPPED RESPONDING.)",
         "The agent answered the request (even briefly or with a refusal by the terms) and the "
         "player did not come back with a new question.",
         "The agent asked the player for something (a document, a detail, a check) or told them "
