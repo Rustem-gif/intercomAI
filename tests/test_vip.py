@@ -1,9 +1,11 @@
 """VIP chats tab: the stage-1 dialogue filter, the store, and the API endpoints."""
 import textwrap
 from datetime import datetime, timezone
+from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from intercom_summary import vip
 from intercom_summary.intercom.models import Admin, Contact, Conversation, Message
@@ -133,6 +135,20 @@ def test_api_list_detail_and_export(client):
     assert client.get("/api/vip/conversations/nope").status_code == 404
     x = client.get("/api/vip/export.xlsx")
     assert x.status_code == 200 and x.content[:2] == b"PK"
+    assert x.headers["content-disposition"].endswith('filename="vip_threads.xlsx"')
+
+    def sheet(query=""):
+        ws = load_workbook(BytesIO(client.get(f"/api/vip/export.xlsx{query}").content)).active
+        rows = list(ws.iter_rows(values_only=True))
+        assert rows[0][:2] == ("Conversation ID", "Date (UTC)") and rows[0][-2:] == ("Kept", "Transcript")
+        return {r[0]: r for r in rows[1:]}
+
+    kept = sheet()
+    assert list(kept) == ["77"] and kept["77"][10] == "yes" and "Taylor" in kept["77"][11]
+    # The file follows the view's filters: the dropped threads say why they were dropped.
+    both = sheet("?include_excluded=true")
+    assert set(both) == {"77", "78"} and both["78"][10] == f"no — rule: {vip.REASON_ONE_WORD}"
+    assert sheet("?agent=Nobody") == {} and list(sheet("?topic=Withdrawal")) == ["77"]
 
 
 def test_collect_query_covers_threads_assigned_to_a_manager_personally():

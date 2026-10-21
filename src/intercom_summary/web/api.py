@@ -1654,6 +1654,41 @@ def create_app() -> FastAPI:
         finally:
             store.close()
 
+    def _xlsx_response(wb, filename: str) -> FileResponse:
+        # The workbook is written to its own temp dir, removed once the response is finished —
+        # otherwise every export leaks a file into $TMPDIR.
+        tmpdir = tempfile.mkdtemp()
+        out = Path(tmpdir) / filename
+        wb.save(out)
+        return FileResponse(out, filename=filename,
+                            background=BackgroundTask(shutil.rmtree, tmpdir, True))
+
+    # Declared before /api/vip/cases/{case_id}, or "export.xlsx" would be read as a case id.
+    @app.get("/api/vip/cases/export.xlsx")
+    def vip_cases_export(manager: str | None = None, brand: str | None = None,
+                         search: str | None = None, since: str | None = None,
+                         until: str | None = None, result: str | None = None,
+                         flag: str | None = None, user: dict = Depends(auth.current_user)):
+        """The cases the Cases view shows under the same filters, each with its grade and the
+        transcript the grader read; a second sheet lists every criterion verdict."""
+        from intercom_summary import vip_cases
+        from intercom_summary.export.vip_xlsx import cases_workbook
+        from intercom_summary.qa.vip_transcript import case_block
+        from intercom_summary.storage.vip_cases_store import VipCasesStore
+
+        store = VipCasesStore()
+        try:
+            items = store.cases(manager=manager, brand=brand, search=search, since=since,
+                                until=until, result=result, flag=flag)
+            grades = {it["case_id"]: g for it in items
+                      if it["grade"] and (g := store.get_grade(it["case_id"]))}
+        finally:
+            store.close()
+        convos = vip_cases.load_case_conversations([it["case_id"] for it in items])
+        transcripts = {cid: case_block(c) for cid, c in convos.items()}
+        wb = cases_workbook(items, grades, transcripts, auth.users.display_names())
+        return _xlsx_response(wb, "vip_cases.xlsx")
+
     @app.get("/api/vip/cases/{case_id}")
     def vip_case_detail(case_id: str, user: dict = Depends(auth.current_user)):
         """The case in the shape of /api/conversations/{id}, so the drawer reuses it: the
@@ -1789,41 +1824,20 @@ def create_app() -> FastAPI:
         return vip_cases.exceptions()
 
     @app.get("/api/vip/export.xlsx")
-    def vip_export(user: dict = Depends(auth.current_user)):
-        from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font
-
-        from intercom_summary.intercom.models import Conversation
+    def vip_export(include_excluded: bool = False, agent: str | None = None,
+                   brand: str | None = None, search: str | None = None,
+                   topic: str | None = None, user: dict = Depends(auth.current_user)):
+        """The threads the Threads view shows under the same filters, with transcripts."""
+        from intercom_summary.export.vip_xlsx import threads_workbook
         from intercom_summary.storage.vip_store import VipStore
 
         store = VipStore()
         try:
-            rows = store.kept_with_payload()
+            rows = store.query(include_excluded=include_excluded, agent=agent, brand=brand,
+                               search=search, topic=topic, payload=True)
         finally:
             store.close()
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "VIP chats"
-        ws.append(["Conversation ID", "Date", "VIP manager", "Player", "Player email", "Brand",
-                   "Started by", "Topic", "Messages", "Subject", "Transcript"])
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-        for r in rows:
-            convo = Conversation.from_dict(r["payload"])
-            ws.append([r["id"], (r["created_at"] or "")[:16].replace("T", " "), r["agent_name"],
-                       r["customer_name"], r["customer_email"], r["brand"],
-                       "player" if r["delivered_as"] == "customer_initiated" else "manager",
-                       r["topic"], r["message_count"], r["subject"],
-                       # Excel caps a cell at 32,767 characters.
-                       convo.transcript_text()[:32000]])
-            ws.cell(row=ws.max_row, column=11).alignment = Alignment(wrap_text=True, vertical="top")
-        ws.column_dimensions["K"].width = 120
-        ws.freeze_panes = "B2"
-        tmpdir = tempfile.mkdtemp()
-        out = Path(tmpdir) / "vip_chats.xlsx"
-        wb.save(out)
-        return FileResponse(out, filename=out.name,
-                            background=BackgroundTask(shutil.rmtree, tmpdir, True))
+        return _xlsx_response(threads_workbook(rows), "vip_threads.xlsx")
 
     @app.get("/api/rulesets/{ruleset_id}/prompt")
     def get_ruleset_prompt(ruleset_id: str, user: dict = Depends(auth.current_user)):
