@@ -462,6 +462,13 @@ several threads; the biggest is 20 — serial bonus requesters chain for two wee
   regroup, grade the cases without a grade (batch). `VIP_AUTO=on` runs it in the web app every
   `VIP_AUTO_HOURS` (24); it is **off by default** because every turn is paid. By hand:
   `intercom-summary vip-auto [--since … --until …] [--live]` or `POST /api/vip/auto` (admin).
+- **Export** — the **Export XLSX** button on each view downloads what the view shows under its
+  current filters (`export/vip_xlsx.py`). Threads: `GET /api/vip/export.xlsx` (same query
+  params as `/api/vip/conversations`, plus `topic`), one row per thread with the transcript and,
+  with `include_excluded=true`, why a thread was dropped. Cases: `GET /api/vip/cases/export.xlsx`
+  (same params as `/api/vip/cases`), one row per case with the effective score and PASS/FAIL (the
+  re-score when there is one, the AI's alongside), flags, failed criteria and the grader's
+  transcript, plus a **Criteria** sheet with every verdict and its evidence. Nothing is graded.
 - **Exception Report** — `vip_cases.exceptions()`, `GET /api/vip/exceptions`: a player's last
   message with no VIP-manager reply after it in any of their threads, and kept threads with no
   owner. Rule-based (sign-offs and mail-app footers are ignored), so expect the odd thank-you.

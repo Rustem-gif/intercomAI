@@ -64,7 +64,10 @@ class VipStore:
 
     def query(self, *, include_excluded: bool = False, agent: str | None = None,
               brand: str | None = None, search: str | None = None,
-              since: str | None = None, until: str | None = None) -> list[dict]:
+              since: str | None = None, until: str | None = None, topic: str | None = None,
+              payload: bool = False) -> list[dict]:
+        """`payload=True` adds the stored conversation (as `payload`) to every row — for the
+        export, which prints the transcript; the list view does not need it."""
         where, params = [], []
         if not include_excluded:
             where.append("keep = 1")
@@ -74,6 +77,9 @@ class VipStore:
         if brand:
             where.append("brand = ?")
             params.append(brand)
+        if topic:
+            where.append("topic = ?")
+            params.append(topic)
         if since:
             where.append("created_at >= ?")
             params.append(since)
@@ -86,11 +92,15 @@ class VipStore:
             where.append("(lower(customer_name) LIKE ? OR lower(customer_email) LIKE ? "
                          "OR lower(subject) LIKE ? OR lower(topic) LIKE ? OR id LIKE ?)")
             params += [like, like, like, like, like]
-        sql = f"SELECT {_LIST_COLUMNS} FROM vip_conversations"
+        sql = f"SELECT {_LIST_COLUMNS}{', payload_json' if payload else ''} FROM vip_conversations"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at DESC"
-        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+        out = [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+        if payload:
+            for d in out:
+                d["payload"] = json.loads(d.pop("payload_json"))
+        return out
 
     def summary(self) -> dict:
         """Counts for the stat cards: everything fetched, what was kept, why the rest was not."""

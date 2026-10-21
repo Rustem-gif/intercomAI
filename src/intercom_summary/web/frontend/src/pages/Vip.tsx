@@ -109,7 +109,13 @@ function ThreadsView() {
           confirmed the thread has substance (not system mail or a “thanks”). Grades are given
           per case — see Cases.
         </p>
-        <Button variant="outline" size="sm" onClick={() => { window.location.href = "/api/vip/export.xlsx"; }}>
+        <Button variant="outline" size="sm" title="The threads shown, with their transcripts"
+                onClick={() => {
+                  // The file follows the filters, topic included (it is applied client-side here).
+                  const p = new URLSearchParams(params);
+                  if (topic) p.set("topic", topic);
+                  window.location.href = `/api/vip/export.xlsx?${p.toString()}`;
+                }}>
           <Download className="h-3.5 w-3.5" /> Export XLSX
         </Button>
       </div>
@@ -362,8 +368,13 @@ function CasesView() {
               <option value="manual">Needs review</option>
             </select>
             <span className="text-muted-foreground">{items.length} shown</span>
+            <Button variant="outline" size="sm" className="ml-auto"
+                    title="The cases shown, with their grades and the transcripts the grader read"
+                    onClick={() => { window.location.href = `/api/vip/cases/export.xlsx?${params.toString()}`; }}>
+              <Download className="h-3.5 w-3.5" /> Export XLSX
+            </Button>
             {user?.role === "admin" && s.to_grade > 0 && (
-              <div className="ml-auto flex items-center gap-2">
+              <div className="flex items-center gap-2">
                 {running ? (
                   <span className="flex items-center gap-1.5 text-muted-foreground">
                     <Spinner className="h-3.5 w-3.5" /> Grading…{" "}
