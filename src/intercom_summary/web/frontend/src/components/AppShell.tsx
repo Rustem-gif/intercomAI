@@ -14,6 +14,7 @@ import {
   Crown,
   History,
   Lightbulb,
+  FlaskConical,
   Moon,
   Sun,
   LogOut,
@@ -35,8 +36,9 @@ const nav = [
   { to: "/evaluation", label: "Evaluation", icon: ClipboardCheck },
   // The VIP managers' email threads (not graded; see vip.py).
   { to: "/vip", label: "VIP emails", icon: Crown },
-  // "Calibration 180" (/calibration) is hidden from the menu since 2026-10-16; the route and its
-  // data stay. To bring it back: { to: "/calibration", label: "Calibration 180", icon: FlaskConical }.
+  // Frozen QA samples graded by the AI: the 180 support chats and the 70 VIP chats (a selector
+  // on the page switches between them). Hidden 2026-10-16, back for the VIP sample.
+  { to: "/calibration", label: "Calibration", icon: FlaskConical },
   { to: "/accuracy", label: "AI Accuracy", icon: BarChart3 },
   { to: "/knowledge-base", label: "Knowledge Base", icon: BookOpen },
   // The labelled chat history the grader reads for context (docs/history-context.md).

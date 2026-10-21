@@ -107,7 +107,7 @@ intercomSummary/
 | Needs Attention (`/needs-attention`) | `pages/NeedsAttention.tsx` | Flagged low scores |
 | Agents (`/agents`) | `pages/Agents.tsx` | Per-agent performance |
 | Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress (Ollama restart only when Qwen is picked) |
-| Calibration 180 (`/calibration`) — **temporary, hidden from the menu since 2026-10-16** (URL still works) | `pages/Calibration.tsx` | Claude's v4.1 grades of a calibration sample next to the QA managers' own verdicts |
+| Calibration (`/calibration`) — **temporary**; back in the menu 2026-10-21 for the VIP sample (hidden 2026-10-16 – 10-21) | `pages/Calibration.tsx` | Claude's grades of a frozen sample next to the QA managers' own verdicts: the 180 support chats (v4.1) and the 70 VIP chats (`vip-v16`, graded per case); the newest sample opens first, a selector switches |
 | VIP emails (`/vip`) | `pages/Vip.tsx` | The VIP managers' email threads (Threads), the cases they group into with their VIP Scorecard grades (Cases), and the Exception Report (Exceptions) |
 | AI Accuracy (`/accuracy`) | `pages/Accuracy.tsx` | AI-vs-human override stats |
 | Knowledge Base (`/knowledge-base`) | `pages/KnowledgeBase.tsx` | Reference content |
