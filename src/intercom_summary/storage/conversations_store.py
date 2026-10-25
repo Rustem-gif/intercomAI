@@ -20,7 +20,7 @@ log = get_logger(__name__)
 # never be graded — they're excluded from the Evaluation population and skipped by the
 # grader. Compared case-insensitively. Keep this the single source of truth.
 IGNORE_TAGS: frozenset[str] = frozenset(
-    {"empty", "spam", "test", "jira", "follow-up", "no request"}
+    {"spam", "test", "jira", "follow-up"}
 )
 
 

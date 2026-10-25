@@ -636,7 +636,7 @@ export interface EvalStats {
   /** Graded by a different ruleset than their agent's group uses today — e.g. an agent's
    *  history from before they joined VIP. Left alone on purpose; re-grade to convert. */
   wrong_ruleset?: number;
-  /** Conversations excluded from grading by tag (spam, empty, test, Jira, Follow-Up, no request). */
+  /** Conversations excluded from grading by tag (spam, test, Jira, Follow-Up). */
   ignored?: number;
   active_job: {
     id: string;

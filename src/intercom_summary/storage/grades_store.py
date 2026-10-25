@@ -41,7 +41,7 @@ def _brand_sql(brand: str | None, alias: str = "") -> tuple[str, list[object]]:
 def _not_ignored_sql(alias: str = "") -> tuple[str, list[object]]:
     """Predicate (+args) dropping grades whose conversation carries an IGNORE_TAGS tag.
 
-    Triage/noise chats (spam, empty, test, Jira, Follow-Up, no request) are never graded in the
+    Triage/noise chats (spam, test, Jira, Follow-Up) are never graded in the
     first place, but a grade can predate its tag: support tags a chat "Follow-Up" in Intercom
     days after we graded it, the next fetch refreshes `conversations.tags`, and the stored grade
     stays behind. Filtering on read — not only at grading time — drops such a chat out of every
