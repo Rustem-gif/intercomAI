@@ -39,6 +39,19 @@ async def list_agents() -> list[dict[str, str]]:
     return agents
 
 
+
+def _sync_back_office(conversations) -> None:
+    """Read the players' back-office records before grading (backoffice/sync.py). The grader
+    then sees them as a BACK OFFICE block; a sync problem never stops a run."""
+    from intercom_summary.backoffice import sync as bo_sync
+
+    try:
+        stats = bo_sync.sync_for(list(conversations))
+        if stats.get("fetched") or stats.get("failed"):
+            log.info("Back office: %s", stats)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Back office sync skipped: %s", exc)
+
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 async def fetch_and_store(
     agents: list[str],
@@ -347,6 +360,7 @@ def review_and_store(
 
         pending = [c for bucket in buckets.values() for c in bucket]
         skipped = total - len(pending)
+        _sync_back_office(pending)
         # Historical context: label the chats the index does not know yet, all at once and
         # before the fan-out, so no grading thread stops to label one chat at a time.
         for rid, bucket in buckets.items():
@@ -588,6 +602,7 @@ def grade_vip_cases(
         todo = [r for r in rows if regrade
                 or not store.is_current(r["case_id"], version, r["case_version"])]
         convos = vip_cases.load_case_conversations([r["case_id"] for r in todo])
+        _sync_back_office(convos.values())
 
         def save(grade) -> None:
             case = convos[grade.conversation_id]
@@ -776,6 +791,7 @@ def run_calibration(
                 tickets += 1
             else:
                 to_grade.append(c)
+        _sync_back_office(to_grade)
 
         def save(grade) -> None:
             cid = grade.conversation_id
@@ -833,6 +849,7 @@ def _calibrate_vip_cases(cal, sample_id: str, ids: list[str], ruleset_id: str, *
                             error="not a kept thread in the VIP chats tab")
             unavailable += 1
     convos = vip_cases.load_case_conversations(sorted({c for c in case_of.values() if c}))
+    _sync_back_office(convos.values())
     members: dict[str, list[str]] = defaultdict(list)
     for cid, case_id in case_of.items():
         if case_id in convos:

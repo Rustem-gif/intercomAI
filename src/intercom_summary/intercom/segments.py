@@ -19,6 +19,7 @@ player, cached for the run and in the `contact_segments` table.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any, Protocol
 
 from intercom_summary.intercom.client import IntercomClient
@@ -61,6 +62,17 @@ def segment_from_attrs(attrs: dict[str, Any] | None) -> tuple[str, str]:
     return REGULAR, level
 
 
+def bo_id_from(contact: dict[str, Any]) -> tuple[str, str]:
+    """(BO player id, brand) from an Intercom contact: `cleanid`, else external_id "c<id>"."""
+    attrs = contact.get("custom_attributes") or {}
+    raw = str(attrs.get("cleanid") or "").strip()
+    if not raw.isdigit():
+        m = re.fullmatch(r"c?(\d+)", str(contact.get("external_id") or "").strip())
+        raw = m.group(1) if m else ""
+    brand = str(attrs.get("brand") or attrs.get("brandsmall") or "").strip().lower()
+    return raw, brand
+
+
 def header_line(contact: Contact) -> str:
     """The transcript header line; "unknown" tells the model a VIP-dependent rule can't be applied."""
     if not contact.segment:
@@ -72,7 +84,9 @@ def header_line(contact: Contact) -> str:
 
 class SegmentCache(Protocol):
     def get(self, contact_id: str) -> tuple[str, str] | None: ...
-    def put(self, contact_id: str, segment: str, loyalty_level: str, groups_raw: str) -> None: ...
+    def bo(self, contact_id: str) -> tuple[str, str] | None: ...
+    def put(self, contact_id: str, segment: str, loyalty_level: str, groups_raw: str,
+            bo_id: str = "", bo_brand: str = "") -> None: ...
 
 
 class ContactSegmenter:
@@ -90,6 +104,7 @@ class ContactSegmenter:
         self._cache = cache
         self._sem = asyncio.Semaphore(concurrency)
         self._seen: dict[str, tuple[str, str]] = {}
+        self._bo: dict[str, tuple[str, str]] = {}
         self._pending: dict[str, asyncio.Task] = {}
         self.lookups = 0
         self.failures = 0
@@ -103,6 +118,7 @@ class ContactSegmenter:
             hit = self._cache.get(contact_id)
             if hit is not None:
                 self._seen[contact_id] = hit
+                self._bo[contact_id] = self._cache.bo(contact_id) or ("", "")
                 return hit
         task = self._pending.get(contact_id)
         if task is None:
@@ -123,12 +139,19 @@ class ContactSegmenter:
         attrs = raw.get("custom_attributes") or {}
         result = segment_from_attrs(attrs)
         self._seen[contact_id] = result
-        if self._cache is not None and result[0]:
-            self._cache.put(contact_id, result[0], result[1], str(attrs.get("Groups") or ""))
+        self._bo[contact_id] = bo_id_from(raw)
+        if self._cache is not None:
+            self._cache.put(contact_id, result[0], result[1], str(attrs.get("Groups") or ""),
+                            *self._bo[contact_id])
         return result
+
+    def bo_of(self, contact_id: str) -> tuple[str, str]:
+        """(BO player id, brand) found by the last lookup of this contact."""
+        return self._bo.get(contact_id, ("", ""))
 
     async def annotate(self, conversation: Conversation) -> Conversation:
         segment, level = await self.lookup(conversation.contact.id)
         conversation.contact.segment = segment
         conversation.contact.loyalty_level = level
+        conversation.contact.bo_id, conversation.contact.bo_brand = self.bo_of(conversation.contact.id)
         return conversation

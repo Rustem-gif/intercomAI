@@ -83,7 +83,8 @@ def test_grader_grades_a_case_on_the_case_transcript(vip_env):
     grade = grader.grade(convo)
 
     sent = fake.calls[0]["messages"][0]["content"]
-    assert sent.startswith("=== VIP CASE vc-1 ===") and "OTHER STAFF Pay Dep" in sent
+    assert sent.startswith("=== BACK OFFICE")  # the player's BO record, then the case
+    assert "\n=== VIP CASE vc-1 ===" in sent and "OTHER STAFF Pay Dep" in sent
     assert grade.conversation_id == "vc-1" and grade.ruleset_id == "vip-v16"
     assert grade.overall_score == 96 and grade.overall_result == "PASS"
     verdicts = {r.rule_id: r.verdict for r in grade.rule_results}

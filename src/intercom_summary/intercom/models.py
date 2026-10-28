@@ -87,6 +87,10 @@ class Contact:
     # "" = not looked up. Current at fetch time, not as of the chat.
     segment: str = ""
     loyalty_level: str = ""
+    # The player's id in the casino back office (the contact's `cleanid`, or external_id
+    # "c<id>") and the brand whose BO holds them ("kingbilly"); "" = unknown.
+    bo_id: str = ""
+    bo_brand: str = ""
 
 
 @dataclass
@@ -474,6 +478,8 @@ class Conversation:
             # Absent from payloads cached before the segment lookup existed.
             segment=d["contact"].get("segment", "") if d.get("contact") else "",
             loyalty_level=d["contact"].get("loyalty_level", "") if d.get("contact") else "",
+            bo_id=d["contact"].get("bo_id", "") if d.get("contact") else "",
+            bo_brand=d["contact"].get("bo_brand", "") if d.get("contact") else "",
         )
         messages = [
             Message(

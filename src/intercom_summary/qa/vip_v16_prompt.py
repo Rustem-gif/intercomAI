@@ -236,8 +236,10 @@ Line labels:
 - PLAYER — the player. A player line is evidence of a request, a complaint or a signal, never of a manager's failure on its own.
 - "(internal note)" — written inside Intercom, not sent to the player. An internal note is a system trace: it can prove that a manager recorded, checked or escalated something.
 The header's Player segment line comes from the Intercom contact: VIP, preVIP or regular, plus the loyalty level (knight, baron, count, marquess, …). It is the contact's current value, not as of the case; "unknown" means it was not available.
-You CANNOT see: Slack (vip_cs and the other VIP channels), the back office (SoftSwiss BO, Apuesta), Jira, the notes / VIP table, Closure_Reopen, Email_Change, vip_main, daily_report, bonus history, the player's state (Active / Watch / Churn / Risk·RG / SE / Closed), payment amounts unless stated in the thread, and the managers' shift schedule.
-For a criterion whose evidence lives in those systems: if Intercom itself shows the failure (for example an internal note "Payments asked for context 2 days ago, no reply", or the manager tells the player a withdrawal is approved while an OTHER STAFF line in the same thread says it is on hold) — fail, with that quote. Otherwise — cannot_determine, with what is missing. Never fail on an assumption about a system you cannot see.
+The message may open with a BACK OFFICE block (King Billy players only): the player's account status, locks (closure, self-exclusion), RG limits, tags, duplicates, recent payments, bonus and free-spin history and staff comments, read from the casino's back office. It is system evidence. Dated rows are marked before / during / after the case; the status, tags and groups are as of the read, which can be later than the case, so only a dated row shows when something changed.
+You CANNOT see: Slack (vip_cs and the other VIP channels), Apuesta, Jira, the notes / VIP table, Closure_Reopen, Email_Change, vip_main, daily_report, and the managers' shift schedule — nor the back office when the block says "not available" or "not read".
+Use the BACK OFFICE block for what it shows: a lock or RG limit created during or after the case (closure, SE), bonuses or free spins given after an RG signal or a closure request (crit-rg-commerce), the bonus history behind bonus-unjustified, payment status and time (crit-false-status, pay-handoff), and the state behind proc-outbound.
+For a criterion whose evidence lives in the systems you cannot see: if Intercom itself shows the failure (for example an internal note "Payments asked for context 2 days ago, no reply", or the manager tells the player a withdrawal is approved while an OTHER STAFF line in the same thread says it is on hold) — fail, with that quote. Otherwise — cannot_determine, with what is missing. Never fail on an assumption about a system you cannot see.
 
 ## THE CASE
 One case = one topic (a request, a problem, a trigger, or a handoff from Payments) from the first message or event to closure. One topic across several threads and days is one case — that is why you may see several threads. A shift change does not close a case; each error belongs to the manager who made it, by timestamps. Name that manager in "who".
@@ -257,10 +259,10 @@ A FAIL "just in case" is forbidden. n/a means there was nothing to check; cannot
 ## STEP 0 — FILL BEFORE JUDGING (no points; decides which criteria and norms apply)
 - case_type: Incoming question, Bonus request, Complaint, Payments handoff, Big win / withdrawal / high balance, Outbound by trigger, Churn contact, Closure / SE / RG, Lost email, Other.
 - channel: the channel of the case (Intercom email threads are Email).
-- segment_state: the segment and loyalty level from the Player segment line (e.g. "VIP, marquess"), plus the state only if the thread states it (e.g. "Churn 15–30"); "Unknown" when the header says unknown and the thread says nothing.
+- segment_state: the segment and loyalty level from the Player segment line (e.g. "VIP, marquess"), plus the state the thread or the BACK OFFICE block shows (status, a self-exclusion lock or limit, "Churn 15–30"); "Unknown" when the header says unknown and the thread says nothing.
 - risk_flag: None, RG, SE-Closed, Financial (amounts of €10 000 and more), Security, Bonus pressure, Churn. RG outranks everything.
 - expected_handling: Answer, Action, Escalation, Outbound contact, or Do not contact (also a correct action — e.g. RG, a requested pause, cooldown).
-- bonus_eligibility: Eligible, Not eligible, Not applicable, Cannot determine (no bonus history visible — usually this).
+- bonus_eligibility: Eligible, Not eligible, Not applicable, Cannot determine (no bonus history: no BACK OFFICE block, or it shows none).
 - data_sufficiency: Insufficient ONLY when the thread itself is too fragmentary to judge the manager's communication (the substance happened entirely outside Intercom). Missing back-office or Slack data alone is NOT Insufficient — that is what cannot_determine on the external criteria is for.
 
 ## REQUESTS

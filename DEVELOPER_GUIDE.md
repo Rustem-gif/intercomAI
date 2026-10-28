@@ -972,6 +972,39 @@ Intercom **contact** carries it (synced from the back office): `custom_attribute
   of the DB (Oct 2026): 1 977 players → 1 211 regular, 442 VIP, 136 preVIP, 188 none; of 3 361
   October support chats, 1 168 VIP and 346 preVIP.
 
+### The casino back office (BO) — what the grader could not see in Intercom
+Closures, self-exclusions, RG limits, payment status, bonus history, duplicates and the VIP
+manager's tag live in the casino's back office (SoftSwiss, Rails ActiveAdmin at
+`BO_KB_URL`, King Billy only for now). Since 2026-10-28 the grader gets them as a
+**BACK OFFICE block** in front of the transcript, and the kb-v41 / vip-v16 prompts say how to use
+it (section "THE BACK OFFICE BLOCK"); without it the old cannot_determine rules apply.
+- **Login is unattended:** `backoffice/client.py` posts email + password + a TOTP code it
+  computes from `BO_KB_OTP_SECRET` (`backoffice/totp.py`), on the **server's** clock (the Mac
+  mini ran 111 s behind and every code was refused). The session lives in
+  `data/bo/session.json` (0600); a redirect to /login re-logs in once. Put the four `BO_KB_*`
+  values in `.env`; `scripts/decode_otp_migration.py` turns a Google Authenticator export into
+  the key, offline. A dedicated read-only BO user is best.
+- **Read-only by construction:** GET only (the login form is the single POST), and any path
+  naming an action (`update`, `disable`, `issue`, `edit`…) is refused before a request — the
+  player page has controls that change the player instantly.
+- **Which player:** the Intercom contact's `cleanid` (or `external_id` "c<id>"), picked up with
+  the VIP segment (`intercom/segments.py`) into `contact.bo_id` / `contact.bo_brand`;
+  `scripts/backfill_contact_segments.py` fills it for cached chats.
+- **What is read** (`backoffice/player.py`): the player page (status, locks, groups, staff
+  comments) plus its lazy panels — payments (latest 10), issued bonuses and free spins, RG limits,
+  tags, duplicates. Cells are read by their `col-<field>` class. No addresses, IPs, documents or
+  card numbers are kept.
+- **Cache + sync:** `bo_players` table (`storage/bo_players_store.py`); `backoffice/sync.py`
+  reads stale/missing players (older than `BO_MAX_AGE_HOURS`, default 6) two at a time. Every
+  grading path calls it first (`service._sync_back_office`); `BO_SYNC=off` switches it off.
+  By hand: `intercom-summary bo-sync [--since D | --sample ID | --reviewed kb-v41 | --ids …]`.
+- **The block** (`backoffice/context.py`): status now, locks and RG limits with dates, tags,
+  relevant groups, duplicates, payments from 14 days before the chat to 3 after, bonuses and free
+  spins from 30 days before to 3 after, staff comments — each dated row marked before / during /
+  after the chat (the BO shows UTC). Status, tags and groups are as of the read.
+- **Limits:** the BO lists only the latest 10 payments / bonuses, so an old chat of a very active
+  player may see none from its own window. Tests never reach the BO (`tests/conftest.py`).
+
 ### Change the Slack bot
 - `slack/handlers.py` (what happens on commands/clicks), `slack/blocks.py` (the message UI),
   `slack/auth.py` (who's allowed).
