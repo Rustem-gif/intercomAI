@@ -20,6 +20,7 @@ sends GET — the login form is the single POST — and refuses any path that na
 """
 from __future__ import annotations
 
+import email.utils
 import json
 import os
 import re
@@ -72,6 +73,14 @@ class NotAuthorized(BackOfficeError):
     """The BO answered a page with its 'not authorized' redirect — a permission, not a session."""
 
 
+def _server_skew(resp: httpx.Response) -> float:
+    """Seconds to add to the host clock to get the server's (0 when there is no Date header)."""
+    try:
+        return email.utils.parsedate_to_datetime(resp.headers["date"]).timestamp() - time.time()
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
 class BackOfficeClient:
     def __init__(self, base_url: str | None = None, email: str | None = None,
                  password: str | None = None, otp_secret: str | None = None,
@@ -122,10 +131,17 @@ class BackOfficeClient:
             token = _TOKEN.search(page.text)
             if not token:
                 raise LoginFailed(f"no login form at {self.base}/login (HTTP {page.status_code})")
-            # A code about to expire, or the one already spent, would be refused: wait it out.
-            while totp.seconds_left() < 4 or totp.code(self._secret) == self._last_code:
+            # The code is computed on the SERVER's clock (its Date header): a host clock that
+            # drifts by a minute or two — this Mac mini's was 111 s behind on 2026-10-28 — makes
+            # every code stale, and the BO only says "Invalid email, one-time-use code, or
+            # password". A code about to expire, or the one already spent, is waited out.
+            skew = _server_skew(page)
+            if abs(skew) > 20:
+                log.warning("BO: host clock is %+.0f s off the server's; using the server's", -skew)
+            now = lambda: time.time() + skew  # noqa: E731
+            while totp.seconds_left(now()) < 4 or totp.code(self._secret, now()) == self._last_code:
                 time.sleep(1)
-            self._last_code = totp.code(self._secret)
+            self._last_code = totp.code(self._secret, now())
             resp = self._http.post(
                 f"{self.base}/login",
                 headers={**_NAVIGATE, "Origin": self.origin, "Referer": f"{self.base}/login",

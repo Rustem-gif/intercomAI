@@ -145,3 +145,24 @@ def test_a_not_authorized_redirect_is_reported(tmp_path, monkeypatch):
     bo = _client(tmp_path, Denying())
     with pytest.raises(NotAuthorized):
         bo.page("/backend/players/7")
+
+
+def test_the_code_follows_the_servers_clock_not_the_hosts(tmp_path, monkeypatch):
+    """The Mac mini was 111 s behind; the BO rejected every code until the client used Date."""
+    import email.utils
+    import time as _time
+
+    class Skewed(FakeBO):
+        def __call__(self, request):
+            resp = super().__call__(request)
+            if request.method == "GET" and request.url.path == "/backend/login":
+                resp.headers["Date"] = email.utils.formatdate(_time.time() + 111, usegmt=True)
+            return resp
+
+    fake = Skewed()
+    bo = _client(tmp_path, fake)
+    monkeypatch.setattr(totp, "seconds_left", lambda at=None: 20)
+    bo.login()
+    sent = fake.posts[0]["admin_user[otp_attempt]"]
+    server_codes = {totp.code(RFC_SECRET, _time.time() + 111 + d) for d in (-2, 0, 2)}
+    assert sent in server_codes
