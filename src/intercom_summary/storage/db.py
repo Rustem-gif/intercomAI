@@ -633,6 +633,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE calibration_sample_items ADD COLUMN {col} {decl}")
     conn.commit()
 
+    # The player's VIP segment per Intercom contact (intercom/segments.py), cached so a player
+    # with many chats costs one GET /contacts a week (2026-10, QC's VIP-dependent rules).
+    conn.execute("""CREATE TABLE IF NOT EXISTS contact_segments (
+        contact_id    TEXT PRIMARY KEY,
+        segment       TEXT NOT NULL DEFAULT '',
+        loyalty_level TEXT NOT NULL DEFAULT '',
+        groups_raw    TEXT NOT NULL DEFAULT '',
+        fetched_at    TEXT NOT NULL
+    )""")
+    conn.commit()
+
     # A reviewer's Agree on a VIP case grade — the VIP counterpart of grades.human_confirmed_*.
     vip_cols = {row[1] for row in conn.execute("PRAGMA table_info(vip_grades)").fetchall()}
     for col in ("human_confirmed_by", "human_confirmed_at"):

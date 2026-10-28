@@ -83,6 +83,10 @@ class Contact:
     id: str = ""
     name: str = ""
     email: str = ""
+    # VIP | preVIP | regular, from the Intercom contact's attributes (intercom/segments.py);
+    # "" = not looked up. Current at fetch time, not as of the chat.
+    segment: str = ""
+    loyalty_level: str = ""
 
 
 @dataclass
@@ -467,6 +471,9 @@ class Conversation:
             id=d["contact"].get("id", "") if d.get("contact") else "",
             name=d["contact"].get("name", "") if d.get("contact") else "",
             email=d["contact"].get("email", "") if d.get("contact") else "",
+            # Absent from payloads cached before the segment lookup existed.
+            segment=d["contact"].get("segment", "") if d.get("contact") else "",
+            loyalty_level=d["contact"].get("loyalty_level", "") if d.get("contact") else "",
         )
         messages = [
             Message(

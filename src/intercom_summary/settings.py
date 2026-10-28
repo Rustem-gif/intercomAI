@@ -101,6 +101,13 @@ class Settings:
     qa_v41_effective_from: str = field(
         default_factory=lambda: _env("QA_V41_EFFECTIVE_FROM", "2026-10-05")
     )
+    # From this date (YYYY-MM-DD, by conversation creation date) an internal (yellow) note is
+    # mandatory for every escalation: an escalation told to the player with no note in the chat
+    # is a FAIL (sent to a QC manager), not cannot_determine. QC 2026-10-21: "most likely from
+    # 1.11" — unconfirmed, so empty (off) until QC names the date.
+    qa_escalation_note_from: str = field(
+        default_factory=lambda: _env("QA_ESCALATION_NOTE_FROM", "")
+    )
 
     # A second look at every grade heading for FAIL (qa/fail_verifier.py): the same model
     # checks each failed criterion against the manual and overturns the unproven ones.

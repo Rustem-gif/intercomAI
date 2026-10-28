@@ -94,7 +94,7 @@ def test_fetch_and_store_reports_blacklisted_skips(temp_db, monkeypatch):
     ts.move_to_trash(["2"], "boss")          # blacklisted → must not come back
     ts.close()
 
-    async def fake_fetch(*, agents, since, until, state, limit, on_conversation, stats):
+    async def fake_fetch(*, agents, since, until, state, limit, on_conversation, stats, segment_cache=None):
         stats["matched"] = len(convos)
         stats["tickets_skipped"] = 0
         for i, c in enumerate(convos, start=1):

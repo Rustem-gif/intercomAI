@@ -117,6 +117,10 @@ class IntercomClient:
             "GET", f"/conversations/{conversation_id}", params={"display_as": "plaintext"}
         )
 
+    async def get_contact(self, contact_id: str) -> dict[str, Any]:
+        """A contact with its custom attributes — the player's VIP segment lives there."""
+        return await self._request("GET", f"/contacts/{contact_id}")
+
     async def _search(
         self, path: str, key: str, query: dict[str, Any], per_page: int
     ) -> AsyncIterator[dict[str, Any]]:

@@ -318,6 +318,21 @@ part of the cutover. The rule lives in `_in_effect()` / `PREVIOUS_RULESET` in `q
 every resolver call passes the chat's `created_at`.
 - To move the cutover: change `QA_V41_EFFECTIVE_FROM` and `./restart.sh`. Moving it *earlier* makes
   the chats in between pending under `kb-v41`, so the next review grades them (≈ $0.02 each).
+- **QC's answers to the contradictions (21 Oct 2026)** are in the prompt and in
+  `docs/qa-contradictions.md` (each point has its answer and the rule it became): closure
+  requests by reason and segment, VIP manager requests, the GDPR carve-out (bet / transaction
+  history → email is a pass), duplicate-account bonus refusals (cannot_determine — BO only),
+  "NEVER coming back" is churn, the check-in after a resolved issue (comm-etiquette, not a
+  Major), scam chats → manual review. Several of them read the **Player segment** header line
+  (see "The player's VIP segment" below).
+- **Forced manual review on FAIL:** `MANUAL_REVIEW_ON_FAIL` in `qa/gated_rules.py` — churn,
+  action-escalation-missed and financial-case-abandoned (QC: "better an extra FAIL to check than
+  a missed escalation"); the reason text per criterion is `REVIEW_REASON`.
+- **The mandatory yellow note, by date:** `QA_ESCALATION_NOTE_FROM` (`.env`, `YYYY-MM-DD`, empty
+  = off). From that chat date, an escalation told to the player with no internal note is a FAIL
+  (and goes to manual review) instead of cannot_determine — `escalation_note_mandatory()` in
+  `qa/gated_rules.py`. QC said "most likely from 1.11"; set it once QC confirms, then
+  `./restart.sh`. Older chats are untouched either way.
 - **Forcing a run onto one ruleset** still overrides all of this, for pilots and calibration:
   `POST /api/review {"ruleset_id": "kb-v41", "sample": "kb-v41-180"}`. Grades are stored under the
   ruleset that produced them, so a pilot cannot disturb anything graded by another ruleset.
@@ -479,6 +494,15 @@ several threads; the biggest is 20 — serial bonus requesters chain for two wee
   QA's verdicts on the sample go in with `--labels` (same script); the Calibration tab then shows
   PASS/FAIL agreement per run. No VIP verdicts exist yet (Oct 2026): until they do, the VIP rules
   are the scorecard as written, unmeasured against QA.
+- **The §14 sample** (`vip-v16-s14-v1`): `python scripts/build_vip_s14_sample.py --dry-run`, then
+  without `--dry-run`. Cases started 1–15 Oct; complex = topic (Complaint, Withdrawal, Deposit,
+  RG) or text heuristics (closure / SE, lost email, 10 000+, vip_cs / Payments, refusal met with
+  anger) or an Exception-Report "unanswered"; complex capped at 100, plus as many routine; under
+  150 the period is extended up to the last collected day, and a shortfall is written into the
+  sample's `source`. One member per case (its first thread). Free, no LLM. On the 1–14 Oct data
+  it finds 73 complex + 73 routine = 146 — collect 15–16 Oct (`vip-collect`) to pass 150.
+- **The case package** for Head of VIP to sign (§14: "согласовать состав пакета кейса") is
+  `docs/vip-case-package.md`: per criterion, what the AI receives and what stays CANNOT DETERMINE.
 
 ### AI ↔ QA agreement (the client's ≥ 95% PASS/FAIL bar)
 The client's requirement: the AI's PASS/FAIL agrees with QA's on at least 95% of chats.
@@ -926,6 +950,27 @@ time — two brands are two products, so blending their QA scores describes neit
   `storage/grades_store.py` (`grades` has no brand of its own — the conversation is the
   source of truth). Keep it additive: with no brand selected the SQL must stay exactly as it
   was, which is what keeps existing numbers stable.
+
+### The player's VIP segment (VIP / preVIP / regular)
+QC's rules for closures and manager requests depend on whether the player is VIP or preVIP. The
+Intercom **contact** carries it (synced from the back office): `custom_attributes.Groups`
+(`regular_vip`, `vip_except_ba` → VIP; `previp` → preVIP; else regular), `Profitable`
+(`regular_vip`) and `Status` (loyalty level, `new_marquess` → "marquess").
+- `intercom/segments.py` — `segment_from_attrs()`, `header_line()`, `ContactSegmenter` (one
+  `GET /contacts/{id}` per player per run; a failure leaves the segment empty, never fails a fetch).
+- Cached in the `contact_segments` table (`storage/contact_segments_store.py`, 7-day TTL) and
+  written into the payload as `contact.segment` / `contact.loyalty_level`. `ConversationsStore.save`
+  keeps a known segment when a re-fetch's lookup failed.
+- Filled by every Intercom read: `fetch_and_store`, the calibration fetch and `vip.collect`.
+- The grader sees it as `Player segment: VIP (loyalty level: marquess) — Intercom contact
+  attributes, current, not as of the chat` (`qa/prompt.py`, `qa/vip_transcript.py`); "unknown"
+  when there is none, and the prompt then answers a segment-dependent verdict cannot_determine.
+- It is the contact's **current** value, not as of the chat.
+- **Backfilling old rows:** `scripts/backfill_contact_segments.py --dry-run [--since 2026-10-01]`,
+  then without `--dry-run`. It writes only `payload_json` via `json_set` (never `save()`), never
+  touches `grades` — nothing is re-graded; only chats graded afterwards see the line. On a copy
+  of the DB (Oct 2026): 1 977 players → 1 211 regular, 442 VIP, 136 preVIP, 188 none; of 3 361
+  October support chats, 1 168 VIP and 346 preVIP.
 
 ### Change the Slack bot
 - `slack/handlers.py` (what happens on commands/clicks), `slack/blocks.py` (the message UI),

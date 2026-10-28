@@ -135,6 +135,16 @@ class ConversationsStore:
         # never disagrees with the column the filters use.
         payload = convo.to_dict()
         payload["brand"] = brand
+        # Same for the player's VIP segment: a re-fetch whose contact lookup failed keeps the
+        # segment last recorded for that player (intercom/segments.py).
+        if not convo.contact.segment and convo.contact.id:
+            known = self._conn.execute(
+                "SELECT segment, loyalty_level FROM contact_segments WHERE contact_id=?",
+                (convo.contact.id,),
+            ).fetchone()
+            if known and known["segment"]:
+                payload["contact"]["segment"] = known["segment"]
+                payload["contact"]["loyalty_level"] = known["loyalty_level"]
 
         # This is INSERT OR REPLACE — the row is deleted and re-inserted — so `fetched_at`
         # means LAST seen, not first. Re-fetching a period restamps everything in it, which is

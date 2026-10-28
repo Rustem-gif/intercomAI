@@ -10,6 +10,7 @@ import json
 import re
 
 from intercom_summary.intercom.models import Conversation, fmt_duration
+from intercom_summary.intercom.segments import header_line as segment_header_line
 from intercom_summary.settings import settings
 
 SYSTEM_INSTRUCTIONS = """You are a meticulous, fair customer-support QA reviewer.
@@ -170,6 +171,7 @@ def transcript_block(conversation: Conversation) -> str:
         f"Conversation ID: {conversation.id}\n"
         f"Assigned agent: {conversation.assignee_name or 'unknown'}\n"
         f"Customer name: {customer_name}\n"
+        f"{segment_header_line(conversation.contact)}\n"
         f"Subject: {conversation.subject}\n"
         f"State: {conversation.state}\n"
         f"{_closed_by_line(conversation)}\n"

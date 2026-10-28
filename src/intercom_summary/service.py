@@ -58,7 +58,10 @@ async def fetch_and_store(
     `on_progress(fetched, total)` is called after each conversation is saved,
     enabling incremental DB writes and progress reporting.
     """
+    from intercom_summary.storage.contact_segments_store import ContactSegmentsStore
+
     store = ConversationsStore()
+    segments = ContactSegmentsStore()
     batch: list = []
     BATCH_SIZE = 5
     saved = 0
@@ -79,13 +82,14 @@ async def fetch_and_store(
     try:
         convos = await fetch_conversations_for_agents(
             agents=agents, since=since, until=until, state=state, limit=limit,
-            on_conversation=_on_conversation, stats=fetch_stats,
+            on_conversation=_on_conversation, stats=fetch_stats, segment_cache=segments,
         )
         # Flush any stragglers (e.g. when total < BATCH_SIZE).
         if batch:
             _flush()
     finally:
         store.close()
+        segments.close()
 
     # Blacklisted conversations are dropped by the store. Without this count a fetch that
     # imported nothing still reports a healthy "fetched" total and looks like it succeeded.
@@ -648,11 +652,15 @@ async def _fetch_from_intercom(ids: list[str], concurrency: int = 8) -> dict[str
 
     from intercom_summary.intercom.client import IntercomClient, IntercomError
     from intercom_summary.intercom.models import Admin
+    from intercom_summary.intercom.segments import ContactSegmenter
+    from intercom_summary.storage.contact_segments_store import ContactSegmentsStore
 
     out: dict[str, Any] = {}
     if not ids:
         return out
     client = IntercomClient()
+    segments = ContactSegmentsStore()
+    segmenter = ContactSegmenter(client, cache=segments, concurrency=concurrency)
     try:
         known_admins = {
             str(a["id"]): Admin(id=str(a["id"]), name=a.get("name", ""), email=a.get("email", ""))
@@ -670,11 +678,13 @@ async def _fetch_from_intercom(ids: list[str], concurrency: int = 8) -> dict[str
                 except Exception as exc:  # network trouble on one chat must not sink the run
                     out[cid] = f"error: {exc}"
                     return
-            out[cid] = normalise_conversation(raw, known_admins=known_admins)
+            out[cid] = await segmenter.annotate(
+                normalise_conversation(raw, known_admins=known_admins))
 
         await asyncio.gather(*[one(c) for c in ids])
     finally:
         await client.aclose()
+        segments.close()
     return out
 
 

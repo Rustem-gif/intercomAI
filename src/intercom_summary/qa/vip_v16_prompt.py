@@ -235,7 +235,8 @@ Line labels:
 - OTHER STAFF <name> — another department writing in the thread (Payments, support, Head of CS...). Never graded; their delays and words are never a VIP manager's failure.
 - PLAYER — the player. A player line is evidence of a request, a complaint or a signal, never of a manager's failure on its own.
 - "(internal note)" — written inside Intercom, not sent to the player. An internal note is a system trace: it can prove that a manager recorded, checked or escalated something.
-You CANNOT see: Slack (vip_cs and the other VIP channels), the back office (SoftSwiss BO, Apuesta), Jira, the notes / VIP table, Closure_Reopen, Email_Change, vip_main, daily_report, bonus history, the player's segment and state, payment amounts unless stated in the thread, and the managers' shift schedule.
+The header's Player segment line comes from the Intercom contact: VIP, preVIP or regular, plus the loyalty level (knight, baron, count, marquess, …). It is the contact's current value, not as of the case; "unknown" means it was not available.
+You CANNOT see: Slack (vip_cs and the other VIP channels), the back office (SoftSwiss BO, Apuesta), Jira, the notes / VIP table, Closure_Reopen, Email_Change, vip_main, daily_report, bonus history, the player's state (Active / Watch / Churn / Risk·RG / SE / Closed), payment amounts unless stated in the thread, and the managers' shift schedule.
 For a criterion whose evidence lives in those systems: if Intercom itself shows the failure (for example an internal note "Payments asked for context 2 days ago, no reply", or the manager tells the player a withdrawal is approved while an OTHER STAFF line in the same thread says it is on hold) — fail, with that quote. Otherwise — cannot_determine, with what is missing. Never fail on an assumption about a system you cannot see.
 
 ## THE CASE
@@ -256,7 +257,7 @@ A FAIL "just in case" is forbidden. n/a means there was nothing to check; cannot
 ## STEP 0 — FILL BEFORE JUDGING (no points; decides which criteria and norms apply)
 - case_type: Incoming question, Bonus request, Complaint, Payments handoff, Big win / withdrawal / high balance, Outbound by trigger, Churn contact, Closure / SE / RG, Lost email, Other.
 - channel: the channel of the case (Intercom email threads are Email).
-- segment_state: only if the thread states it (e.g. "Gold, Churn 15–30"); otherwise "Unknown".
+- segment_state: the segment and loyalty level from the Player segment line (e.g. "VIP, marquess"), plus the state only if the thread states it (e.g. "Churn 15–30"); "Unknown" when the header says unknown and the thread says nothing.
 - risk_flag: None, RG, SE-Closed, Financial (amounts of €10 000 and more), Security, Bonus pressure, Churn. RG outranks everything.
 - expected_handling: Answer, Action, Escalation, Outbound contact, or Do not contact (also a correct action — e.g. RG, a requested pause, cooldown).
 - bonus_eligibility: Eligible, Not eligible, Not applicable, Cannot determine (no bonus history visible — usually this).
