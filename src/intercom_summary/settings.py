@@ -245,6 +245,14 @@ class Settings:
     rulesets_path: Path = field(default_factory=lambda: Path(_env("RULESETS_PATH", "./config/rulesets.yaml")))
     vip_staff_path: Path = field(default_factory=lambda: Path(_env("VIP_STAFF_PATH", "./config/vip_staff.yaml")))
     eval_dir: Path = field(default_factory=lambda: Path(_env("EVAL_DIR", "./data/eval")))
+    # The King Billy back office (SoftSwiss, Rails ActiveAdmin) — backoffice/client.py. The
+    # client logs in by itself: email + password + a TOTP code it computes from the 2FA key.
+    bo_kb_url: str = field(default_factory=lambda: _env(
+        "BO_KB_URL", "https://kingbilly.casino-backend.com/backend").rstrip("/"))
+    bo_kb_email: str = field(default_factory=lambda: _env("BO_KB_EMAIL"))
+    bo_kb_password: str = field(default_factory=lambda: _env("BO_KB_PASSWORD"))
+    bo_kb_otp_secret: str = field(default_factory=lambda: _env("BO_KB_OTP_SECRET"))
+    bo_dir: Path = field(default_factory=lambda: Path(_env("BO_DIR", "./data/bo")))
 
     @property
     def intercom_base_url(self) -> str:
