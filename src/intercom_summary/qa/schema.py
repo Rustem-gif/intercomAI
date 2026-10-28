@@ -507,7 +507,10 @@ class ConversationGrade:
                 grade.manual_review_needed = True
                 reason = reason or f'Narrative contradicts the {grade.overall_result}: "{conflict}"'
             if not reason and must_review:
-                reason = "Churn signal ignored — confirm"
+                from intercom_summary.qa.gated_rules import REVIEW_REASON
+
+                reason = "; ".join(REVIEW_REASON.get(c, f"{c} failed — confirm")
+                                   for c in must_review)
             if not reason and undetermined:
                 reason = "Cannot determine: " + ", ".join(sorted(undetermined))
             grade.manual_review_reason = reason

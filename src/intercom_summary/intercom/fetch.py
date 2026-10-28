@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator
 
 from intercom_summary.intercom.client import IntercomClient
 from intercom_summary.intercom.htmltext import html_to_text
@@ -14,6 +14,9 @@ from intercom_summary.intercom.models import (
     ts_to_dt,
 )
 from intercom_summary.logging_setup import get_logger
+
+if TYPE_CHECKING:
+    from intercom_summary.intercom.segments import SegmentCache
 
 log = get_logger(__name__)
 
@@ -296,6 +299,7 @@ async def fetch_conversations_for_agents(
     concurrency: int = 10,
     on_conversation: Callable[[Conversation, int, int], None] | None = None,
     stats: dict[str, int] | None = None,
+    segment_cache: "SegmentCache | None" = None,
 ) -> list[Conversation]:
     """End-to-end: resolve agents, search, fetch full threads, normalise.
 
@@ -312,8 +316,12 @@ async def fetch_conversations_for_agents(
     callers can report the gap between what Intercom holds and what we imported instead of
     leaving it looking like a short fetch. Emails are excluded by the search query itself, so
     that count comes from a separate request rather than from the loop.
+    Each chat's player gets their VIP segment (intercom/segments.py), one GET /contacts per
+    player, remembered in `segment_cache` when given.
     """
     import asyncio
+
+    from intercom_summary.intercom.segments import ContactSegmenter
 
     own = client is None
     client = client or IntercomClient()
@@ -382,11 +390,12 @@ async def fetch_conversations_for_agents(
 
         conversations: list[Conversation] = []
         sem = asyncio.Semaphore(concurrency)
+        segmenter = ContactSegmenter(client, cache=segment_cache, concurrency=concurrency)
 
         async def fetch_one(stub: dict) -> Conversation:
             async with sem:
                 full = await client.get_conversation(str(stub["id"]))
-            conv = normalise_conversation(full, known_admins=admins)
+            conv = await segmenter.annotate(normalise_conversation(full, known_admins=admins))
             # No await after sem exit, so this block is atomic from asyncio's perspective.
             conversations.append(conv)
             if on_conversation:
@@ -395,7 +404,8 @@ async def fetch_conversations_for_agents(
 
         await asyncio.gather(*[fetch_one(s) for s in stubs])
 
-        log.info("Fetched %d chat(s).", len(conversations))
+        log.info("Fetched %d chat(s); %d player segment lookup(s), %d failed.",
+                 len(conversations), segmenter.lookups, segmenter.failures)
         return conversations
     finally:
         if own:

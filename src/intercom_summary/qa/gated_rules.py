@@ -20,6 +20,7 @@ description of what is missing) and the guard would otherwise mistake it for mis
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from intercom_summary.intercom.models import Conversation
@@ -38,7 +39,35 @@ SOURCED_PASS_CRITERIA: frozenset[str] = frozenset({"action-escalation-missed"})
 # QA (2026-10-08): a churn signal the agent did not react to is exactly the case they want to see
 # by hand. Since 2026-10-09 a churn signal is only an explicit "I'm leaving / close my account /
 # I play elsewhere" — dissatisfaction alone no longer counts (see the prompt's CHURN VERSUS RG).
-MANUAL_REVIEW_ON_FAIL: frozenset[str] = frozenset({"churn-rg-signal-ignored"})
+# QC (2026-10-21): an escalation FAIL — a closure not passed on, a withdrawal not sent to Finance,
+# a VIP's manager request — is also checked by hand: "better an extra FAIL to check than a
+# missed escalation", and the Slack trail that settles it is visible to QC only.
+MANUAL_REVIEW_ON_FAIL: frozenset[str] = frozenset(
+    {"churn-rg-signal-ignored", "action-escalation-missed", "financial-case-abandoned"})
+
+# Why each forced review is raised, for the reason shown to the QC manager.
+REVIEW_REASON: dict[str, str] = {
+    "churn-rg-signal-ignored": "Churn signal ignored — confirm",
+    "action-escalation-missed": "Escalation missed — confirm in Slack / the back office",
+    "financial-case-abandoned": "Money case not handled — confirm",
+}
+
+
+def escalation_note_mandatory(conversation: Conversation) -> bool:
+    """True when the chat falls under the mandatory-yellow-note rule (QA_ESCALATION_NOTE_FROM)."""
+    from intercom_summary.settings import settings
+
+    start = (settings.qa_escalation_note_from or "").strip()
+    if not start or conversation.created_at is None:
+        return False
+    try:
+        cutover = datetime.fromisoformat(start).date()
+    except ValueError:
+        return False
+    created = conversation.created_at
+    if created.tzinfo is not None:
+        created = created.astimezone(timezone.utc)
+    return created.date() >= cutover
 
 # The narrative (`what_happened`) and the verdict are made separately — the verdict from the
 # criteria, the narrative from the model's prose — and QA has seen them part ways: "no mistakes
@@ -234,7 +263,13 @@ def derive_after_guards(conversation: Conversation, data: dict[str, Any],
             "pass", "n/a", None):
         claimed = _agent_claimed_escalation(data)
         required = _escalation_required(data)
-        if claimed or (required and outcome == "Pending-legitimate"):
+        if (claimed or (required and outcome == "Pending-legitimate")) and \
+                escalation_note_mandatory(conversation):
+            change("action-escalation-missed", "fail",
+                   "Escalation only stated to the player; the mandatory internal note is "
+                   "missing",
+                   "escalation claimed with no internal note, after the note became mandatory")
+        elif claimed or (required and outcome == "Pending-legitimate"):
             change("action-escalation-missed", "cannot_determine",
                    "Escalation only stated to the player; no internal note",
                    "escalation claimed with no internal note in the chat")

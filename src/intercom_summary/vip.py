@@ -227,11 +227,14 @@ async def collect(since: str, until: str, reclassify: bool = False) -> dict:
     team or to a VIP manager, filter, store."""
     from anthropic import AsyncAnthropic
 
+    from intercom_summary.intercom.segments import ContactSegmenter
+    from intercom_summary.storage.contact_segments_store import ContactSegmentsStore
     from intercom_summary.storage.vip_store import VipStore
 
     lo, hi = _window(since, until)
 
     store = VipStore()
+    segments = ContactSegmentsStore()
     known = {} if reclassify else store.classified()
     meter = UsageMeter()
     stats = {"matched": 0, "tickets": 0, "fetched": 0, "kept": 0, "excluded_rule": {},
@@ -257,12 +260,15 @@ async def collect(since: str, until: str, reclassify: bool = False) -> dict:
             log.info("VIP: %d thread(s) in %s..%s, fetching full threads…", len(stubs), since, until)
 
             sem = asyncio.Semaphore(10)
+            # The player's VIP segment and loyalty level, for the case header (Step 0 segment).
+            segmenter = ContactSegmenter(ic, cache=segments)
 
             async def fetch(stub: dict):
                 async with sem:
                     raw = await ic.get_conversation(str(stub["id"]))
                 delivered = (raw.get("source") or {}).get("delivered_as") or ""
-                return normalise_conversation(raw, known_admins=admins), delivered
+                convo = await segmenter.annotate(normalise_conversation(raw, known_admins=admins))
+                return convo, delivered
 
             threads = await asyncio.gather(*[fetch(s) for s in stubs])
         stats["fetched"] = len(threads)
@@ -293,5 +299,6 @@ async def collect(since: str, until: str, reclassify: bool = False) -> dict:
         await asyncio.gather(*[decide(cv, d) for cv, d in threads])
     finally:
         store.close()
+        segments.close()
     stats["cost_usd"] = round(meter.cost, 4)
     return stats

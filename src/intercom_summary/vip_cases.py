@@ -260,6 +260,8 @@ def case_conversation(case: Case, staff: set[str] | None = None) -> CaseConversa
     if assignee is None and case.primary_manager:
         assignee = Admin(id="", name=case.primary_manager)
     last = convos[-1]
+    # The player's VIP segment from the newest thread that has one (intercom/segments.py).
+    segmented = next((c.contact for c in reversed(convos) if c.contact.segment), None)
     return CaseConversation(
         id=case.case_id,
         created_at=convos[0].created_at,
@@ -268,7 +270,9 @@ def case_conversation(case: Case, staff: set[str] | None = None) -> CaseConversa
         channel="email",
         subject=convos[0].subject,
         assignee=assignee,
-        contact=Contact(id=case.contact_id, name=case.contact_name, email=case.contact_email),
+        contact=Contact(id=case.contact_id, name=case.contact_name, email=case.contact_email,
+                        segment=segmented.segment if segmented else "",
+                        loyalty_level=segmented.loyalty_level if segmented else ""),
         messages=messages,
         tags=sorted({tag for c in convos for tag in c.tags}),
         brand=case.brand,

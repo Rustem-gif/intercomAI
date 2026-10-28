@@ -1,5 +1,8 @@
 # Where QA's own verdicts disagree — questions for QA
 
+QC answered every point on 21 Oct 2026 (QA-contradictions-answers.docx); each answer and the
+rule it became follows its point.
+
 The AI can only be as consistent as the answer key. These are the cases where QA failed one
 chat and passed another of the same kind, or passed a chat that the escalation list QA gave us
 says should fail. Each row needs one decision from QA; the AI then follows it. Chat ids are
@@ -20,6 +23,21 @@ previous ruleset (Jul–Oct), and the 8 Oct calibration feedback.
 self-exclusion request a Gate 2A failure (action-escalation-missed), or is a handover to the
 VIP manager / a plain closure enough?
 
+**QC answer (21 Oct):** it depends on the segment and the reason (Account closure and reopening
+guidelines). A regular player with a non-RG reason: ask the reason, RG limits or an eligible bonus
+may be offered; if they insist → Disable + tag "closed per player's request". "Permanently /
+forever / for life / for good" → Disable + SE forever, no bonuses. Signs of addiction → no
+questions, no bonuses: Disable + SE forever + "closed due to PG", the "addiction" template and the
+RG links. VIP / preVIP with a non-RG reason → do not close; "specify closure transfer to vip",
+pass to the VIP department and tell the player; with signs of addiction → close at once. All five
+QA scores stand (189196770 and 192205083 are preVIP, 199807690 and 184842420 regular).
+QC also said "the AI cannot see whether the player is VIP / preVIP" — it can: the Intercom contact's
+`Groups` (see DEVELOPER_GUIDE, "The player's VIP segment"); it matched QC on 7 of 7 chats.
+
+**Rule now:** the closure branches are in the prompt (WHERE QA PRACTICE DOES NOT APPLY), driven by
+the new `Player segment` header line; not telling the player which limits were set is
+action-escalation-missed; a closure the transcript does not show done stays cannot_determine.
+
 ## 2. An escalation told to the player, with no internal note
 
 | QA failed | QA passed |
@@ -30,6 +48,14 @@ VIP manager / a plain closure enough?
 **Now:** `cannot_determine` → manual review (the AI cannot see Slack or the back office).
 QA's planned mandatory escalation note in the chat settles this: with the note, pass; without
 it, fail.
+
+**QC answer (21 Oct):** the mandatory yellow note is not in force yet ("most likely from 1.11").
+Until then a promised escalation with no note → manual review; QC checks Slack. After it: note →
+PASS, no note → FAIL with manual review.
+
+**Rule now:** unchanged until the date (cannot_determine → manual review). From
+`QA_ESCALATION_NOTE_FROM` (empty = off until QC confirms) it is a FAIL and goes to manual review
+(`escalation_note_mandatory()` in `qa/gated_rules.py`).
 
 ## 3. Withdrawal pending / rejected / status unclear → Finance (escalation case 3 on QA's list)
 
@@ -43,12 +69,23 @@ QA passed all three, although none was passed to Finance:
 email channel, a known outage, an explanation of the rejection reason? Case 3 needs that
 carve-out in writing, or the AI keeps failing chats QA passes.
 
+**QC answer (21 Oct):** every withdrawal case is individual — better a FAIL and a manual re-score.
+
+**Rule now:** case 3 stays a FAIL, and a FAIL on action-escalation-missed or
+financial-case-abandoned always goes to manual review (`MANUAL_REVIEW_ON_FAIL`).
+
 ## 4. A game error with money at stake → Tech (case 8), or a complaint the KB cannot settle → supervisor (case 9)
 
 - `215561201129424` — a win credited short, the player: "how can a person prove that they got scammed"; the agent denied the problem and pointed to email. QA: *all good!* (100).
 
 **Decision needed:** does case 8/9 apply to a disputed win the agent cannot see, or is a denial
 plus the email route correct handling?
+
+**QC answer (21 Oct):** 215561201129424 is right (100): the player wanted their bet data — a GDPR
+request, handled only by email, so the email redirect is correct.
+
+**Rule now:** a request for bet / transaction history or other personal data is a GDPR request;
+sending the player to email is a pass, not a missed escalation (prompt, after case 9).
 
 ## 5. A demand for a manager after a refusal by the terms (case 1)
 
@@ -59,6 +96,16 @@ plus the email route correct handling?
 **Decision needed:** does a demand for a manager that follows a correct refusal by the terms
 still have to be passed on? Case 1 as written says yes.
 
+**QC answer (21 Oct):** both scores are right. 215561080455543 is a VIP who asked for a VIP manager —
+always passed to the VIP department. 215561190474521 is a regular player refused correctly (crypto
+dust below the minimum) — management cannot help; for a complaint, the agent gives
+support@kingbillycasino.com.
+
+**Rule now:** case 1 is split by segment: a VIP / personal manager request → the VIP department; a
+VIP / preVIP demanding management → the VIP department; a regular player demanding management
+after a correct refusal by the terms is not an escalation case (support@ is good practice). Segment
+unknown → cannot_determine.
+
 ## 6. The duplicate-account rule as the answer to a bonus question
 
 | QA failed | QA passed |
@@ -67,6 +114,14 @@ still have to be passed on? Case 1 as written says yes.
 
 **Decision needed:** is "you have a duplicate account" a complete answer to a bonus question?
 (Internal bonus policy may decide this; the AI cannot see it.)
+
+**QC answer (21 Oct):** a refusal over a duplicate account is correct, unless the duplicate is closed
+and the player never claimed that bonus and meets its terms. 192220655 (75): the duplicate was
+closed, the free spins could be granted. 188755910 (100): the duplicate line was a warning in a
+verification chat. Both facts are visible only in the back office.
+
+**Rule now:** a bonus refused over a duplicate account → accuracy-material cannot_determine (manual
+review) unless the transcript settles both facts; a warning given in passing is not a refusal.
 
 ## 7. A question skipped while the main request was handled, player went silent
 
@@ -79,6 +134,11 @@ still have to be passed on? Case 1 as written says yes.
 question in the player's last messages is resp-no-ghost. **Decision needed:** confirm that line,
 or say when an ignored question is a Gate 2A failure.
 
+**QC answer (21 Oct):** the v4.1 definitions stand — resp-no-ghost for an unresolved material
+request, info-completeness (−5) for a skipped secondary part. When the AI cannot tell, manual review.
+
+**Rule now:** unchanged (it was already the prompt's line).
+
 ## 8. Churn: what counts as "leaving"
 
 - `215561187062279` — "I am NEVER coming back to this site" inside a complaint about a delay; QA: churn n/a, *tone is very dry* (91).
@@ -88,6 +148,13 @@ The 9 Oct definition QA agreed to counts "I'm leaving / close my account / I'll 
 as a churn signal that must get a reaction (Gate 2A). **Decision needed:** keep that, or
 narrow it to a request to close the account / a stated move to another casino.
 
+**QC answer (21 Oct):** keep the 9 Oct definition, do not narrow it. Any statement that the player
+is leaving, will not play again or wants to close the account is churn — "I am NEVER coming back"
+inside a complaint included. No or doubtful reaction → FAIL and manual review. A closure request
+follows point 1 first; with signs of addiction retention is forbidden.
+
+**Rule now:** the example is in CHURN VERSUS RG; the churn FAIL already forced manual review.
+
 ## 9. The inactivity close without a check-in
 
 - `215561197712175` — the agent asked a question and closed 3m46s later with no check-in; QA: *no clarifying question before closing* (75, FAIL).
@@ -95,6 +162,13 @@ narrow it to a request to close the account / a stated move to another casino.
 
 **Decision needed:** is closing without a check-in a Gate 2A failure (res-no-fake-close) or a
 small deduction?
+
+**QC answer (21 Oct):** first decide whether the agent finished the work on the issue. Closed with the
+work unfinished → res-no-fake-close FAIL (197712175 is right). Resolved but no "anything else?" /
+"are we still connected?" → a small deduction, not a Major.
+
+**Rule now:** the prompt decides the issue state first; the missing check-in after a resolved issue
+is comm-etiquette (−2).
 
 ## 10. Small deductions applied unevenly (history, old ruleset)
 
@@ -106,6 +180,13 @@ The AI applies fixed deductions (resp-sla −5, tag-chat −3, ownership-effort 
 disagree with whichever side QA takes case by case. Not a Gate 2A matter; it moves scores, not
 PASS/FAIL, unless the chat is near 85.
 
+**QC answer (21 Oct):** the old practice no longer counts. Under the scorecard, missed SLA (−5) and a
+missing tag (−3) are always deducted. Telling a VIP to write to their VIP manager instead of
+escalating → ownership-effort; 215561173517204 (84) is right.
+
+**Rule now:** SLA and tag were already fixed deductions; ownership-effort now names "write to your
+VIP manager" for a VIP / preVIP player.
+
 ## 11. Leniency the AI cannot know about (not a contradiction, but a rule only QA can apply)
 
 - The 15 Oct scam-deposit shift: `215561197770412`, `215561197771902`, `215561197772272`, `215561197772525`, `215561197773452` — all passed "considering the amount of similar scam chats during this shift".
@@ -114,3 +195,9 @@ PASS/FAIL, unless the chat is near 85.
 
 **Proposal:** mark shift incidents (date, shift, reason) somewhere the pipeline can read — a tag
 on the chats, or a list — and exclude those chats from the agreement measurement.
+
+**QC answer (21 Oct):** no incident register. Scam chats go to QC (re-score, or better removed from
+grading by hand). A power outage with an agent note → manual review, QC may not deduct.
+
+**Rule now:** a chat that looks like part of a scam wave → manual_review_needed, reason "possible
+scam chat — QC decides"; the outage note → manual review already worked.

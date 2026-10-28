@@ -22,6 +22,7 @@ from datetime import datetime
 
 from intercom_summary import vip_staff
 from intercom_summary.intercom.models import Message, fmt_duration
+from intercom_summary.intercom.segments import header_line as segment_header_line
 from intercom_summary.qa.grading_common import trim_transcript
 
 # A case can hold a dozen threads; the chat limit (15k) would cut most of a long one away.
@@ -122,6 +123,7 @@ def case_block(case) -> str:
         f"=== VIP CASE {case.case_id} ===",
         f"Brand: {case.brand or 'unknown'}",
         f"Player: {player}" + (f" <{case.contact.email}>" if case.contact.email else ""),
+        segment_header_line(case.contact),
         "Channel: email",
         f"Topic (pre-label, may be wrong): {case.topic or 'unknown'}",
         f"Primary VIP manager: {case.assignee_name or 'none'}",
