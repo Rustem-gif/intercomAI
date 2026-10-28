@@ -65,6 +65,20 @@ _MAX_TOKENS = 16_000
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
+
+def back_office_block(conversation: Conversation) -> str:
+    """The BACK OFFICE header block for the chat's (or case's) player, from the bo_players cache."""
+    from intercom_summary.backoffice.context import block
+
+    times = [m.created_at for m in conversation.messages if m.created_at]
+    start = conversation.created_at or (min(times) if times else None)
+    end = max(times) if times else conversation.updated_at
+    try:
+        return block(conversation.contact, start, end)
+    except Exception as exc:  # noqa: BLE001 — a cache problem must never stop a grade
+        log.warning("BO block for %s: %s", conversation.id, exc)
+        return "=== BACK OFFICE: not available for this player ==="
+
 class Grader:
     def __init__(
         self,
@@ -179,11 +193,14 @@ class Grader:
         return self._ruleset.version
 
     def messages_for(self, conversation: Conversation) -> list[dict]:
+        # The player's back-office record (backoffice/context.py), in front of the transcript
+        # like the history context: inside the uncached user turn, never trimmed away.
+        bo = back_office_block(conversation)
         if self._ruleset.transcript == TRANSCRIPT_VIP_CASE:
             from intercom_summary.qa.vip_transcript import case_block
 
-            return [{"role": "user", "content": case_block(conversation)}]
-        text = trim_transcript(transcript_block(conversation))
+            return [{"role": "user", "content": f"{bo}\n\n{case_block(conversation)}"}]
+        text = f"{bo}\n\n{trim_transcript(transcript_block(conversation))}"
         ctx = self.history_for(conversation)
         if ctx is not None and ctx.mode == "on" and ctx.text:
             # In front of the transcript, inside the (uncached) user turn: the cached system

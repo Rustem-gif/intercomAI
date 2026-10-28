@@ -642,6 +642,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         groups_raw    TEXT NOT NULL DEFAULT '',
         fetched_at    TEXT NOT NULL
     )""")
+    seg_cols = {row[1] for row in conn.execute("PRAGMA table_info(contact_segments)").fetchall()}
+    for col, decl in (("bo_id", "TEXT NOT NULL DEFAULT ''"), ("bo_brand", "TEXT NOT NULL DEFAULT ''"),
+                      ("bo_checked", "INTEGER NOT NULL DEFAULT 0")):
+        if col not in seg_cols:
+            conn.execute(f"ALTER TABLE contact_segments ADD COLUMN {col} {decl}")
+    # The back office's own record of a player (backoffice/player.py), cached between gradings.
+    conn.execute("""CREATE TABLE IF NOT EXISTS bo_players (
+        brand       TEXT NOT NULL,
+        player_id   TEXT NOT NULL,
+        facts_json  TEXT NOT NULL,
+        fetched_at  TEXT NOT NULL,
+        PRIMARY KEY (brand, player_id)
+    )""")
     conn.commit()
 
     # A reviewer's Agree on a VIP case grade — the VIP counterpart of grades.human_confirmed_*.

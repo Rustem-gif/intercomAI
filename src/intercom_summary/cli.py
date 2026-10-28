@@ -256,6 +256,53 @@ async def _vip_grade(args: argparse.Namespace):
              (result.get("usage") or {}).get("cost_usd", 0))
 
 
+async def _bo_sync(args: argparse.Namespace):
+    """Read the back-office record of the players behind a set of chats (free; BO page loads)."""
+    import sqlite3
+
+    from intercom_summary.backoffice import sync as bo_sync
+    from intercom_summary.storage.calibration_store import CalibrationStore
+    from intercom_summary.storage.conversations_store import ConversationsStore
+
+    store = ConversationsStore()
+    try:
+        if args.ids:
+            ids = list(args.ids)
+        elif args.sample:
+            cal = CalibrationStore()
+            try:
+                ids = [i["conversation_id"] for i in cal.items(args.sample)]
+            finally:
+                cal.close()
+        elif args.reviewed:
+            db = sqlite3.connect(settings.db_path)
+            ids = [r[0] for r in db.execute(
+                "SELECT conversation_id FROM grades WHERE ruleset_id = ? AND "
+                "(human_score IS NOT NULL OR human_confirmed_at IS NOT NULL)", (args.reviewed,))]
+            db.close()
+        else:
+            ids = [r["id"] for r in store._conn.execute(
+                "SELECT id FROM conversations WHERE created_at >= ?", (args.since,))]
+        convos = [c for cid in ids if (c := store.get(cid))]
+        if args.sample:
+            # A VIP sample's members are threads in vip_conversations.
+            from intercom_summary.storage.vip_store import VipStore
+            from intercom_summary.intercom.models import Conversation as _C
+            vs = VipStore()
+            try:
+                have = {c.id for c in convos}
+                convos += [_C.from_dict(r["payload"]) for cid in ids if cid not in have
+                           and (r := vs.get(cid))]
+            finally:
+                vs.close()
+    finally:
+        store.close()
+    players = bo_sync.players_of(convos)
+    log.info("BO sync: %d chat(s) → %d player(s) with a back-office id", len(convos), len(players))
+    stats = bo_sync.sync(players, max_age_hours=args.max_age_hours)
+    log.info("BO sync done: %s", stats)
+
+
 async def _vip_auto(args: argparse.Namespace):
     """One turn of the VIP loop: collect, regroup, grade the ungraded cases (paid)."""
     settings.require_intercom()
@@ -422,6 +469,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     k = sub.add_parser("sync-kb", help="Refresh the Help Center knowledge base used for v4.1 accuracy.")
     k.set_defaults(func=_sync_kb)
+
+    bs = sub.add_parser("bo-sync", help="Read the back-office record of the players behind "
+                        "chats into the cache the grader reads (logs in to the BO by itself).")
+    bs.add_argument("--since", default="2026-10-01", help="chats created on/after this date")
+    bs.add_argument("--sample", help="a calibration sample's chats instead")
+    bs.add_argument("--reviewed", metavar="RULESET", help="the chats QA reviewed under a ruleset")
+    bs.add_argument("--ids", nargs="*", help="these conversation ids instead")
+    bs.add_argument("--max-age-hours", type=float, default=None,
+                    help="re-read a player read longer ago than this (default BO_MAX_AGE_HOURS)")
+    bs.set_defaults(func=_bo_sync)
 
     va = sub.add_parser("vip-auto", help="One turn of the VIP loop: collect new threads, regroup "
                         "into cases, grade the ungraded cases (paid). Default window: yesterday–today.")

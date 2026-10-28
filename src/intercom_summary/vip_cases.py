@@ -272,7 +272,10 @@ def case_conversation(case: Case, staff: set[str] | None = None) -> CaseConversa
         assignee=assignee,
         contact=Contact(id=case.contact_id, name=case.contact_name, email=case.contact_email,
                         segment=segmented.segment if segmented else "",
-                        loyalty_level=segmented.loyalty_level if segmented else ""),
+                        loyalty_level=segmented.loyalty_level if segmented else "",
+                        bo_id=next((c.contact.bo_id for c in reversed(convos) if c.contact.bo_id), ""),
+                        bo_brand=next((c.contact.bo_brand for c in reversed(convos)
+                                       if c.contact.bo_brand), "")),
         messages=messages,
         tags=sorted({tag for c in convos for tag in c.tags}),
         brand=case.brand,

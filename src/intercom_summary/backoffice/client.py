@@ -50,6 +50,7 @@ _NAVIGATE = {
     "Upgrade-Insecure-Requests": "1",
 }
 _JSON = {"User-Agent": _UA, "Accept": "application/json, text/plain, */*",
+         "X-Requested-With": "XMLHttpRequest",
          "Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin"}
 
 # Path segments that name an action rather than a page. A GET to them is refused outright.

@@ -253,6 +253,11 @@ class Settings:
     bo_kb_password: str = field(default_factory=lambda: _env("BO_KB_PASSWORD"))
     bo_kb_otp_secret: str = field(default_factory=lambda: _env("BO_KB_OTP_SECRET"))
     bo_dir: Path = field(default_factory=lambda: Path(_env("BO_DIR", "./data/bo")))
+    # Read the BO before grading (backoffice/sync.py); off = the grader sees no BO block.
+    bo_sync: bool = field(default_factory=lambda: _env("BO_SYNC", "on").lower()
+                          not in ("0", "off", "false", "no"))
+    bo_max_age_hours: float = field(
+        default_factory=lambda: float(_env("BO_MAX_AGE_HOURS", "6") or "6"))
 
     @property
     def intercom_base_url(self) -> str:

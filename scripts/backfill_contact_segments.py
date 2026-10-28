@@ -1,4 +1,4 @@
-"""Backfill: give already-cached chats and VIP threads the player's VIP segment.
+"""Backfill: give already-cached chats and VIP threads the player's VIP segment and BO id.
 
 Background: QC's rules for closure requests, manager requests and "write to your VIP manager"
 depend on whether the player is VIP / preVIP (QC answers, 2026-10-21). The segment comes from
@@ -38,7 +38,8 @@ def _rows(conn, table: str, since: str | None) -> list[tuple[str, str]]:
     """(row id, contact id) for rows whose payload has a contact but no segment yet."""
     sql = (f"SELECT id, json_extract(payload_json, '$.contact.id') AS contact_id FROM {table} "
            "WHERE COALESCE(json_extract(payload_json, '$.contact.id'), '') != '' "
-           "AND COALESCE(json_extract(payload_json, '$.contact.segment'), '') = ''")
+           "AND (COALESCE(json_extract(payload_json, '$.contact.segment'), '') = '' "
+           "OR COALESCE(json_extract(payload_json, '$.contact.bo_id'), '') = '')")
     args: list[str] = []
     if since:
         sql += " AND created_at >= ?"
@@ -70,10 +71,10 @@ def main() -> None:
         client = IntercomClient()
         try:
             seg = ContactSegmenter(client, cache=cache, concurrency=args.concurrency)
-            found: dict[str, tuple[str, str]] = {}
+            found: dict[str, tuple[str, str, str, str]] = {}
 
             async def one(cid: str) -> None:
-                found[cid] = await seg.lookup(cid)
+                found[cid] = (*await seg.lookup(cid), *seg.bo_of(cid))
                 if len(found) % 500 == 0:
                     print(f"  … {len(found)}/{len(contacts)}")
 
@@ -83,19 +84,22 @@ def main() -> None:
             await client.aclose()
 
     found, seg = asyncio.run(run())
-    tally = Counter(s or "(none)" for s, _level in found.values())
+    tally = Counter(f[0] or "(none)" for f in found.values())
     print(f"Players: {dict(tally)}; {seg.lookups} Intercom read(s), {seg.failures} failed.")
 
     for table, rows in todo.items():
-        updates = [(found[cid][0], found[cid][1], rid) for rid, cid in rows
-                   if found.get(cid, ("", ""))[0]]
-        per = Counter(found.get(cid, ("", ""))[0] or "(none)" for _rid, cid in rows)
-        print(f"  {table}: {dict(per)}")
+        none = ("", "", "", "")
+        updates = [(*found[cid], rid) for rid, cid in rows
+                   if found.get(cid, none)[0] or found.get(cid, none)[2]]
+        per = Counter(found.get(cid, none)[0] or "(none)" for _rid, cid in rows)
+        with_bo = sum(1 for _rid, cid in rows if found.get(cid, none)[2])
+        print(f"  {table}: {dict(per)}; with a back-office id: {with_bo}")
         if args.dry_run or not updates:
             continue
         conn.executemany(
             f"UPDATE {table} SET payload_json = json_set(payload_json, "
-            "'$.contact.segment', ?, '$.contact.loyalty_level', ?) WHERE id = ?",
+            "'$.contact.segment', ?, '$.contact.loyalty_level', ?, "
+            "'$.contact.bo_id', ?, '$.contact.bo_brand', ?) WHERE id = ?",
             updates,
         )
         conn.commit()

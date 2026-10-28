@@ -30,10 +30,10 @@ class ContactSegmentsStore:
     def get(self, contact_id: str) -> tuple[str, str] | None:
         """(segment, loyalty_level) when a fresh row exists, else None (= look it up)."""
         row = self._conn.execute(
-            "SELECT segment, loyalty_level, fetched_at FROM contact_segments WHERE contact_id=?",
-            (contact_id,),
+            "SELECT segment, loyalty_level, fetched_at, bo_checked FROM contact_segments "
+            "WHERE contact_id=?", (contact_id,),
         ).fetchone()
-        if not row:
+        if not row or not row["bo_checked"]:
             return None
         try:
             fetched = datetime.fromisoformat(row["fetched_at"])
@@ -51,12 +51,23 @@ class ContactSegmentsStore:
         ).fetchone()
         return (row["segment"], row["loyalty_level"]) if row else None
 
-    def put(self, contact_id: str, segment: str, loyalty_level: str, groups_raw: str) -> None:
+    def bo(self, contact_id: str) -> tuple[str, str] | None:
+        """(BO player id, brand) recorded for the contact, or None if never looked up."""
+        row = self._conn.execute(
+            "SELECT bo_id, bo_brand, bo_checked FROM contact_segments WHERE contact_id=?",
+            (contact_id,),
+        ).fetchone()
+        return (row["bo_id"], row["bo_brand"]) if row and row["bo_checked"] else None
+
+    def put(self, contact_id: str, segment: str, loyalty_level: str, groups_raw: str,
+            bo_id: str = "", bo_brand: str = "") -> None:
         self._conn.execute(
             """INSERT OR REPLACE INTO contact_segments
-               (contact_id, segment, loyalty_level, groups_raw, fetched_at)
-               VALUES (?,?,?,?,?)""",
-            (contact_id, segment, loyalty_level, groups_raw, _now().isoformat()),
+               (contact_id, segment, loyalty_level, groups_raw, fetched_at, bo_id, bo_brand,
+                bo_checked)
+               VALUES (?,?,?,?,?,?,?,1)""",
+            (contact_id, segment, loyalty_level, groups_raw, _now().isoformat(), bo_id,
+             bo_brand),
         )
         self._conn.commit()
 
