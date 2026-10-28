@@ -907,8 +907,8 @@ on carry it, and every existing grade keeps its score (`GradesStore.is_current`)
 Triage/noise chats are never graded and never count towards an agent's score. They're picked
 out by their **native Intercom tag**, listed in one place:
 
-- `storage/conversations_store.py` → **`IGNORE_TAGS`** — currently `empty`, `spam`, `test`,
-  `jira`, `follow-up`, `no request`. Add or remove a tag here and nothing else needs changing;
+- `storage/conversations_store.py` → **`IGNORE_TAGS`** — currently `spam`, `test`, `jira`,
+  `follow-up` (`empty` and `no request` were removed so those chats are graded too). Add or remove a tag here and nothing else needs changing;
   match is case-insensitive, so `Follow-Up` and `follow-up` are the same tag.
 
 The set is enforced in three places, all reading that one constant:

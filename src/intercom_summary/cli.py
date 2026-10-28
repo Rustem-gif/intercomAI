@@ -74,7 +74,7 @@ async def _review(args: argparse.Namespace):
         log.warning("No conversations to grade.")
         return
 
-    # Triage/noise chats (tagged spam, empty, test, Jira, Follow-Up, no request) are never
+    # Triage/noise chats (tagged spam, test, Jira, Follow-Up) are never
     # graded. The web path drops them in service.review_and_store; this one fetches straight
     # from Intercom and so has to drop them itself, or `review` re-introduces exactly the
     # grades the rest of the system refuses to produce.

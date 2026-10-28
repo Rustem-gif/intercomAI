@@ -293,7 +293,7 @@ def review_and_store(
             )
             convos = [c for r in rows if (c := convos_store.get(r["id"]))]
 
-        # Triage/noise chats (tagged spam, empty, test, Jira, Follow-Up, no request) are
+        # Triage/noise chats (tagged spam, test, Jira, Follow-Up) are
         # never graded — drop them here so they count as neither graded nor pending.
         ignored = 0 if conversations is not None else sum(1 for c in convos if tags_are_ignored(c.tags))
         if conversations is None:
