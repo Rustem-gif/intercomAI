@@ -513,6 +513,12 @@ class ConversationGrade:
                                    for c in must_review)
             if not reason and undetermined:
                 reason = "Cannot determine: " + ", ".join(sorted(undetermined))
+            if data.get("internal_note"):
+                from intercom_summary.qa.review_queue import NOTE_REASON
+
+                grade.manual_review_needed = True
+                if NOTE_REASON not in reason:
+                    reason = f"{reason}; {NOTE_REASON}" if reason else NOTE_REASON
             grade.manual_review_reason = reason
         else:
             grade.critical_fail = bool(critical_fail and score == 0)

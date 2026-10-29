@@ -170,6 +170,8 @@ export interface ConversationRow {
   score: number | null;
   grade_summary: string | null;
   graded_at: string | null;
+  /** Why the chat is in the QC review queue — only on `review=true` lists. */
+  review_reasons?: string[];
 }
 
 export interface TrashItem {

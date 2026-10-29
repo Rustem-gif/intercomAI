@@ -104,7 +104,7 @@ intercomSummary/
 |---|---|---|
 | Overview (`/`) | `pages/Overview.tsx` | KPIs, charts, leaderboard |
 | Support chats (`/conversations`) | `pages/Conversations.tsx` | Browse/search the support chats (VIP emails are on their own tab) |
-| Needs Attention (`/needs-attention`) | `pages/NeedsAttention.tsx` | Flagged low scores |
+| Needs Attention (`/needs-attention`) | `pages/NeedsAttention.tsx` | The QC review queue: notes, AI-flagged, FAIL, low CSAT (`qa/review_queue.py`) |
 | Agents (`/agents`) | `pages/Agents.tsx` | Per-agent performance |
 | Evaluation (`/evaluation`) | `pages/Evaluation.tsx` | Run grading, see progress (Ollama restart only when Qwen is picked) |
 | Calibration (`/calibration`) — **temporary**; back in the menu 2026-10-21 for the VIP sample (hidden 2026-10-16 – 10-21) | `pages/Calibration.tsx` | Claude's grades of a frozen sample next to the QA managers' own verdicts: the 180 support chats (v4.1) and the 70 VIP chats (`vip-v16`, graded per case); the newest sample opens first, a selector switches |
@@ -331,8 +331,23 @@ every resolver call passes the chat's `created_at`.
 - **The mandatory yellow note, by date:** `QA_ESCALATION_NOTE_FROM` (`.env`, `YYYY-MM-DD`, empty
   = off). From that chat date, an escalation told to the player with no internal note is a FAIL
   (and goes to manual review) instead of cannot_determine — `escalation_note_mandatory()` in
-  `qa/gated_rules.py`. QC said "most likely from 1.11"; set it once QC confirms, then
-  `./restart.sh`. Older chats are untouched either way.
+  `qa/gated_rules.py`. QA confirmed 1 November (2026-10-28), so prod runs with
+  `QA_ESCALATION_NOTE_FROM=2026-11-01`. Older chats are untouched either way.
+- **A late reply with nothing cited is a fail:** rule g in `derive_after_guards`. When the TIMING
+  header says the agent's first reply or a later reply was BREACHED and `resp-sla` came back
+  pass / n/a with no evidence, it becomes a fail citing the times. A pass that quotes the delay
+  message or names the reason stays. The later-reply figure is
+  `Conversation.longest_followup_seconds` (player's line → the agent's next visible line, notes and
+  bots skipped); the targets are `SLA_FIRST_RESPONSE_SEC` / `SLA_FOLLOWUP_SEC`. The fail is marked
+  `src: timing` and the fail verifier does not re-read it.
+- **EMPTY and "no request" are tags:** `PLACEHOLDER_TAGS` in `qa/prompt.py` adds a note to the
+  Chat tags line, and a `tag-chat` fail that only says "no tag" on a tagged chat becomes
+  `cannot_determine` (`_says_untagged` in `qa/verdict_guard.py`).
+- **The review queue (Needs Attention):** `qa/review_queue.py` lists why a chat needs a QC
+  manager: an internal note (QA, until agents are used to notes), the AI's own manual review, a
+  FAIL or critical fail, a CSAT of 1–2. `/api/conversations?review=true` returns those rows with
+  `review_reasons`; a chat leaves once a person scores or confirms its grade. The note reason is
+  computed on read, so grades made before the rule are in the queue without a re-grade.
 - **Forcing a run onto one ruleset** still overrides all of this, for pilots and calibration:
   `POST /api/review {"ruleset_id": "kb-v41", "sample": "kb-v41-180"}`. Grades are stored under the
   ruleset that produced them, so a pilot cannot disturb anything graded by another ruleset.

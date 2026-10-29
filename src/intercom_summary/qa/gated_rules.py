@@ -23,7 +23,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from intercom_summary.intercom.models import Conversation
+from intercom_summary.intercom.models import Conversation, fmt_duration
 from intercom_summary.logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -179,9 +179,10 @@ def _agent_claimed_escalation(data: dict[str, Any]) -> bool:
 
 
 def derive_after_guards(conversation: Conversation, data: dict[str, Any],
-                        major: set[str]) -> list[str]:
+                        major: set[str], ids: set[str] | None = None) -> list[str]:
     """The rules that read the model's request list and outcome, and the facts code can see.
-    `major` is the ruleset's Gate 2 Major ids."""
+    `major` is the ruleset's Gate 2 Major ids; `ids` all its criterion ids (None: the
+    criteria the model answered)."""
     from intercom_summary.qa.prompt import closing_clause
 
     flags: list[str] = []
@@ -280,9 +281,39 @@ def derive_after_guards(conversation: Conversation, data: dict[str, Any],
                    f"the chat without passing it on, and no internal note shows a handoff"[:240],
                    "a mandatory escalation was neither performed nor claimed")
 
+    # g. A BREACHED reply time in the TIMING header with nothing cited against it is a fail
+    #    (QA, 2026-10-28: 27 of 70 chats with a late first reply kept their points, the
+    #    verdict pass with no evidence at all, a 1h 46m wait among them). The manual's three
+    #    conditions still hold: a pass that quotes the agent's delay message or names the
+    #    reason is the model's judgement and is left alone.
+    if "resp-sla" in (ids if ids is not None else crit) and verdict("resp-sla") in (
+            "pass", "n/a", None) and not str((crit.get("resp-sla") or {}).get("ev") or "").strip():
+        from intercom_summary.settings import settings
+
+        sla = conversation.sla_summary(settings.sla_first_response_sec, settings.sla_followup_sec)
+        late = []
+        if sla["first_response_breached"]:
+            late.append(f"agent's first reply {sla['agent_first_reply_human']} after the chat "
+                        f"reached them (target ≤ {fmt_duration(settings.sla_first_response_sec)})")
+        if sla["followup_breached"]:
+            late.append(f"a later reply took {sla['longest_followup_human']} after the player "
+                        f"wrote (target ≤ {fmt_duration(settings.sla_followup_sec)})")
+        if late:
+            change("resp-sla", "fail",
+                   ("TIMING: " + "; ".join(late) + "; no delay message or reason cited")[:240],
+                   "the TIMING header shows a BREACHED reply and the pass cited nothing")
+            # Settled by Intercom's clock, not by a reading of the chat: the fail verifier,
+            # which re-reads judgement calls, does not get to re-read it.
+            crit["resp-sla"]["src"] = "timing"
+
     # e. A pass that depends on a system trace must name it. When the chat has an internal
     #    note, the note is that trace: cite it rather than sending the chat to manual review.
     notes = _internal_notes(conversation)
+    # h. Any internal note sends the chat to a QC manager (QA, 2026-10-28: "until the agents get
+    #    used to it" — from 1 November a note is how an escalation is confirmed). Read by
+    #    ConversationGrade.from_model_output, which adds the reason after its own.
+    if notes:
+        data["internal_note"] = True
     for cid in sorted(SOURCED_PASS_CRITERIA):
         if verdict(cid) == "pass" and not str(crit[cid].get("ev") or "").strip():
             if notes:
@@ -305,5 +336,6 @@ def check_verdicts(conversation: Conversation, data: dict[str, Any], ruleset) ->
         return apply_guards(conversation, data)
     flags = problems_to_fails(data, set(ruleset.deductions))
     flags += apply_guards(conversation, data)
-    flags += derive_after_guards(conversation, data, set(ruleset.ids_in_gate(2, "major")))
+    flags += derive_after_guards(conversation, data, set(ruleset.ids_in_gate(2, "major")),
+                                 set(ruleset.deductions))
     return flags

@@ -1,49 +1,58 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
-import { api, ConversationList, ConversationRow } from "@/lib/api";
-import { Badge, Card, Spinner } from "@/components/ui/primitives";
+import { api, ConversationList } from "@/lib/api";
+import { Badge, Card, Input, Spinner } from "@/components/ui/primitives";
 import ConversationDrawer from "@/components/ConversationDrawer";
 import CsatBadge from "@/components/CsatBadge";
-import { scoreColor, isLowCsat, CSAT_LOW_MAX } from "@/lib/utils";
+import { scoreColor } from "@/lib/utils";
+
+const LIMIT = 500;
+
+/** The reason's group, for the filter chips ("AI: Escalation missed — …" → "AI flagged"). */
+function kind(reason: string): string {
+  if (reason.startsWith("AI")) return "AI flagged";
+  if (reason.startsWith("Low CSAT")) return "Low CSAT";
+  if (reason.startsWith("Internal note")) return "Internal note";
+  return reason;
+}
+
+const KIND_STYLE: Record<string, string> = {
+  "Critical fail": "border-destructive/60 bg-destructive/15 text-destructive",
+  FAIL: "border-destructive/40 bg-destructive/10 text-destructive",
+  "Internal note": "border-amber-500/40 bg-amber-500/10 text-amber-600",
+  "AI flagged": "border-sky-500/40 bg-sky-500/10 text-sky-600",
+  "Low CSAT": "border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-600",
+};
+const KINDS = ["Critical fail", "FAIL", "Internal note", "AI flagged", "Low CSAT"];
+
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
 
 export default function NeedsAttention() {
   const [openId, setOpenId] = useState<string | null>(null);
+  const [since, setSince] = useState(daysAgo(7));
+  const [until, setUntil] = useState("");
+  const [only, setOnly] = useState<string | null>(null);
 
-  const lowScore = useQuery({
-    queryKey: ["needs-attention", "score"],
-    queryFn: () =>
-      api.get<ConversationList>(
-        "/api/conversations?sort=score&descending=false&limit=100"
-      ),
+  // The QC review queue: graded chats nobody has reviewed yet that have an internal note, were
+  // sent to review by the AI, failed, or got a low player rating (qa/review_queue.py).
+  const params = new URLSearchParams({ review: "true", sort: "created_at", limit: String(LIMIT) });
+  if (since) params.set("since", since);
+  if (until) params.set("until", until + "T23:59:59");
+  const { data, isLoading } = useQuery({
+    queryKey: ["needs-attention", params.toString()],
+    queryFn: () => api.get<ConversationList>(`/api/conversations?${params.toString()}`),
   });
 
-  const lowCsat = useQuery({
-    queryKey: ["needs-attention", "csat"],
-    queryFn: () =>
-      api.get<ConversationList>(
-        `/api/conversations?max_csat=${CSAT_LOW_MAX}&limit=100`
-      ),
-  });
-
-  const isLoading = lowScore.isLoading || lowCsat.isLoading;
-
-  // Merge the two populations, dedupe by id. A row qualifies for the list if it has a
-  // QA score (lowest-first) and/or a low CSAT rating.
-  const byId = new Map<string, ConversationRow>();
-  for (const c of lowScore.data?.items ?? []) {
-    if (c.score !== null) byId.set(c.id, c);
-  }
-  for (const c of lowCsat.data?.items ?? []) {
-    if (!byId.has(c.id)) byId.set(c.id, c);
-  }
-  const rows = Array.from(byId.values()).sort((a, b) => {
-    // Low-CSAT chats float to the top, then by ascending QA score.
-    const aLow = isLowCsat(a.csat_rating) ? 0 : 1;
-    const bLow = isLowCsat(b.csat_rating) ? 0 : 1;
-    if (aLow !== bLow) return aLow - bLow;
-    return (a.score ?? 999) - (b.score ?? 999);
-  });
+  const all = data?.items ?? [];
+  const counts: Record<string, number> = {};
+  for (const c of all)
+    for (const k of new Set((c.review_reasons ?? []).map(kind))) counts[k] = (counts[k] ?? 0) + 1;
+  const rows = only ? all.filter((c) => (c.review_reasons ?? []).some((r) => kind(r) === only)) : all;
 
   return (
     <div className="space-y-4">
@@ -53,9 +62,32 @@ export default function NeedsAttention() {
           <h1 className="text-2xl font-bold">Needs Attention</h1>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Conversations with the lowest QA scores or a low customer satisfaction
-          rating — click any row to review the full transcript and grade.
+          Chats for a QC manager to check by hand: an internal note in the chat, sent to review by
+          the AI, a FAIL or critical fail, or a low player rating. A chat leaves the list once a
+          person confirms or corrects its grade. Click a row for the transcript and grade.
         </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Input type="date" className="h-9 w-36 px-2 text-sm" title="From date" value={since}
+               max={until || undefined} onChange={(e) => setSince(e.target.value)} />
+        <Input type="date" className="h-9 w-36 px-2 text-sm" title="To date" value={until}
+               min={since || undefined} onChange={(e) => setUntil(e.target.value)} />
+        <button
+          onClick={() => setOnly(null)}
+          className={`rounded-full border px-3 py-1 text-xs ${only === null ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+        >
+          All {data ? `(${data.total})` : ""}
+        </button>
+        {KINDS.filter((k) => counts[k]).map((k) => (
+          <button
+            key={k}
+            onClick={() => setOnly(only === k ? null : k)}
+            className={`rounded-full border px-3 py-1 text-xs ${only === k ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}
+          >
+            {k} ({counts[k]})
+          </button>
+        ))}
       </div>
 
       {isLoading ? (
@@ -65,7 +97,7 @@ export default function NeedsAttention() {
       ) : rows.length === 0 ? (
         <Card>
           <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
-            Nothing needs attention right now.
+            Nothing needs attention in this period.
           </div>
         </Card>
       ) : (
@@ -74,10 +106,11 @@ export default function NeedsAttention() {
             <thead className="border-b bg-muted/50 text-left text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="w-10 px-4 py-2.5 font-medium">#</th>
+                <th className="w-24 px-4 py-2.5 font-medium">Date</th>
                 <th className="w-20 px-4 py-2.5 font-medium">Score</th>
                 <th className="w-20 px-4 py-2.5 font-medium">CSAT</th>
                 <th className="w-32 px-4 py-2.5 font-medium">Agent</th>
-                <th className="w-48 px-4 py-2.5 font-medium">Subject</th>
+                <th className="w-64 px-4 py-2.5 font-medium">Why</th>
                 <th className="px-4 py-2.5 font-medium">Summary</th>
               </tr>
             </thead>
@@ -89,6 +122,9 @@ export default function NeedsAttention() {
                   className="cursor-pointer border-b last:border-0 hover:bg-muted/50"
                 >
                   <td className="px-4 py-3 text-muted-foreground">{i + 1}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                    {c.created_at?.slice(0, 10)}
+                  </td>
                   <td className={`px-4 py-3 font-bold ${scoreColor(c.score)}`}>
                     {c.score ?? "—"}
                   </td>
@@ -96,24 +132,20 @@ export default function NeedsAttention() {
                     <CsatBadge rating={c.csat_rating} />
                   </td>
                   <td className="px-4 py-3 font-medium">{c.agent_name}</td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    <div className="line-clamp-2">
-                      {c.subject || "(no subject)"}
-                    </div>
-                    <div className="text-xs opacity-70">
-                      {c.customer_name || c.customer_email}
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-1">
+                      {(c.review_reasons ?? []).map((r) => (
+                        <span key={r} title={r}>
+                          <Badge className={KIND_STYLE[kind(r)] ?? ""}>
+                            <span className="line-clamp-1 max-w-[14rem]">{r}</span>
+                          </Badge>
+                        </span>
+                      ))}
                     </div>
                   </td>
                   <td className="px-4 py-3 leading-relaxed">
-                    {isLowCsat(c.csat_rating) && (
-                      <Badge className="mb-1 mr-2 border-destructive/40 bg-destructive/10 text-destructive">
-                        needs attention — low CSAT
-                      </Badge>
-                    )}
                     {c.grade_summary || (
-                      <span className="italic text-muted-foreground">
-                        No summary
-                      </span>
+                      <span className="italic text-muted-foreground">No summary</span>
                     )}
                   </td>
                 </tr>
@@ -123,16 +155,14 @@ export default function NeedsAttention() {
         </Card>
       )}
 
-      {!isLoading && rows.length > 0 && (
+      {!isLoading && data && (
         <p className="text-xs text-muted-foreground">
-          Showing {rows.length} conversation{rows.length !== 1 ? "s" : ""} that
-          need attention.
+          Showing {rows.length} of {data.total} chat{data.total !== 1 ? "s" : ""}
+          {data.total > LIMIT ? ` (the newest ${LIMIT}; narrow the dates for the rest)` : ""}.
         </p>
       )}
 
-      {openId && (
-        <ConversationDrawer id={openId} onClose={() => setOpenId(null)} />
-      )}
+      {openId && <ConversationDrawer id={openId} onClose={() => setOpenId(null)} />}
     </div>
   );
 }

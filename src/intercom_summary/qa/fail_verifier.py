@@ -194,8 +194,11 @@ VERIFIER_SCHEMA: dict[str, Any] = {
 
 
 def failed_criteria(data: dict[str, Any]) -> list[dict]:
+    """The fails a verifier re-reads. A fail settled by Intercom's clock (`src: timing`, the
+    BREACHED SLA rule in qa/gated_rules.py) is not a reading of the chat and is left out."""
     return [c for c in data.get("criteria") or []
-            if isinstance(c, dict) and c.get("v") == "fail" and c.get("id")]
+            if isinstance(c, dict) and c.get("v") == "fail" and c.get("id")
+            and c.get("src") != "timing"]
 
 
 def would_fail(conversation, data: dict[str, Any], ruleset_id: str) -> bool:
