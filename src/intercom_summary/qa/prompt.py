@@ -53,15 +53,24 @@ def _timing_block(conversation: Conversation) -> str:
             f"Agent's first reply: {sla['agent_first_reply_human']} after the chat reached them "
             f"(target ≤ {fmt_duration(first_target)} → {verdict})"
         )
+    if sla["longest_followup"] is None:
+        followup_line = (f"Longest later agent reply after a player message: none "
+                         f"(target ≤ {fmt_duration(followup_target)})")
+    else:
+        verdict = "BREACHED" if sla["followup_breached"] else "OK"
+        followup_line = (f"Longest later agent reply after a player message: "
+                         f"{sla['longest_followup_human']} "
+                         f"(target ≤ {fmt_duration(followup_target)} → {verdict})")
     return (
         "=== TIMING (authoritative, from Intercom) ===\n"
         f"{first_line}\n"
+        f"{followup_line}\n"
         f"Time to close: {sla['time_to_close_human']}\n"
-        f"Follow-up SLA target: ≤ {fmt_duration(followup_target)} between agent replies\n"
         "The first-reply clock starts when the chat was routed to the agent, not when the player\n"
         "wrote — a bot answers first and holds the chat, and the agent cannot reply before it is\n"
-        "handed over. Judge first-reply speed ONLY against the number above, never by doing your\n"
-        "own arithmetic on the transcript, and record it ONLY under resp-first-reply.\n"
+        "handed over. Judge reply speed ONLY against the two numbers above, never by doing your\n"
+        "own arithmetic on the transcript, and record it under the SLA criterion (resp-sla;\n"
+        "resp-first-reply in the older ruleset).\n"
         "(In the transcript, '+Xm waited after customer' on a later AGENT line is the player's wait.)"
     )
 
@@ -152,6 +161,10 @@ def _ending_line(conversation: Conversation) -> str:
             f"{closing}.")
 
 
+# Tags whose names read like "no tag" but are real tags (QA, 2026-10-28).
+PLACEHOLDER_TAGS: frozenset[str] = frozenset({"empty", "no request"})
+
+
 def _tags_line(conversation: Conversation) -> str:
     """The chat's tags, which the transcript cannot show.
 
@@ -161,7 +174,14 @@ def _tags_line(conversation: Conversation) -> str:
     transcript, so either it is stated here or the verdict is cannot_determine.
     """
     if conversation.tags:
-        return f"Chat tags: {', '.join(conversation.tags)}"
+        line = f"Chat tags: {', '.join(conversation.tags)}"
+        # QA (2026-10-28): the grader read the tag EMPTY as "no tag" and failed tag-chat on
+        # every such chat. EMPTY and "no request" are tags agents set on purpose.
+        named = [t for t in conversation.tags if t.strip().lower() in PLACEHOLDER_TAGS]
+        if named:
+            line += (f" ({' and '.join(repr(t) for t in named)} is a tag the agent set: it means "
+                     f"the player made no request — a tag IS set on this chat)")
+        return line
     return "Chat tags: (none set on this conversation)"
 
 

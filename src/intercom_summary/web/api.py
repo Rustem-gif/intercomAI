@@ -395,6 +395,7 @@ def create_app() -> FastAPI:
         tag: str | None = None,
         sample: str | None = None,
         ungraded: bool = False,
+        review: bool = False,
         sort: str = "created_at",
         descending: bool = True,
         limit: int = 50,
@@ -414,7 +415,7 @@ def create_app() -> FastAPI:
                 agents=agents, since=since, until=until, state=state, brand=brand,
                 min_score=min_score, max_csat=max_csat, search=search, tag=tag,
                 sample=sample,
-                ungraded=ungraded, sort=sort, descending=descending,
+                ungraded=ungraded, review=review, sort=sort, descending=descending,
                 limit=limit, offset=offset,
             )
             return {"items": rows, "total": total, "limit": limit, "offset": offset}
@@ -443,10 +444,23 @@ def create_app() -> FastAPI:
                 grade_dispute = dstore.get(conversation_id)
             finally:
                 dstore.close()
+            grade = gstore.get(conversation_id)
+            if grade is not None:
+                # A chat with an internal note goes to a QC manager (qa/review_queue.py). Shown
+                # on read so grades made before the rule carry it too; nothing is stored.
+                from intercom_summary.qa.review_queue import NOTE_REASON, has_internal_note
+
+                if has_internal_note(convo) and NOTE_REASON not in str(
+                        grade.get("manual_review_reason") or ""):
+                    reason = str(grade.get("manual_review_reason") or "").strip()
+                    grade["manual_review_reason"] = (f"{reason}; {NOTE_REASON}" if reason
+                                                     and grade.get("manual_review_needed")
+                                                     else NOTE_REASON)
+                    grade["manual_review_needed"] = True
             return {
                 "conversation": convo_dict,
                 "transcript": convo.transcript_text(),
-                "grade": gstore.get(conversation_id),
+                "grade": grade,
                 # Scores this chat used to carry. A grade gets re-run whenever the rulebook
                 # changes, so "it was green last week" is a question people genuinely ask —
                 # and before this it had no answer.

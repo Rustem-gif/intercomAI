@@ -86,6 +86,44 @@ _ROW_SOURCE = (
 )
 
 
+# The review queue (qa/review_queue.py): a graded chat no person has reviewed yet that has an
+# internal note, was sent to review by the AI, failed, or got a low rating — or any chat with a
+# low rating. The note test reads the cached thread, so grades made before the rule qualify too.
+_HAS_NOTE_SQL = ("EXISTS (SELECT 1 FROM json_each(c.payload_json, '$.messages') "
+                 "WHERE json_extract(value, '$.part_type') = 'note' "
+                 "AND json_extract(value, '$.author_type') = 'admin' "
+                 "AND TRIM(COALESCE(json_extract(value, '$.text'), '')) <> '')")
+_REVIEW_SQL = (
+    "((g.conversation_id IS NOT NULL AND g.human_score IS NULL "
+    "AND g.human_confirmed_at IS NULL AND ("
+    "g.manual_review_needed = 1 "
+    "OR json_extract(g.payload_json, '$.overall_result') = 'FAIL' "
+    "OR json_extract(g.payload_json, '$.critical_fail') = 1 "
+    f"OR {_HAS_NOTE_SQL})) "
+    "OR (c.csat_rating IS NOT NULL AND c.csat_rating <= 2))"
+)
+_REVIEW_COLUMNS = (
+    f", (g.conversation_id IS NOT NULL AND {_HAS_NOTE_SQL}) AS has_note, "
+    "g.manual_review_needed AS manual_review_needed, "
+    "json_extract(g.payload_json, '$.manual_review_reason') AS manual_review_reason, "
+    "json_extract(g.payload_json, '$.overall_result') AS overall_result, "
+    "json_extract(g.payload_json, '$.critical_fail') AS critical_fail"
+)
+
+
+def _with_reasons(row: dict) -> dict:
+    from intercom_summary.qa.review_queue import reasons
+
+    row["review_reasons"] = reasons(
+        has_note=bool(row.pop("has_note", 0)),
+        manual_review=bool(row.pop("manual_review_needed", 0)),
+        manual_reason=row.pop("manual_review_reason", "") or "",
+        overall_result=row.pop("overall_result", None),
+        critical=bool(row.pop("critical_fail", 0)),
+        csat=row.get("csat_rating"))
+    return row
+
+
 class ConversationsStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._conn: sqlite3.Connection = connect(db_path or settings.db_path)
@@ -275,6 +313,7 @@ class ConversationsStore:
         sample: str | None = None,
         ungraded: bool = False,
         graded_only: bool = False,
+        review: bool = False,
         sort: str = "created_at",
         descending: bool = True,
         limit: int = 100,
@@ -326,6 +365,9 @@ class ConversationsStore:
         # review link, say, where an ungraded chat gives the agent nothing to review.
         if graded_only:
             where.append("g.conversation_id IS NOT NULL")
+        # The QC review queue; each row then carries its `review_reasons`.
+        if review:
+            where.append(_REVIEW_SQL)
         if search:
             where.append(
                 "(c.id LIKE ? OR c.subject LIKE ? OR c.customer_name LIKE ? OR c.customer_email LIKE ?)"
@@ -352,13 +394,16 @@ class ConversationsStore:
 
         base = f"{_ROW_SOURCE}{clause}"
         total = self._conn.execute(f"SELECT COUNT(*) AS n {base}", args).fetchone()["n"]
+        extra = _REVIEW_COLUMNS if review else ""
         rows = self._conn.execute(
-            f"""SELECT {_ROW_COLUMNS}
+            f"""SELECT {_ROW_COLUMNS}{extra}
                 {base}
                 ORDER BY {sort_col} {direction} NULLS LAST
                 LIMIT ? OFFSET ?""",
             [*args, limit, offset],
         ).fetchall()
+        if review:
+            return [_with_reasons(dict(r)) for r in rows], total
         return [dict(r) for r in rows], total
 
     def rows_by_ids(self, conversation_ids: list[str]) -> list[dict]:

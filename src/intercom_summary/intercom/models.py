@@ -168,10 +168,47 @@ class Conversation:
         return max(0, int((reply.created_at - started).total_seconds()))
 
     @property
+    def longest_followup_seconds(self) -> int | None:
+        """The longest the player waited for a later agent reply, after the first one.
+
+        Measured as the transcript's "+Xm waited after customer" marker is: from the player's
+        last line to the agent's next line the player could see (internal notes and automation
+        do not answer anyone). None when the agent never replied after a player line again.
+        """
+        first = self._first_agent_reply
+        if first is None:
+            return None
+        longest: int | None = None
+        prev: Message | None = None
+        seen_first = False
+        for m in self.messages:
+            if not (m.text or "").strip() or m.created_at is None:
+                continue
+            role = self._role_of(m.author_type)
+            if role not in ("AGENT", "CUSTOMER") or m.part_type == "note":
+                continue
+            if m is first:
+                seen_first = True
+            elif (seen_first and role == "AGENT" and prev is not None
+                  and self._role_of(prev.author_type) == "CUSTOMER" and prev.created_at):
+                secs = max(0, int((m.created_at - prev.created_at).total_seconds()))
+                longest = secs if longest is None else max(longest, secs)
+            prev = m
+        return longest
+
+    @property
     def _first_agent_reply(self) -> "Message | None":
-        """The agent's first message that actually said something."""
+        """The agent's first message that actually said something, once the player had written.
+
+        A chat opened from a Help Center article starts with that article posted under the
+        agent's name before the player says anything; counting it as the reply measured a 3-hour
+        wait for the real first answer as 0s (QA feedback, Oct 2026).
+        """
+        # By position, not clock: the article carries the same second as the player's line.
+        start = next((i for i, m in enumerate(self.messages)
+                      if self._role_of(m.author_type) == "CUSTOMER"), 0)
         return next(
-            (m for m in self.messages
+            (m for m in self.messages[start:]
              if m.author_type == "admin" and (m.text or "").strip()),
             None,
         )
@@ -307,6 +344,7 @@ class Conversation:
         """
         frt = self.first_response_time
         agent_frt = self.agent_first_reply_seconds
+        followup = self.longest_followup_seconds
         return {
             "agent_first_reply": agent_frt,
             "agent_first_reply_human": fmt_duration(agent_frt),
@@ -319,6 +357,9 @@ class Conversation:
             "first_response_breached": (
                 agent_frt is not None and agent_frt > first_response_target
             ),
+            "longest_followup": followup,
+            "longest_followup_human": fmt_duration(followup),
+            "followup_breached": followup is not None and followup > followup_target,
         }
 
     def menu_choices(self) -> set[int]:

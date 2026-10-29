@@ -122,7 +122,7 @@ def _player_names(conversation: Conversation) -> list[str]:
 # header to justify a deduction the header was never meant to carry.
 _PROMPT_HEADER_MARKERS: tuple[str, ...] = (
     "first response time:", "agent's first reply:", "time to close:",
-    "follow-up sla target", "=== timing", "target ≤",
+    "follow-up sla target", "longest later agent reply", "=== timing", "target ≤",
     # The tags line is header too: it is the tag criterion's legitimate source and nobody
     # else's, so citing it to justify any other deduction is the same mistake as citing the
     # SLA header.
@@ -138,6 +138,22 @@ HEADER_EVIDENCED_CRITERIA: frozenset[str] = frozenset({"resp-first-reply", "resp
 
 # Criteria with no honest n/a — see the loop in apply_guards.
 NEVER_NA_CRITERIA: frozenset[str] = frozenset({"tag-chat"})
+
+
+_UNTAGGED = re.compile(r"\b(?:no|without|missing)\s+(?:chat\s+)?tags?\b"
+                       r"|\btags?\s*(?:is\s+|are\s+)?(?:none|missing|not set)\b"
+                       r"|\buntagged\b|\bnone set\b", re.IGNORECASE)
+
+
+def _says_untagged(evidence: str, tags: list[str]) -> bool:
+    """The fail's evidence is only the tags line, or says the chat has no tag."""
+    ev = " ".join((evidence or "").split()).strip().rstrip(".")
+    bare = ev.lower().removeprefix("chat tags:").strip()
+    if not bare or bare in {t.strip().lower() for t in tags} or bare == ", ".join(tags).lower():
+        return True
+    if any(bare.startswith(t.strip().lower()) for t in tags) and len(bare) <= 40:
+        return True
+    return bool(_UNTAGGED.search(ev))
 
 
 def _quotes_the_prompt(evidence: str) -> bool:
@@ -214,6 +230,18 @@ def apply_guards(conversation: Conversation, data: dict[str, Any]) -> list[str]:
                          f"criterion always applies, so 'not applicable' cannot be right")
             log.info("Guard re-read n/a as cannot_determine for %s on %s",
                      c.get("id"), conversation.id)
+
+    # A tag-chat fail that only says the chat has no tag, on a chat that has one. QA
+    # (2026-10-28): the grader read the tag EMPTY literally and failed all 54 such chats. A fail
+    # that names a real mismatch ("EMPTY, but the player asked about a bonus") is kept.
+    for c in criteria:
+        if (isinstance(c, dict) and c.get("id") == "tag-chat" and c.get("v") == "fail"
+                and conversation.tags and _says_untagged(c.get("ev", ""), conversation.tags)):
+            c["v"] = "cannot_determine"
+            flags.append("guard:tag-chat fail re-read as cannot_determine — the chat carries "
+                         f"the tag(s) {', '.join(conversation.tags)}; the fail only said none")
+            log.info("Guard re-read tag-chat fail on %s: tags %s", conversation.id,
+                     conversation.tags)
 
     for c in criteria:
         if not isinstance(c, dict):
