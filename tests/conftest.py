@@ -93,3 +93,13 @@ def _no_google_sheet():
     object.__setattr__(settings, "gsheet_id", "")
     yield
     object.__setattr__(settings, "gsheet_id", old)
+
+
+@pytest.fixture(autouse=True)
+def _no_refresh_before_grade():
+    """review_and_store re-reads chats from Intercom before grading; tests are offline, so it
+    is off unless a test switches it on with a fake client."""
+    old = settings.qa_refresh_before_grade
+    object.__setattr__(settings, "qa_refresh_before_grade", False)
+    yield
+    object.__setattr__(settings, "qa_refresh_before_grade", old)

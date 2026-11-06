@@ -72,6 +72,15 @@ def _effort(value: str) -> str:
 class Settings:
     # Intercom
     intercom_token: str = field(default_factory=lambda: _env("INTERCOM_ACCESS_TOKEN"))
+    # Re-read every chat from Intercom right before grading it (service._refresh_before_grading):
+    # the cache holds the chat as it was when fetched, and agents add tags — and players write
+    # again — after that. A cached copy fetched while the chat was open was graded with "no
+    # tags set" on 6 Nov 2026 although the agent had tagged it minutes later.
+    qa_refresh_before_grade: bool = field(default_factory=lambda: _env(
+        "QA_REFRESH_BEFORE_GRADE", "on").lower() not in ("0", "off", "false", "no"))
+    # A chat is graded only once it is closed and has stayed closed this long: agents tag right
+    # after closing. Open/snoozed or just-closed chats wait for a later run.
+    qa_settle_minutes: int = field(default_factory=lambda: int(_env("QA_SETTLE_MINUTES", "30") or "30"))
     intercom_region: str = field(default_factory=lambda: _env("INTERCOM_REGION", "eu").lower())
     intercom_api_version: str = field(default_factory=lambda: _env("INTERCOM_API_VERSION", "2.11"))
 
