@@ -665,8 +665,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+# Set by the web app once it has checked the database exists (web/api.py main). From then on a
+# missing file is an error, never a fresh empty database: on 6 Nov 2026 the DB was deleted from
+# disk under the running app, the next connection created an empty one, and the service went on
+# showing "no chats" as if nothing had happened.
+REQUIRE_EXISTING: Path | None = None
+
+
+class DatabaseMissingError(RuntimeError):
+    pass
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
+    if REQUIRE_EXISTING is not None and not path.exists() and (
+            path.absolute() == REQUIRE_EXISTING.absolute()):
+        raise DatabaseMissingError(
+            f"The database file {path} is gone (deleted, or its disk is not mounted). "
+            "Refusing to create an empty one — restore it from a backup and restart.")
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row

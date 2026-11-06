@@ -31,11 +31,13 @@ export default function Storage() {
     queryFn: () => api.get<StorageStats>("/api/storage"),
   });
 
-  const run = async (what: "vacuum" | "expire", confirmText: string) => {
-    if (!confirm(confirmText)) return;
+  const run = async (what: "vacuum" | "expire" | "backup", confirmText: string) => {
+    if (confirmText && !confirm(confirmText)) return;
     setBusy(what);
     try {
-      if (what === "vacuum") {
+      if (what === "backup") {
+        await api.post("/api/storage/backup", {});
+      } else if (what === "vacuum") {
         const r = await api.post<{ freed_bytes: number }>("/api/storage/vacuum", {});
         alert(`Database compacted — reclaimed ${fmtBytes(r.freed_bytes)}.`);
       } else {
@@ -58,7 +60,7 @@ export default function Storage() {
       </div>
     );
 
-  const { db, trash, dirs } = data;
+  const { db, trash, dirs, backup } = data;
 
   return (
     <div className="space-y-6">
@@ -140,14 +142,51 @@ export default function Storage() {
         <Card>
           <CardHeader className="flex-row items-center gap-2">
             <HardDrive className="h-4 w-4 text-muted-foreground" />
-            <CardTitle>Files</CardTitle>
+            <CardTitle>Backups</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Stat label="Exports" value={fmtBytes(dirs.exports_bytes)} />
-            <Stat label="Local backups" value={fmtBytes(dirs.backups_bytes)} />
+            <Stat
+              label="Last good backup"
+              value={backup.last_ok_at ? fmtDate(backup.last_ok_at) : "Never"}
+              hint={
+                backup.last_result
+                  ? `${backup.last_result.conversations.toLocaleString()} chats · ${fmtBytes(backup.last_result.bytes)} · ${backup.last_result.uploaded ? "offsite ✓" : "local only"}`
+                  : `Every ${backup.interval_hours} h`
+              }
+            />
+            <Stat label="Local backups" value={fmtBytes(dirs.backups_bytes)} hint={backup.dir} />
+            <p className="text-xs text-muted-foreground">
+              Offsite: {backup.remote || "not configured"} · Exports {fmtBytes(dirs.exports_bytes)}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              disabled={busy === "backup"}
+              onClick={() => run("backup", "")}
+            >
+              {busy === "backup" ? "Backing up…" : "Back up now"}
+            </Button>
           </CardContent>
         </Card>
       </div>
+
+      {(backup.stale || backup.last_error) && (
+        <div className="flex gap-3 rounded-md border border-red-500/40 bg-red-500/10 p-4">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+          <div className="text-sm">
+            <p className="font-medium text-red-600 dark:text-red-400">
+              {backup.last_error ? "The last backup failed" : "No recent backup"}
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              {backup.last_error
+                ? `${backup.last_error_at ? fmtDate(backup.last_error_at) + ": " : ""}${backup.last_error}`
+                : `No good backup in the last ${backup.interval_hours * 2} hours.`}{" "}
+              Until this is fixed, a lost or damaged database cannot be restored.
+            </p>
+          </div>
+        </div>
+      )}
 
       {trash.blacklisted > 0 && (
         <div className="flex gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-4">

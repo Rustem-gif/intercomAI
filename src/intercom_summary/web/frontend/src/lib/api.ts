@@ -201,6 +201,20 @@ export interface StorageStats {
     expiring_now: number;
   };
   dirs: { exports_bytes: number; backups_bytes: number };
+  backup: BackupStatus;
+}
+
+export interface BackupStatus {
+  dir: string;
+  remote: string;
+  interval_hours: number;
+  last_ok_at: string | null;
+  last_result: {
+    stamp: string; bytes: number; conversations: number; grades: number; uploaded: string | null;
+  } | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  stale: boolean;
 }
 
 export interface ConversationList {

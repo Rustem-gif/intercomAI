@@ -20,7 +20,7 @@ from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from intercom_summary import service
+from intercom_summary import backup, service
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import QA_EFFORT_LEVELS, settings
 from intercom_summary.storage.agent_groups_store import AgentGroupsStore
@@ -206,6 +206,27 @@ def create_app() -> FastAPI:
                     await asyncio.to_thread(_maybe_sync_lessons)
                 except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
                     log.exception("QA lessons tick failed")
+                await asyncio.sleep(3600)
+
+        asyncio.create_task(tick_forever())
+
+    @app.on_event("startup")
+    async def _backup_loop() -> None:
+        """Back up the DB every BACKUP_HOURS (backup.py), in-process for the same reason as the
+        history refresh: the launchd backup job was refused by macOS privacy protection for
+        ten weeks. A failed run is retried on the next hourly tick."""
+
+        if settings.backup_hours <= 0:
+            return
+
+        async def tick_forever() -> None:
+            await asyncio.sleep(120)
+            while True:
+                try:
+                    if await asyncio.to_thread(backup.backup_due):
+                        await asyncio.to_thread(backup.run_backup)
+                except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
+                    log.exception("backup tick failed")
                 await asyncio.sleep(3600)
 
         asyncio.create_task(tick_forever())
@@ -979,9 +1000,19 @@ def create_app() -> FastAPI:
             },
             "dirs": {
                 "exports_bytes": dir_size(settings.export_dir),
-                "backups_bytes": dir_size(db_path.parent / "backups"),
+                "backups_bytes": dir_size(settings.backup_dir),
             },
+            "backup": backup.status(db_path),
         }
+
+    @app.post("/api/storage/backup")
+    def backup_now(user: dict = Depends(auth.require_admin)):
+        """Make a backup immediately (DB snapshot + offsite copy), instead of waiting a day."""
+        try:
+            result = backup.run_backup()
+        except Exception as exc:  # noqa: BLE001 — recorded in meta; show it to the admin
+            raise HTTPException(500, f"Backup failed: {exc}") from exc
+        return {"result": result, "backup": backup.status()}
 
     @app.post("/api/storage/expire-trash")
     def expire_trash_now(user: dict = Depends(auth.require_admin)):
@@ -3079,7 +3110,23 @@ app = create_app()
 
 
 def main() -> None:
+    import os
+    import sys
+
     import uvicorn
+
+    from intercom_summary.storage import db as _db
+
+    db_path = Path(settings.db_path)
+    if not db_path.exists() and os.environ.get("ALLOW_NEW_DB", "").lower() not in ("1", "yes", "true"):
+        # A missing DB on a live install means data loss or an unmounted disk (DB_PATH may sit
+        # on an external drive), never "first run". Starting would show an empty service.
+        log.critical("Database not found at %s (resolved: %s). Not starting. Restore it from a "
+                     "backup, mount its disk, or set ALLOW_NEW_DB=1 for a deliberate fresh "
+                     "install.", db_path, db_path.resolve())
+        sys.exit(1)
+    _db.connect(db_path).close()          # create it now if ALLOW_NEW_DB, then guard it
+    _db.REQUIRE_EXISTING = db_path
 
     log.info("Starting Intercom QA dashboard on %s:%d", settings.web_host, settings.web_port)
     uvicorn.run(app, host=settings.web_host, port=settings.web_port)

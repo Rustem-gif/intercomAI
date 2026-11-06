@@ -230,6 +230,17 @@ class Settings:
     roles_path: Path = field(default_factory=lambda: Path(_env("ROLES_PATH", "./config/roles.yaml")))
     rules_path: Path = field(default_factory=lambda: Path(_env("RULES_PATH", "./rules/support_rules.md")))
     export_dir: Path = field(default_factory=lambda: Path(_env("EXPORT_DIR", "./data/exports")))
+    # Backups (backup.py), made by the web app itself every BACKUP_HOURS: a launchd job started
+    # from ~/Desktop is refused by macOS privacy protection, which silently stopped the old
+    # nightly job from 26 Aug to 6 Nov 2026 — and the DB was lost on 6 Nov. Keep BACKUP_DIR on
+    # a different disk from DB_PATH, so one failure cannot take both.
+    backup_dir: Path = field(default_factory=lambda: Path(_env(
+        "BACKUP_DIR", str(Path.home() / "Library/Application Support/intercom-qa/backups"))))
+    backup_hours: int = field(default_factory=lambda: int(_env("BACKUP_HOURS", "24") or "24"))
+    backup_keep_days: int = field(default_factory=lambda: int(_env("BACKUP_KEEP_DAYS", "7") or "7"))
+    # Offsite copy via rclone, e.g. "gdrive:intercom-backup"; empty = local only.
+    rclone_remote: str = field(default_factory=lambda: _env("RCLONE_REMOTE", "").strip().rstrip("/"))
+    rclone_bin: str = field(default_factory=lambda: _env("RCLONE_BIN", ""))
     web_users_path: Path = field(default_factory=lambda: Path(_env("WEB_USERS_PATH", "./config/web_users.yaml")))
     qa_prompt_path: Path = field(default_factory=lambda: Path(_env("QA_PROMPT_PATH", "./rules/qa_system_prompt.txt")))
     # The VIP loop (service.vip_auto_cycle): every VIP_AUTO_HOURS the web app collects the VIP
