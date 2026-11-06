@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from intercom_summary.settings import settings
+from intercom_summary.storage import journal as _journal
 
 
 class SampleFrozenError(Exception):
@@ -299,18 +300,24 @@ class CalibrationStore:
 
     def save_review(self, run_id: str, conversation_id: str, human_score: int, note: str,
                     reviewed_by: str, human_criteria: dict | None = None,
-                    human_deductions: list | None = None) -> bool:
+                    human_deductions: list | None = None, *,
+                    at: str | None = None, journal: bool = True) -> bool:
         cur = self._conn.execute(
             """UPDATE calibration_results
                   SET human_score=?, human_note=?, reviewed_by=?, reviewed_at=?,
                       human_criteria=?, human_deductions=?
                 WHERE run_id=? AND conversation_id=? AND status='graded'""",
-            (human_score, note, reviewed_by, _now(),
+            (human_score, note, reviewed_by, (at := at or _now()),
              json.dumps(human_criteria) if human_criteria else None,
              json.dumps(human_deductions) if human_deductions else None,
              run_id, conversation_id),
         )
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("calibration.review", at=at, run_id=run_id,
+                            conversation_id=conversation_id, human_score=human_score, note=note,
+                            reviewed_by=reviewed_by, human_criteria=human_criteria,
+                            human_deductions=human_deductions)
         return cur.rowcount > 0
 
 

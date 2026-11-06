@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from intercom_summary.settings import settings
+from intercom_summary.storage import journal as _journal
 
 
 def _now() -> str:
@@ -30,6 +31,9 @@ class GradeDisputesStore:
         reason: str,
         created_via: str,
         created_by: str,
+        *,
+        at: str | None = None,
+        journal: bool = True,
     ) -> bool:
         """Open a new dispute. Returns False if one is already open/accepted for this
         conversation (a rejected dispute may be re-raised)."""
@@ -41,9 +45,13 @@ class GradeDisputesStore:
                (conversation_id, agent_name, reason, created_via, created_by, created_at,
                 status, resolution_note, resolved_by, resolved_at)
                VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)""",
-            (conversation_id, agent_name, reason.strip(), created_via, created_by, _now()),
+            (conversation_id, agent_name, reason.strip(), created_via, created_by, (at := at or _now())),
         )
         self._conn.commit()
+        if journal:
+            _journal.record("dispute.create", at=at, conversation_id=conversation_id,
+                            agent_name=agent_name, reason=reason.strip(),
+                            created_via=created_via, created_by=created_by)
         return True
 
     def get(self, conversation_id: str) -> dict | None:
@@ -53,7 +61,8 @@ class GradeDisputesStore:
         return dict(row) if row else None
 
     def resolve(
-        self, conversation_id: str, status: str, note: str, resolved_by: str
+        self, conversation_id: str, status: str, note: str, resolved_by: str, *,
+        at: str | None = None, journal: bool = True,
     ) -> bool:
         """Set an open dispute to 'accepted' or 'rejected'. The actual score change (on
         accept) is applied separately via the grade-override flow."""
@@ -61,9 +70,12 @@ class GradeDisputesStore:
             """UPDATE grade_disputes
                SET status=?, resolution_note=?, resolved_by=?, resolved_at=?
                WHERE conversation_id=?""",
-            (status, note.strip(), resolved_by, _now(), conversation_id),
+            (status, note.strip(), resolved_by, (at := at or _now()), conversation_id),
         )
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("dispute.resolve", at=at, conversation_id=conversation_id,
+                            status=status, note=note.strip(), resolved_by=resolved_by)
         return cur.rowcount > 0
 
     def list(self, status: str | None = None, agent: str | None = None) -> list[dict]:

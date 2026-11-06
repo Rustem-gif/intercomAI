@@ -241,6 +241,17 @@ class Settings:
     # Offsite copy via rclone, e.g. "gdrive:intercom-backup"; empty = local only.
     rclone_remote: str = field(default_factory=lambda: _env("RCLONE_REMOTE", "").strip().rstrip("/"))
     rclone_bin: str = field(default_factory=lambda: _env("RCLONE_BIN", ""))
+    # Slack channel id for "data is not safely backed up" alerts (needs SLACK_BOT_TOKEN and the
+    # bot in that channel); empty = no Slack alert, the in-app badge still shows it.
+    backup_alert_slack_channel: str = field(default_factory=lambda: _env("BACKUP_ALERT_SLACK_CHANNEL", ""))
+    backup_alert_hours: int = field(default_factory=lambda: int(_env("BACKUP_ALERT_HOURS", "12") or "12"))
+    # QA action journal (storage/journal.py): every re-score/Agree/comment/dispute/tag is also
+    # appended here the moment it is saved, and copied offsite hourly, so a lost DB costs QA no
+    # work (scripts/replay_journal.py). Keep it on a different disk from DB_PATH.
+    journal_dir: Path = field(default_factory=lambda: Path(_env(
+        "JOURNAL_DIR", str(Path.home() / "Library/Application Support/intercom-qa/journal"))))
+    journal_enabled: bool = field(default_factory=lambda: _env("JOURNAL", "on").lower()
+                                  not in ("0", "off", "false", "no"))
     web_users_path: Path = field(default_factory=lambda: Path(_env("WEB_USERS_PATH", "./config/web_users.yaml")))
     qa_prompt_path: Path = field(default_factory=lambda: Path(_env("QA_PROMPT_PATH", "./rules/qa_system_prompt.txt")))
     # The VIP loop (service.vip_auto_cycle): every VIP_AUTO_HOURS the web app collects the VIP

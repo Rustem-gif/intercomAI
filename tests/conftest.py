@@ -74,3 +74,13 @@ def _no_back_office():
     object.__setattr__(settings, "bo_sync", old[0])
     object.__setattr__(settings, "bo_kb_password", old[1])
     object.__setattr__(settings, "bo_kb_otp_secret", old[2])
+
+
+@pytest.fixture(autouse=True)
+def _tmp_journal(tmp_path_factory):
+    """Store methods append QA actions to the journal (storage/journal.py). Tests must never
+    write into the real one, so every test gets its own empty journal directory."""
+    old = settings.journal_dir
+    object.__setattr__(settings, "journal_dir", tmp_path_factory.mktemp("journal"))
+    yield
+    object.__setattr__(settings, "journal_dir", old)

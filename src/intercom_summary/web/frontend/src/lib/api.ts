@@ -202,6 +202,11 @@ export interface StorageStats {
   };
   dirs: { exports_bytes: number; backups_bytes: number };
   backup: BackupStatus;
+  journal: {
+    enabled: boolean; dir: string; files: number; bytes: number; entries_this_month: number;
+    last_entry_at: string | null; last_error: string | null; last_error_at: string | null;
+  };
+  health: { ok: boolean; problems: string[] };
 }
 
 export interface BackupStatus {
@@ -215,6 +220,8 @@ export interface BackupStatus {
   last_error: string | null;
   last_error_at: string | null;
   stale: boolean;
+  journal_last_sync_at: string | null;
+  journal_sync_error: string | null;
 }
 
 export interface ConversationList {

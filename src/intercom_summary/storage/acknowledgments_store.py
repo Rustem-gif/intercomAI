@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from intercom_summary.settings import settings
+from intercom_summary.storage import journal as _journal
 
 
 class AcknowledgmentsStore:
@@ -27,6 +28,8 @@ class AcknowledgmentsStore:
                 (token, conversation_id),
             )
             self._conn.commit()
+            _journal.record("ack.set", token=token, conversation_id=conversation_id,
+                            acknowledged=False)
             return False
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
@@ -34,6 +37,8 @@ class AcknowledgmentsStore:
             (token, conversation_id, now),
         )
         self._conn.commit()
+        _journal.record("ack.set", at=now, token=token, conversation_id=conversation_id,
+                        acknowledged=True)
         return True
 
     def get_acknowledged_ids(self, token: str) -> set[str]:

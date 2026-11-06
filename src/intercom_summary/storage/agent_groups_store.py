@@ -16,6 +16,7 @@ from pathlib import Path
 
 from intercom_summary.settings import settings
 from intercom_summary.storage.db import connect
+from intercom_summary.storage import journal as _journal
 
 
 def _now() -> str:
@@ -68,6 +69,8 @@ class AgentGroupsStore:
         agent_email: str = "",
         intercom_admin_id: str = "",
         updated_by: str = "",
+        *,
+        journal: bool = True,
     ) -> None:
         self._conn.execute(
             """INSERT INTO agent_groups
@@ -82,6 +85,10 @@ class AgentGroupsStore:
             (agent_name, agent_email, intercom_admin_id, group_id, _now(), updated_by),
         )
         self._conn.commit()
+        if journal:
+            _journal.record("group.set", agent_name=agent_name, group_id=group_id,
+                            agent_email=agent_email, intercom_admin_id=intercom_admin_id,
+                            updated_by=updated_by)
 
     def remove(self, agent_name: str) -> bool:
         """Drop the agent back to the standard group."""

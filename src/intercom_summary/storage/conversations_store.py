@@ -12,6 +12,7 @@ from intercom_summary.intercom.models import Conversation
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import settings
 from intercom_summary.storage.db import connect
+from intercom_summary.storage import journal as _journal
 
 log = get_logger(__name__)
 
@@ -257,12 +258,16 @@ class ConversationsStore:
         )
         self._conn.commit()
 
-    def update_custom_tags(self, conversation_id: str, tags: list[str]) -> bool:
+    def update_custom_tags(self, conversation_id: str, tags: list[str], *,
+                           at: str | None = None, journal: bool = True) -> bool:
+        clean = [t.strip() for t in tags if t.strip()]
         cur = self._conn.execute(
             "UPDATE conversations SET custom_tags=? WHERE id=?",
-            (",".join(t.strip() for t in tags if t.strip()), conversation_id),
+            (",".join(clean), conversation_id),
         )
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("tags.set", at=at, conversation_id=conversation_id, tags=clean)
         return cur.rowcount > 0
 
     def all_custom_tags(self) -> list[str]:

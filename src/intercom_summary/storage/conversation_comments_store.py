@@ -7,6 +7,7 @@ from pathlib import Path
 
 from intercom_summary.settings import settings
 from intercom_summary.storage.db import connect
+from intercom_summary.storage import journal as _journal
 
 
 class ConversationCommentsStore:
@@ -16,14 +17,19 @@ class ConversationCommentsStore:
     def close(self) -> None:
         self._conn.close()
 
-    def add(self, conversation_id: str, author: str, text: str) -> dict:
-        comment_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
+    def add(self, conversation_id: str, author: str, text: str, *,
+            comment_id: str | None = None, at: str | None = None, journal: bool = True) -> dict:
+        comment_id = comment_id or str(uuid.uuid4())
+        now = at or datetime.now(timezone.utc).isoformat()
+        # OR IGNORE: a journal replay re-adds a comment under its original id.
         self._conn.execute(
-            "INSERT INTO conversation_comments (id, conversation_id, author, text, created_at) VALUES (?,?,?,?,?)",
+            "INSERT OR IGNORE INTO conversation_comments (id, conversation_id, author, text, created_at) VALUES (?,?,?,?,?)",
             (comment_id, conversation_id, author, text, now),
         )
         self._conn.commit()
+        if journal:
+            _journal.record("comment.add", at=now, comment_id=comment_id,
+                            conversation_id=conversation_id, author=author, text=text)
         return {"id": comment_id, "conversation_id": conversation_id, "author": author, "text": text, "created_at": now}
 
     def list(self, conversation_id: str) -> list[dict]:
@@ -33,9 +39,11 @@ class ConversationCommentsStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def delete(self, comment_id: str) -> bool:
+    def delete(self, comment_id: str, *, journal: bool = True) -> bool:
         cur = self._conn.execute("DELETE FROM conversation_comments WHERE id=?", (comment_id,))
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("comment.delete", comment_id=comment_id)
         return cur.rowcount > 0
 
     def get(self, comment_id: str) -> dict | None:

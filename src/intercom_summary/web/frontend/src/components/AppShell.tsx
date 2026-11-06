@@ -25,6 +25,7 @@ import { useGroup } from "@/lib/group";
 import type { Group } from "@/lib/api";
 import { Button } from "./ui/primitives";
 import BrandTabs from "./BrandTabs";
+import BackupBadge, { BackupBanner } from "./BackupBadge";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -103,6 +104,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <header className="flex h-14 items-center justify-between border-b bg-card px-6">
           <div className="text-sm text-muted-foreground md:hidden">Intercom QA</div>
           <div className="ml-auto flex items-center gap-2">
+            <BackupBadge />
             {/* Group switcher. VIP is graded against its own ruleset, so its scores are not
                 comparable with standard ones — every page shows one group at a time. */}
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -131,6 +133,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </Button>
           </div>
         </header>
+        <BackupBanner />
         {/* Brand scope. Renders nothing while the workspace has only one brand. */}
         <BrandTabs />
         <main className="flex-1 overflow-auto p-6">
