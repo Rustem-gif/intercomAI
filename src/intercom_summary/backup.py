@@ -35,6 +35,9 @@ META_OK = "backup.last_ok_at"
 META_RESULT = "backup.last_result"
 META_ERROR = "backup.last_error"
 META_ERROR_AT = "backup.last_error_at"
+META_JOURNAL_SYNC = "journal.last_sync_at"
+META_JOURNAL_SYNC_ERROR = "journal.last_sync_error"
+META_ALERT = "backup.last_alert_at"
 
 
 def _now() -> datetime:
@@ -69,8 +72,9 @@ def status(db_path: Path | None = None) -> dict[str, Any]:
     conn = _meta_conn(db_path)
     try:
         rows = dict(conn.execute(
-            "SELECT key, value FROM meta WHERE key IN (?,?,?,?)",
-            (META_OK, META_RESULT, META_ERROR, META_ERROR_AT)).fetchall())
+            "SELECT key, value FROM meta WHERE key IN (?,?,?,?,?,?)",
+            (META_OK, META_RESULT, META_ERROR, META_ERROR_AT, META_JOURNAL_SYNC,
+             META_JOURNAL_SYNC_ERROR)).fetchall())
     finally:
         conn.close()
     last_ok = rows.get(META_OK)
@@ -88,7 +92,98 @@ def status(db_path: Path | None = None) -> dict[str, Any]:
         "last_error": rows.get(META_ERROR) if failing else None,
         "last_error_at": error_at if failing else None,
         "stale": stale,
+        "journal_last_sync_at": rows.get(META_JOURNAL_SYNC),
+        "journal_sync_error": rows.get(META_JOURNAL_SYNC_ERROR) or None,
     }
+
+
+def health(db_path: Path | None = None) -> dict[str, Any]:
+    """One verdict for the top-bar badge every user sees: is our data safe right now?
+    ok = a good backup within 2x the interval, the last backup run did not fail, the offsite
+    journal sync is not failing, and journal writes are not failing."""
+    from intercom_summary.storage import journal
+
+    st = status(db_path)
+    js = journal.status()
+    problems = []
+    if st["last_error"]:
+        problems.append(f"Last backup failed: {st['last_error']}")
+    if st["stale"]:
+        problems.append("No good backup in the last "
+                        f"{2 * settings.backup_hours} hours")
+    if settings.rclone_remote and not (st["last_result"] or {}).get("uploaded"):
+        problems.append("The last backup was not copied offsite")
+    if st["journal_sync_error"]:
+        problems.append(f"QA journal offsite sync failing: {st['journal_sync_error']}")
+    if js["last_error"]:
+        problems.append(f"QA journal write failed: {js['last_error']}")
+    from intercom_summary import sheets_export
+
+    sh = sheets_export.status(db_path)
+    if sh.get("enabled") and sh.get("last_error"):
+        problems.append(f"Google Sheet copy failing: {sh['last_error']}")
+    return {"ok": not problems, "problems": problems, "last_ok_at": st["last_ok_at"],
+            "offsite": bool((st["last_result"] or {}).get("uploaded")),
+            "journal_last_entry_at": js["last_entry_at"],
+            "journal_last_sync_at": st["journal_last_sync_at"]}
+
+
+def sync_journal(db_path: Path | None = None) -> bool:
+    """Copy the QA action journal offsite (only changed files upload). Hourly from the web app.
+    Returns True on success; failures are recorded and shown, never raised."""
+    db_path = Path(db_path or settings.db_path)
+    src = Path(settings.journal_dir)
+    if not settings.rclone_remote or not src.exists():
+        return True
+    try:
+        rclone = _rclone()
+        if not rclone:
+            raise RuntimeError("RCLONE_REMOTE is set but rclone is not installed")
+        dest = f"{settings.rclone_remote}/journal"
+        proc = subprocess.run([rclone, "copy", str(src), dest], capture_output=True, text=True,
+                              timeout=600)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout).strip()[-300:] or "rclone failed")
+        _set_meta(db_path, {META_JOURNAL_SYNC: _now().isoformat(), META_JOURNAL_SYNC_ERROR: ""})
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.error("QA JOURNAL OFFSITE SYNC FAILED: %s", exc)
+        try:
+            _set_meta(db_path, {META_JOURNAL_SYNC_ERROR: f"{_now().isoformat()}: {exc}"})
+        except Exception:  # noqa: BLE001
+            log.exception("could not record the journal sync failure")
+        return False
+
+
+def alert_if_unhealthy(db_path: Path | None = None) -> bool:
+    """Post to BACKUP_ALERT_SLACK_CHANNEL when the data is not safe, at most every
+    BACKUP_ALERT_HOURS. Returns True when an alert was sent."""
+    if not (settings.backup_alert_slack_channel and settings.slack_bot_token):
+        return False
+    db_path = Path(db_path or settings.db_path)
+    h = health(db_path)
+    if h["ok"]:
+        return False
+    conn = _meta_conn(db_path)
+    try:
+        r = conn.execute("SELECT value FROM meta WHERE key=?", (META_ALERT,)).fetchone()
+    finally:
+        conn.close()
+    if r and r[0] and _now() - datetime.fromisoformat(r[0]) < timedelta(hours=settings.backup_alert_hours):
+        return False
+    try:
+        from slack_sdk import WebClient
+
+        WebClient(token=settings.slack_bot_token).chat_postMessage(
+            channel=settings.backup_alert_slack_channel,
+            text=(":rotating_light: *Intercom QA: data is not safely backed up*\n"
+                  + "\n".join(f"• {p}" for p in h["problems"])
+                  + "\nCheck the Storage page."))
+    except Exception:  # noqa: BLE001
+        log.exception("backup alert to Slack failed")
+        return False
+    _set_meta(db_path, {META_ALERT: _now().isoformat()})
+    return True
 
 
 def _rclone() -> str | None:
@@ -126,6 +221,11 @@ def run_backup(db_path: Path | None = None, backup_dir: Path | None = None,
         if not db_path.exists():
             raise FileNotFoundError(f"database not found at {db_path}")
         snap.mkdir(parents=True, exist_ok=False)
+        # Read before the copy: every journal entry up to here is in the copy. Anything written
+        # during it is replayed again after a restore, which is harmless (replay is idempotent).
+        from intercom_summary.storage import journal
+
+        journal_through = journal.last_ts()
 
         target = snap / "grades.db"
         src = sqlite3.connect(db_path)
@@ -146,9 +246,16 @@ def run_backup(db_path: Path | None = None, backup_dir: Path | None = None,
                 if (root / name).exists():
                     tar.add(root / name, arcname=name)
 
+        # The journal entries this snapshot already contains: a replay after restoring it
+        # starts here (scripts/replay_journal.py --since <journal_through>).
+        jdir = Path(settings.journal_dir)
+        if jdir.exists():
+            shutil.copytree(jdir, snap / "journal")
+
         result: dict[str, Any] = {
             "stamp": stamp, "path": str(snap), "bytes": target.stat().st_size,
             "conversations": conversations, "grades": grades, "uploaded": None,
+            "journal_through": journal_through,
         }
         result["pruned"] = _prune(backup_dir, settings.backup_keep_days, keep=stamp)
 

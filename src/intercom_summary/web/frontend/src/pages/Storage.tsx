@@ -45,6 +45,7 @@ export default function Storage() {
         alert(`Purged ${r.purged} expired item(s) from the Trash.`);
       }
       qc.invalidateQueries({ queryKey: ["storage"] });
+      qc.invalidateQueries({ queryKey: ["backup-health"] });
       qc.invalidateQueries({ queryKey: ["trash"] });
     } catch (e: any) {
       alert(e.message || "Failed");
@@ -60,7 +61,7 @@ export default function Storage() {
       </div>
     );
 
-  const { db, trash, dirs, backup } = data;
+  const { db, trash, dirs, backup, journal } = data;
 
   return (
     <div className="space-y-6">
@@ -155,8 +156,19 @@ export default function Storage() {
               }
             />
             <Stat label="Local backups" value={fmtBytes(dirs.backups_bytes)} hint={backup.dir} />
+            <Stat
+              label="QA action journal"
+              value={`${journal.entries_this_month.toLocaleString()} this month`}
+              hint={`Last entry ${journal.last_entry_at ? fmtDate(journal.last_entry_at) : "—"} · offsite sync ${backup.journal_last_sync_at ? fmtDate(backup.journal_last_sync_at) : "never"}`}
+            />
             <p className="text-xs text-muted-foreground">
               Offsite: {backup.remote || "not configured"} · Exports {fmtBytes(dirs.exports_bytes)}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Google Sheet:{" "}
+              {data.sheets.enabled
+                ? `updated ${data.sheets.grades_at ? fmtDate(data.sheets.grades_at) : "not yet"} (hourly)`
+                : "not configured (GSHEET_ID)"}
             </p>
             <Button
               variant="outline"
@@ -171,18 +183,18 @@ export default function Storage() {
         </Card>
       </div>
 
-      {(backup.stale || backup.last_error) && (
+      {!data.health.ok && (
         <div className="flex gap-3 rounded-md border border-red-500/40 bg-red-500/10 p-4">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
           <div className="text-sm">
             <p className="font-medium text-red-600 dark:text-red-400">
-              {backup.last_error ? "The last backup failed" : "No recent backup"}
+              The data is not safely backed up
             </p>
+            <ul className="mt-1 list-disc pl-4 text-muted-foreground">
+              {data.health.problems.map((p) => <li key={p}>{p}</li>)}
+            </ul>
             <p className="mt-1 text-muted-foreground">
-              {backup.last_error
-                ? `${backup.last_error_at ? fmtDate(backup.last_error_at) + ": " : ""}${backup.last_error}`
-                : `No good backup in the last ${backup.interval_hours * 2} hours.`}{" "}
-              Until this is fixed, a lost or damaged database cannot be restored.
+              Until this is fixed, a lost or damaged database cannot be fully restored.
             </p>
           </div>
         </div>

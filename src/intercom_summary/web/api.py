@@ -20,7 +20,8 @@ from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from intercom_summary import backup, service
+from intercom_summary import backup, service, sheets_export
+from intercom_summary.storage import journal as _journal
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import QA_EFFORT_LEVELS, settings
 from intercom_summary.storage.agent_groups_store import AgentGroupsStore
@@ -222,11 +223,15 @@ def create_app() -> FastAPI:
         async def tick_forever() -> None:
             await asyncio.sleep(120)
             while True:
-                try:
-                    if await asyncio.to_thread(backup.backup_due):
-                        await asyncio.to_thread(backup.run_backup)
-                except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
-                    log.exception("backup tick failed")
+                # Hourly: the QA journal goes offsite every tick; the DB snapshot when due.
+                for step in (backup.sync_journal,
+                             lambda: backup.backup_due() and backup.run_backup(),
+                             sheets_export.export_grades,      # Google Sheet copy, hourly
+                             backup.alert_if_unhealthy):
+                    try:
+                        await asyncio.to_thread(step)
+                    except Exception:  # noqa: BLE001 — the loop must outlive one bad tick
+                        log.exception("backup tick step failed")
                 await asyncio.sleep(3600)
 
         asyncio.create_task(tick_forever())
@@ -1003,13 +1008,30 @@ def create_app() -> FastAPI:
                 "backups_bytes": dir_size(settings.backup_dir),
             },
             "backup": backup.status(db_path),
+            "journal": _journal.status(),
+            "sheets": sheets_export.status(db_path),
+            "health": backup.health(db_path),
         }
+
+    @app.get("/api/health/backup")
+    def backup_health(user: dict = Depends(auth.current_user)):
+        """The top-bar badge (every signed-in user): is the data safely backed up right now?
+        No paths or remote names — just the verdict and what is wrong."""
+        h = backup.health()
+        return {"ok": h["ok"], "problems": h["problems"], "last_ok_at": h["last_ok_at"],
+                "offsite": h["offsite"], "journal_last_sync_at": h["journal_last_sync_at"]}
 
     @app.post("/api/storage/backup")
     def backup_now(user: dict = Depends(auth.require_admin)):
         """Make a backup immediately (DB snapshot + offsite copy), instead of waiting a day."""
         try:
+            backup.sync_journal()
             result = backup.run_backup()
+            if sheets_export.enabled():
+                try:
+                    sheets_export.export_grades()
+                except Exception:  # noqa: BLE001 — the snapshot is made; the badge shows this
+                    log.exception("Google Sheet copy failed after a manual backup")
         except Exception as exc:  # noqa: BLE001 — recorded in meta; show it to the admin
             raise HTTPException(500, f"Backup failed: {exc}") from exc
         return {"result": result, "backup": backup.status()}

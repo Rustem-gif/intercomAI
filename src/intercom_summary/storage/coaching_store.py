@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from intercom_summary.settings import settings
+from intercom_summary.storage import journal as _journal
 
 
 class CoachingStore:
@@ -96,7 +97,8 @@ class CoachingStore:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def add_item(self, session_id: str, conversation_id: str, note: str = "") -> None:
+    def add_item(self, session_id: str, conversation_id: str, note: str = "", *,
+                 journal: bool = True) -> None:
         self._conn.execute(
             """INSERT OR REPLACE INTO coaching_items (session_id, conversation_id, note)
                VALUES (?, ?, ?)""",
@@ -107,6 +109,9 @@ class CoachingStore:
             (self._now(), session_id),
         )
         self._conn.commit()
+        if journal:
+            _journal.record("coaching.add_item", session_id=session_id,
+                            conversation_id=conversation_id, note=note)
 
     def remove_item(self, session_id: str, conversation_id: str) -> bool:
         cur = self._conn.execute(

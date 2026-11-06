@@ -11,6 +11,10 @@ cd "$ROOT"
 exec "$ROOT/.venv/bin/python" -c "
 import json, logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
-from intercom_summary.backup import run_backup
+from intercom_summary.backup import run_backup, sync_journal
+from intercom_summary import sheets_export
+sync_journal()
 print(json.dumps(run_backup(), indent=1))
+if sheets_export.enabled():
+    print('Google Sheet rows:', sheets_export.export_grades())
 "

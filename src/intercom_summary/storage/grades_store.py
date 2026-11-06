@@ -12,6 +12,7 @@ from intercom_summary.settings import settings
 from intercom_summary.qa.schema import ConversationGrade
 from intercom_summary.storage.conversations_store import IGNORE_TAGS
 from intercom_summary.storage.db import connect
+from intercom_summary.storage import journal as _journal
 
 
 def _now() -> str:
@@ -409,6 +410,9 @@ class GradesStore:
         overridden_by: str,
         human_criteria: dict[str, str] | None = None,
         human_deductions: list[dict] | None = None,
+        *,
+        at: str | None = None,
+        journal: bool = True,
     ) -> bool:
         """Persist a human override. `human_criteria` (a {criterion_id: verdict} diff vs the
         AI's verdicts) records ScoreBuddy-style per-criterion changes; `human_deductions` is
@@ -423,24 +427,33 @@ class GradesStore:
                    human_criteria=?, human_deductions=?
                WHERE conversation_id=?""",
             (
-                human_score, reason.strip(), overridden_by, _now(),
+                human_score, reason.strip(), overridden_by, (at := at or _now()),
                 json.dumps(human_criteria) if human_criteria else None,
                 json.dumps(human_deductions) if human_deductions else None,
                 conversation_id,
             ),
         )
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("grade.override", at=at, conversation_id=conversation_id,
+                            human_score=human_score, reason=reason.strip(),
+                            overridden_by=overridden_by, human_criteria=human_criteria,
+                            human_deductions=human_deductions)
         return cur.rowcount > 0
 
-    def confirm(self, conversation_id: str, confirmed_by: str | None) -> bool:
+    def confirm(self, conversation_id: str, confirmed_by: str | None, *,
+                at: str | None = None, journal: bool = True) -> bool:
         """Record (or with None, withdraw) a QC manager's agreement with the AI grade as it
         stands. A chat with a human override has a human verdict already, so it cannot be
         confirmed — False then, and when there is no grade."""
         cur = self._conn.execute(
             "UPDATE grades SET human_confirmed_by=?, human_confirmed_at=? "
             "WHERE conversation_id=? AND human_score IS NULL",
-            (confirmed_by, _now() if confirmed_by else None, conversation_id))
+            (confirmed_by, (at := at or _now()) if confirmed_by else None, conversation_id))
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("grade.confirm", at=at, conversation_id=conversation_id,
+                            confirmed_by=confirmed_by)
         return cur.rowcount > 0
 
     def result_agreement(self, ruleset_id: str | None = None, since: str | None = None,

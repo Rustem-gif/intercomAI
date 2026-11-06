@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from intercom_summary.settings import settings
+from intercom_summary.storage import journal as _journal
 
 
 def _now() -> str:
@@ -229,14 +230,17 @@ class VipCasesStore:
             return True
         return row["case_version"] == case_version
 
-    def confirm(self, case_id: str, confirmed_by: str | None) -> bool:
+    def confirm(self, case_id: str, confirmed_by: str | None, *,
+                at: str | None = None, journal: bool = True) -> bool:
         """A reviewer's Agree with the AI grade as it stands (None withdraws it). A case with a
         human override already has a human verdict, so it cannot be confirmed."""
         cur = self._conn.execute(
             "UPDATE vip_grades SET human_confirmed_by=?, human_confirmed_at=? "
             "WHERE case_id=? AND human_score IS NULL",
-            (confirmed_by, _now() if confirmed_by else None, case_id))
+            (confirmed_by, (at := at or _now()) if confirmed_by else None, case_id))
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("vip.confirm", at=at, case_id=case_id, confirmed_by=confirmed_by)
         return cur.rowcount > 0
 
     def get_meta(self, key: str) -> str | None:
@@ -257,14 +261,19 @@ class VipCasesStore:
         return [dict(r) for r in rows]
 
     def save_override(self, case_id: str, human_score: int, reason: str, overridden_by: str,
-                      human_criteria: dict[str, str] | None = None) -> bool:
+                      human_criteria: dict[str, str] | None = None, *,
+                      at: str | None = None, journal: bool = True) -> bool:
         if not (reason or "").strip():
             raise ValueError("An override needs a written reason (scorecard §11)")
         cur = self._conn.execute(
             """UPDATE vip_grades SET human_score=?, human_criteria=?, override_reason=?,
                       overridden_by=?, overridden_at=? WHERE case_id=?""",
             (int(human_score), json.dumps(human_criteria) if human_criteria else None,
-             reason.strip(), overridden_by, _now(), case_id),
+             reason.strip(), overridden_by, (at := at or _now()), case_id),
         )
         self._conn.commit()
+        if cur.rowcount > 0 and journal:
+            _journal.record("vip.override", at=at, case_id=case_id, human_score=int(human_score),
+                            reason=reason.strip(), overridden_by=overridden_by,
+                            human_criteria=human_criteria)
         return cur.rowcount > 0

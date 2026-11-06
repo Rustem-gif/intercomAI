@@ -1089,10 +1089,49 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
   Why not launchd: a launchd job running a script under ~/Desktop is refused by macOS privacy
   protection — the old `com.intercom-qa-backup` job failed silently every night from 26 Aug to
   6 Nov 2026, so when the DB was deleted the newest copy was ten weeks old.
-- **Restoring:** stop the service (`launchctl bootout gui/$(id -u)/com.intercom-qa-web`), copy a
-  snapshot's `grades.db` (local, or `rclone copy <remote>/<stamp> <dir>`) over `data/grades.db`,
-  then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.intercom-qa-web.plist`.
-  An older DB is migrated on start; re-fetch the missing dates from Intercom afterwards.
+- **QA action journal** (`storage/journal.py`). The DB is backed up only daily, so on top of
+  that every human action is appended the moment it is saved to
+  `JOURNAL_DIR/human-actions-YYYY-MM.jsonl` (default `~/Library/Application Support/intercom-qa/journal`,
+  the internal disk): re-scores, Agree, comments, disputes, tags, calibration reviews, coaching
+  items, agent-portal acknowledgments and group changes. The hooks live in the store methods
+  (`journal=True` by default), so web, Slack and portal paths are all covered. A new store
+  method that records human work must call `_journal.record(...)` too, and
+  `storage/journal_replay.py` must learn to replay it. The journal goes offsite every hour
+  (`backup.sync_journal`, to `RCLONE_REMOTE/journal`), and each snapshot records
+  `journal_through` and keeps a copy of the journal. A journal failure never blocks the action:
+  it is logged and shown red.
+- **Google Sheet copy** (`sheets_export.py`): a readable copy outside the app, rewritten hourly.
+  - The "Grades & QA" tab has one row per graded chat: the AI grade (score, PASS/FAIL) and all of
+    QA's work on it (re-score + reason + who/when, Agree, comment count + latest comment, dispute
+    status, tags, last QA action).
+  - Times are in Kyiv time. It is formatted on every write: coloured header, banding, filters,
+    PASS/FAIL colours, a score colour scale, and grey rows for log-restored grades.
+  - The "Status" tab has counts and the last update time.
+  - It isn't restorable; the snapshots and the journal are. The chronological history of QA
+    actions lives in the journal. A failure turns the badge red.
+  - Setup:
+    1. In Google Cloud, create a service account (no roles needed) and enable the **Google
+       Sheets API** on its project.
+    2. Download a JSON key to `config/google-service-account.json` (gitignored).
+    3. Share the sheet with the service account's email as **Editor**.
+    4. Set `GSHEET_ID=<the id in the sheet URL>` in `.env` and restart.
+- **Always visible:** a badge in the top bar of every page ("Backed up 3 h ago", or red "Backup
+  problem") reads `GET /api/health/backup`, and a red bar appears under the header while anything
+  is wrong. Set `BACKUP_ALERT_SLACK_CHANNEL` (a channel id the bot is in) to also get a Slack
+  alert, at most every `BACKUP_ALERT_HOURS` (12).
+- **Restoring:**
+  1. Stop the service: `launchctl bootout gui/$(id -u)/com.intercom-qa-web`.
+  2. Copy a snapshot's `grades.db` (local, or `rclone copy <remote>/<stamp> <dir>`) over
+     `data/grades.db`.
+  3. Replay QA's work since the snapshot:
+     `.venv/bin/python scripts/replay_journal.py --since <journal_through> --dry-run`, then again
+     without `--dry-run`. Add `--from-remote` if the local journal is gone too.
+     `journal_through` is in the snapshot's backup result; when in doubt, use an earlier time,
+     because the replay is idempotent.
+  4. Start the service: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.intercom-qa-web.plist`.
+     An older DB is migrated on start.
+  5. Re-fetch the missing dates from Intercom. Re-scores the replay reports as "no grade in the
+     restored database" apply once those chats are graded: run the replay again then.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
 - **The Trash blocks re-import.** Deleting a conversation individually moves it to
   `deleted_conversations` *and* marks it `blacklist=1`, so later Intercom fetches skip it —
