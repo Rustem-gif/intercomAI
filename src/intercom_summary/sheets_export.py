@@ -174,7 +174,9 @@ def sync_actions(db_path: Path | None = None, client=None) -> int:
             new = [e for e in journal.entries(since=through) if not through or e["ts"] > through]
             book = _open(client)
             ws = _tab(book, "QA actions", len(ACTION_HEADER))
-            if not ws.get_values("A1:A1"):
+            # A fresh tab answers [['']] or [], never None: test the cell's text, not the list.
+            first = ws.get_values("A1:A1")
+            if not (first and first[0] and first[0][0]):
                 ws.update(range_name="A1", values=[ACTION_HEADER])
                 ws.freeze(rows=1)
             if new:

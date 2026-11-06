@@ -29,7 +29,8 @@ class FakeWS:
         self.appended.extend(rows)
 
     def get_values(self, rng):
-        return [self.cells[1][:1]] if 1 in self.cells else []
+        # Like the real API: an empty tab answers [['']], not [].
+        return [self.cells[1][:1]] if 1 in self.cells else [[""]]
 
     def rows(self):
         return [self.cells[k] for k in sorted(self.cells)]
