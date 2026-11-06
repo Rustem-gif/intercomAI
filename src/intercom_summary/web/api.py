@@ -225,9 +225,8 @@ def create_app() -> FastAPI:
             while True:
                 # Hourly: the QA journal goes offsite every tick; the DB snapshot when due.
                 for step in (backup.sync_journal,
-                             sheets_export.sync_actions,
-                             lambda: backup.backup_due() and backup.run_backup()
-                             and sheets_export.export_grades(),
+                             lambda: backup.backup_due() and backup.run_backup(),
+                             sheets_export.export_grades,      # Google Sheet copy, hourly
                              backup.alert_if_unhealthy):
                     try:
                         await asyncio.to_thread(step)
@@ -1030,7 +1029,6 @@ def create_app() -> FastAPI:
             result = backup.run_backup()
             if sheets_export.enabled():
                 try:
-                    sheets_export.sync_actions()
                     sheets_export.export_grades()
                 except Exception:  # noqa: BLE001 — the snapshot is made; the badge shows this
                     log.exception("Google Sheet copy failed after a manual backup")

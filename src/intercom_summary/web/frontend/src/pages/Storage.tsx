@@ -167,7 +167,7 @@ export default function Storage() {
             <p className="text-xs text-muted-foreground">
               Google Sheet:{" "}
               {data.sheets.enabled
-                ? `grades ${data.sheets.grades_at ? fmtDate(data.sheets.grades_at) : "not yet"} · QA actions ${data.sheets.actions_synced_at ? fmtDate(data.sheets.actions_synced_at) : "not yet"}`
+                ? `updated ${data.sheets.grades_at ? fmtDate(data.sheets.grades_at) : "not yet"} (hourly)`
                 : "not configured (GSHEET_ID)"}
             </p>
             <Button

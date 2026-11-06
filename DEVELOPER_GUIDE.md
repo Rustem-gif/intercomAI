@@ -1100,12 +1100,15 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
   (`backup.sync_journal`, to `RCLONE_REMOTE/journal`), and each snapshot records
   `journal_through` and keeps a copy of the journal. A journal failure never blocks the action:
   it is logged and shown red.
-- **Google Sheet copy** (`sheets_export.py`): a readable copy outside the app.
-  - The "Grades" tab has one row per graded chat (AI score and result, QA re-score, reason, who,
-    when, Agree, tags) and is rewritten after every backup.
-  - The "QA actions" tab gets every journal entry appended hourly and is never rewritten.
-  - The "Status" tab shows when each was last written.
-  - It isn't restorable; the snapshots and the journal are. A failure turns the badge red.
+- **Google Sheet copy** (`sheets_export.py`): a readable copy outside the app, rewritten hourly.
+  - The "Grades & QA" tab has one row per graded chat: the AI grade (score, PASS/FAIL) and all of
+    QA's work on it (re-score + reason + who/when, Agree, comment count + latest comment, dispute
+    status, tags, last QA action).
+  - Times are in Kyiv time. It is formatted on every write: coloured header, banding, filters,
+    PASS/FAIL colours, a score colour scale, and grey rows for log-restored grades.
+  - The "Status" tab has counts and the last update time.
+  - It isn't restorable; the snapshots and the journal are. The chronological history of QA
+    actions lives in the journal. A failure turns the badge red.
   - Setup:
     1. In Google Cloud, create a service account (no roles needed) and enable the **Google
        Sheets API** on its project.

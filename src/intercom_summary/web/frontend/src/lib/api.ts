@@ -208,8 +208,7 @@ export interface StorageStats {
   };
   health: { ok: boolean; problems: string[] };
   sheets: {
-    enabled: boolean; grades_at?: string | null; actions_synced_at?: string | null;
-    last_error?: string | null;
+    enabled: boolean; grades_at?: string | null; last_error?: string | null;
   };
 }
 
