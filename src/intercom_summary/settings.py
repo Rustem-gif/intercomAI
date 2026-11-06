@@ -245,6 +245,12 @@ class Settings:
     # bot in that channel); empty = no Slack alert, the in-app badge still shows it.
     backup_alert_slack_channel: str = field(default_factory=lambda: _env("BACKUP_ALERT_SLACK_CHANNEL", ""))
     backup_alert_hours: int = field(default_factory=lambda: int(_env("BACKUP_ALERT_HOURS", "12") or "12"))
+    # Readable copy in Google Sheets (sheets_export.py): a "Grades" tab rewritten after every
+    # backup and a "QA actions" tab appended hourly from the journal. GSHEET_ID = the id in the
+    # sheet's URL; the sheet must be shared (Editor) with the service account's email.
+    gsheet_id: str = field(default_factory=lambda: _env("GSHEET_ID", "").strip())
+    google_service_account_file: Path = field(default_factory=lambda: Path(_env(
+        "GOOGLE_SERVICE_ACCOUNT_FILE", "./config/google-service-account.json")))
     # QA action journal (storage/journal.py): every re-score/Agree/comment/dispute/tag is also
     # appended here the moment it is saved, and copied offsite hourly, so a lost DB costs QA no
     # work (scripts/replay_journal.py). Keep it on a different disk from DB_PATH.

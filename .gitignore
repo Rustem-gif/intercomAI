@@ -25,3 +25,4 @@ image.png
 # data/ is a symlink to the KINGSTON drive; the old Desktop copy kept after the move
 /data
 data.desktop-old/
+config/google-service-account.json

@@ -20,7 +20,7 @@ from starlette.background import BackgroundTask
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
-from intercom_summary import backup, service
+from intercom_summary import backup, service, sheets_export
 from intercom_summary.storage import journal as _journal
 from intercom_summary.logging_setup import get_logger
 from intercom_summary.settings import QA_EFFORT_LEVELS, settings
@@ -225,7 +225,9 @@ def create_app() -> FastAPI:
             while True:
                 # Hourly: the QA journal goes offsite every tick; the DB snapshot when due.
                 for step in (backup.sync_journal,
-                             lambda: backup.backup_due() and backup.run_backup(),
+                             sheets_export.sync_actions,
+                             lambda: backup.backup_due() and backup.run_backup()
+                             and sheets_export.export_grades(),
                              backup.alert_if_unhealthy):
                     try:
                         await asyncio.to_thread(step)
@@ -1008,6 +1010,7 @@ def create_app() -> FastAPI:
             },
             "backup": backup.status(db_path),
             "journal": _journal.status(),
+            "sheets": sheets_export.status(db_path),
             "health": backup.health(db_path),
         }
 
@@ -1025,6 +1028,12 @@ def create_app() -> FastAPI:
         try:
             backup.sync_journal()
             result = backup.run_backup()
+            if sheets_export.enabled():
+                try:
+                    sheets_export.sync_actions()
+                    sheets_export.export_grades()
+                except Exception:  # noqa: BLE001 — the snapshot is made; the badge shows this
+                    log.exception("Google Sheet copy failed after a manual backup")
         except Exception as exc:  # noqa: BLE001 — recorded in meta; show it to the admin
             raise HTTPException(500, f"Backup failed: {exc}") from exc
         return {"result": result, "backup": backup.status()}

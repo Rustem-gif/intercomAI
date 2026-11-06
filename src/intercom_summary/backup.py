@@ -117,6 +117,11 @@ def health(db_path: Path | None = None) -> dict[str, Any]:
         problems.append(f"QA journal offsite sync failing: {st['journal_sync_error']}")
     if js["last_error"]:
         problems.append(f"QA journal write failed: {js['last_error']}")
+    from intercom_summary import sheets_export
+
+    sh = sheets_export.status(db_path)
+    if sh.get("enabled") and sh.get("last_error"):
+        problems.append(f"Google Sheet copy failing: {sh['last_error']}")
     return {"ok": not problems, "problems": problems, "last_ok_at": st["last_ok_at"],
             "offsite": bool((st["last_result"] or {}).get("uploaded")),
             "journal_last_entry_at": js["last_entry_at"],

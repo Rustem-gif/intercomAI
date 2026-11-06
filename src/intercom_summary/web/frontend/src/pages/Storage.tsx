@@ -164,6 +164,12 @@ export default function Storage() {
             <p className="text-xs text-muted-foreground">
               Offsite: {backup.remote || "not configured"} · Exports {fmtBytes(dirs.exports_bytes)}
             </p>
+            <p className="text-xs text-muted-foreground">
+              Google Sheet:{" "}
+              {data.sheets.enabled
+                ? `grades ${data.sheets.grades_at ? fmtDate(data.sheets.grades_at) : "not yet"} · QA actions ${data.sheets.actions_synced_at ? fmtDate(data.sheets.actions_synced_at) : "not yet"}`
+                : "not configured (GSHEET_ID)"}
+            </p>
             <Button
               variant="outline"
               size="sm"

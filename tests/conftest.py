@@ -84,3 +84,12 @@ def _tmp_journal(tmp_path_factory):
     object.__setattr__(settings, "journal_dir", tmp_path_factory.mktemp("journal"))
     yield
     object.__setattr__(settings, "journal_dir", old)
+
+
+@pytest.fixture(autouse=True)
+def _no_google_sheet():
+    """GSHEET_ID in .env must never make a test write to the real Google Sheet."""
+    old = settings.gsheet_id
+    object.__setattr__(settings, "gsheet_id", "")
+    yield
+    object.__setattr__(settings, "gsheet_id", old)

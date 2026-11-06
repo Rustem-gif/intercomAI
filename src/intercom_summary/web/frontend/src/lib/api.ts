@@ -207,6 +207,10 @@ export interface StorageStats {
     last_entry_at: string | null; last_error: string | null; last_error_at: string | null;
   };
   health: { ok: boolean; problems: string[] };
+  sheets: {
+    enabled: boolean; grades_at?: string | null; actions_synced_at?: string | null;
+    last_error?: string | null;
+  };
 }
 
 export interface BackupStatus {

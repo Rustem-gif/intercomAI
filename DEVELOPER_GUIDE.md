@@ -1100,6 +1100,18 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
   (`backup.sync_journal`, to `RCLONE_REMOTE/journal`), and each snapshot records
   `journal_through` and keeps a copy of the journal. A journal failure never blocks the action:
   it is logged and shown red.
+- **Google Sheet copy** (`sheets_export.py`): a readable copy outside the app.
+  - The "Grades" tab has one row per graded chat (AI score and result, QA re-score, reason, who,
+    when, Agree, tags) and is rewritten after every backup.
+  - The "QA actions" tab gets every journal entry appended hourly and is never rewritten.
+  - The "Status" tab shows when each was last written.
+  - It isn't restorable; the snapshots and the journal are. A failure turns the badge red.
+  - Setup:
+    1. In Google Cloud, create a service account (no roles needed) and enable the **Google
+       Sheets API** on its project.
+    2. Download a JSON key to `config/google-service-account.json` (gitignored).
+    3. Share the sheet with the service account's email as **Editor**.
+    4. Set `GSHEET_ID=<the id in the sheet URL>` in `.env` and restart.
 - **Always visible:** a badge in the top bar of every page ("Backed up 3 h ago", or red "Backup
   problem") reads `GET /api/health/backup`, and a red bar appears under the header while anything
   is wrong. Set `BACKUP_ALERT_SLACK_CHANNEL` (a channel id the bot is in) to also get a Slack
