@@ -48,9 +48,11 @@ intercomSummary/
 │   ├── web_users.yaml        ← Who can log into the website + their role (admin/analyst/viewer).
 │   │                           Gitignored (holds password hashes) — see web_users.example.yaml.
 │   └── roles.yaml            ← Who can use the Slack bot.
-├── data/
+├── data -> /Volumes/KINGSTON/intercom-qa/data
+│   │                           A symlink: the data lives on the KINGSTON drive, not ~/Desktop.
 │   ├── grades.db             ← THE DATABASE (conversations, grades, jobs, comments — everything).
-│   └── backups/              ← Automatic DB backups.
+│   └── exports/ kb/ bo/ eval/
+│                               Backups are NOT here — see §6 (~/Library/Application Support).
 ├── scripts/                  ← Helper shell scripts (run app, restart Ollama, backups, etc.).
 └── src/intercom_summary/
     ├── settings.py           ← Reads .env into one `settings` object used everywhere.
@@ -1072,7 +1074,25 @@ exposed publicly at **qc-intercom.qa-temple-of-serenity.cc**. `./restart.sh` is 
   `case_verdicts` is rebuilt from the human-verdict tables on every refresh, and `chat_labels`
   can be rebuilt from the chats for the price of the labels. `conversations.contact_id` is
   mirrored out of the payload for the player lookup.
-- It's backed up automatically into `data/backups/`.
+- **Where it lives.** `data/` is a symlink to `/Volumes/KINGSTON/intercom-qa/data` (moved off
+  ~/Desktop after the 6 Nov 2026 loss). KINGSTON is exFAT — no journal — so don't unplug it
+  while the service runs. If the drive is not mounted the web app **refuses to start**
+  (`Database not found … Not starting` in `~/Library/Logs/intercom-qa-web.err`), and a DB deleted
+  under a running app raises `DatabaseMissingError` instead of being silently recreated empty.
+  Set `ALLOW_NEW_DB=1` only for a deliberate fresh install.
+- **Backups** are made by the web app itself (`backup.py`), every `BACKUP_HOURS` (24): an online
+  SQLite copy + `config/` and `rules/`, checked with `quick_check`, into `BACKUP_DIR`
+  (default `~/Library/Application Support/intercom-qa/backups`, the internal disk, kept
+  `BACKUP_KEEP_DAYS`=7), then `rclone copy` to `RCLONE_REMOTE/<stamp>` (never pruned).
+  The Storage page shows the last good backup and turns red when one fails or none happened
+  in 2× the interval; **Back up now** runs one immediately.
+  Why not launchd: a launchd job running a script under ~/Desktop is refused by macOS privacy
+  protection — the old `com.intercom-qa-backup` job failed silently every night from 26 Aug to
+  6 Nov 2026, so when the DB was deleted the newest copy was ten weeks old.
+- **Restoring:** stop the service (`launchctl bootout gui/$(id -u)/com.intercom-qa-web`), copy a
+  snapshot's `grades.db` (local, or `rclone copy <remote>/<stamp> <dir>`) over `data/grades.db`,
+  then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.intercom-qa-web.plist`.
+  An older DB is migrated on start; re-fetch the missing dates from Intercom afterwards.
 - To wipe cached conversations and start fresh: `./scripts/clear_conversations.sh`.
 - **The Trash blocks re-import.** Deleting a conversation individually moves it to
   `deleted_conversations` *and* marks it `blacklist=1`, so later Intercom fetches skip it —
