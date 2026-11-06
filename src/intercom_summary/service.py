@@ -222,6 +222,82 @@ def _review_concurrency(backend: str) -> int:
     return {"ollama": 1, "api": settings.qa_concurrency}.get(backend.lower(), 2)
 
 
+def _refresh_before_grading(convos: list) -> tuple[dict[str, Any], int]:
+    """Re-read `convos` from Intercom, update the cache, and keep the ones ready to grade.
+
+    Returns ({id: fresh Conversation}, number held back as not settled). A chat is ready when it
+    is closed and was closed at least QA_SETTLE_MINUTES ago. If a chat cannot be re-read (the
+    network, a 5xx) its cached copy is graded as before — a refresh problem must not stop QA —
+    and the failure is logged. Off with QA_REFRESH_BEFORE_GRADE=off or without an Intercom token.
+    """
+    by_id = {c.id: c for c in convos}
+    if not (settings.qa_refresh_before_grade and settings.intercom_token):
+        return by_id, 0
+    from intercom_summary.intercom.client import IntercomClient
+    from intercom_summary.intercom.fetch import is_ticket
+    from intercom_summary.intercom.models import Admin
+
+    settle = timedelta(minutes=settings.qa_settle_minutes)
+    now = datetime.now(timezone.utc)
+
+    async def run() -> tuple[dict[str, Any], Counter]:
+        client = IntercomClient()
+        stats: Counter = Counter()
+        out: dict[str, Any] = {}
+        try:
+            admins = {str(a["id"]): Admin(id=str(a["id"]), name=a.get("name", ""),
+                                          email=a.get("email", ""))
+                      for a in await client.list_admins() if a.get("id")}
+            sem = asyncio.Semaphore(10)
+
+            async def one(cid: str) -> None:
+                async with sem:
+                    try:
+                        raw = await client.get_conversation(cid)
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("Could not re-read %s before grading (%s) — grading the "
+                                    "cached copy", cid, exc)
+                        stats["refresh_failed"] += 1
+                        out[cid] = by_id[cid]
+                        return
+                if is_ticket(raw):
+                    stats["ticket"] += 1
+                    return
+                closed_at = (raw.get("statistics") or {}).get("last_close_at") or raw.get("updated_at")
+                closed = datetime.fromtimestamp(closed_at, timezone.utc) if closed_at else None
+                if raw.get("state") != "closed" or (closed and now - closed < settle):
+                    stats["not_settled"] += 1
+                    return
+                out[cid] = normalise_conversation(raw, known_admins=admins)
+                stats["refreshed"] += 1
+
+            await asyncio.gather(*[one(cid) for cid in by_id])
+        finally:
+            await client.aclose()
+        return out, stats
+
+    try:
+        fresh, stats = asyncio.run(run())
+    except Exception as exc:  # noqa: BLE001 — e.g. Intercom down: grade the cache as before
+        log.warning("Refresh before grading failed (%s) — grading the cached copies", exc)
+        return by_id, 0
+    store = ConversationsStore()
+    try:
+        for cid, c in list(fresh.items()):
+            if c is not by_id.get(cid) and store.save(c):
+                # Read back: save() merges what the cache knows (VIP segment, brand, custom
+                # tags) into the payload, and the grader must see those too.
+                fresh[cid] = store.get(cid) or c
+    finally:
+        store.close()
+    if stats["not_settled"]:
+        log.info("Holding back %d chat(s) that are still open or closed under %d min ago — a "
+                 "later run grades them", stats["not_settled"], settings.qa_settle_minutes)
+    log.info("Re-read %d chat(s) from Intercom before grading%s", stats["refreshed"],
+             f" ({stats['refresh_failed']} kept from cache)" if stats["refresh_failed"] else "")
+    return fresh, stats["not_settled"] + stats["ticket"]
+
+
 def review_and_store(
     conversation_ids: list[str] | None = None,
     agents: list[str] | None = None,
@@ -360,6 +436,15 @@ def review_and_store(
 
         pending = [c for bucket in buckets.values() for c in bucket]
         skipped = total - len(pending)
+        # Grade what the chat is NOW, not what the cache saw: re-read each one from Intercom
+        # and hold back chats that are not closed-and-settled yet (they wait for a later run).
+        not_settled = 0
+        if conversations is None and pending:
+            fresh, not_settled = _refresh_before_grading(pending)
+            for rid in list(buckets):
+                buckets[rid] = [fresh[c.id] for c in buckets[rid] if c.id in fresh]
+            pending = [c for bucket in buckets.values() for c in bucket]
+            total -= not_settled
         _sync_back_office(pending)
         # Historical context: label the chats the index does not know yet, all at once and
         # before the fan-out, so no grading thread stops to label one chat at a time.
@@ -377,7 +462,8 @@ def review_and_store(
             on_progress(0, skipped, total)
 
         if not pending:
-            return {"graded": 0, "skipped": skipped, "failed": 0, "total": total, "ignored": ignored}
+            return {"graded": 0, "skipped": skipped, "failed": 0, "total": total, "ignored": ignored,
+                    "not_settled": not_settled}
 
         graded_count = 0
         failed_count = 0
@@ -543,6 +629,7 @@ def review_and_store(
             )
 
         return {
+            "not_settled": not_settled,
             "graded": graded_count,
             # `skipped` includes both already-graded and grading failures so the UI's
             # progress (graded + skipped) still reaches total; `failed` breaks it out.
