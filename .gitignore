@@ -15,7 +15,9 @@ data/bo/
 .pytest_cache/
 .DS_Store
 node_modules/
-src/intercom_summary/web/frontend/dist/
+# The built dashboard is committed: the server serves it as is, so a pull + restart deploys
+# a frontend change without Node on the server. Rebuild and commit it with every UI change.
+!src/intercom_summary/web/frontend/dist/
 config/web_users.yaml
 
 # Ad-hoc screenshots dropped in the project root

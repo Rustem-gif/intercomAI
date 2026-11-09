@@ -146,6 +146,9 @@ You almost never edit the running server directly. The loop is:
 > **Two rules that bite people here:**
 > - Frontend changes do **nothing** until you run `npm run build` — the server serves the
 >   pre-built files in `frontend/dist/`, not your raw edits.
+> - `frontend/dist/` is committed (since 2026-11-09): commit the rebuilt `dist/` together with
+>   the source change, so `git pull` + `./restart.sh` deploys it. Vite names files by content
+>   hash, so delete the old `dist/assets/*` before committing a new build.
 > - Backend (Python) changes do **nothing** until you run `./restart.sh` — and it is worse than
 >   "nothing". Imports here are lazy (inside the function that needs them), so a running server
 >   keeps the old version of every module it has already imported, while reading *new* code off
