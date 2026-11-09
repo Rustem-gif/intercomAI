@@ -4,14 +4,13 @@ import { api, ConversationDetail, CoachingSession, Comment } from "@/lib/api";
 import { useAuth, canWrite } from "@/lib/auth";
 import { Button, Spinner } from "./ui/primitives";
 import GradePanel from "./GradePanel";
-import AiChatPanel from "./AiChatPanel";
 import PlayerPanel from "./PlayerPanel";
 import TagEditor from "./TagEditor";
-import { X, Bot, ClipboardList, UserRound, BookOpen, BookMarked, GraduationCap, Check, MessageSquare, Trash2, Send } from "lucide-react";
+import { X, ClipboardList, UserRound, BookOpen, BookMarked, GraduationCap, Check, MessageSquare, Trash2, Send } from "lucide-react";
 import { fmtDate, fmtTime, fmtGap, gapSeconds, isLowCsat, cn } from "@/lib/utils";
 import { brandDot, brandLabel, useBrand } from "@/lib/brand";
 
-type RightPanel = "grade" | "chat" | "player";
+type RightPanel = "grade" | "player";
 
 interface DrawerProps {
   id: string;
@@ -387,11 +386,11 @@ export default function ConversationDrawer({
               )}
             </div>
 
-            {/* Right panel — Grade or AI chat */}
+            {/* Right panel — Grade or Player */}
             <div className="flex w-96 shrink-0 flex-col bg-card">
-              {/* Tab switcher — Grade always; Ask Qwen on the live conversation only; Player
-                  wherever the chat's back-office record may be shown. */}
-              {(!sideReadOnly || playerSrc) && (
+              {/* Tab switcher — shown only when there is a Player tab (wherever the chat's
+                  back-office record may be shown); otherwise the panel is just the grade. */}
+              {playerSrc && (
                 <div className="flex shrink-0 border-b">
                   <button
                     onClick={() => setRightPanel("grade")}
@@ -404,32 +403,17 @@ export default function ConversationDrawer({
                     <ClipboardList className="h-3.5 w-3.5" />
                     Grade
                   </button>
-                  {!sideReadOnly && (
                   <button
-                    onClick={() => setRightPanel("chat")}
+                    onClick={() => setRightPanel("player")}
                     className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
-                      rightPanel === "chat"
+                      rightPanel === "player"
                         ? "border-b-2 border-primary text-primary"
                         : "text-muted-foreground hover:text-foreground"
                     }`}
                   >
-                    <Bot className="h-3.5 w-3.5" />
-                    Ask Qwen
+                    <UserRound className="h-3.5 w-3.5" />
+                    Player
                   </button>
-                  )}
-                  {playerSrc && (
-                    <button
-                      onClick={() => setRightPanel("player")}
-                      className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
-                        rightPanel === "player"
-                          ? "border-b-2 border-primary text-primary"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <UserRound className="h-3.5 w-3.5" />
-                      Player
-                    </button>
-                  )}
                 </div>
               )}
 
@@ -438,7 +422,7 @@ export default function ConversationDrawer({
                   <div className="h-full overflow-auto">
                     <PlayerPanel url={playerSrc} />
                   </div>
-                ) : (sideReadOnly || rightPanel === "grade") ? (
+                ) : (
                   <div className="h-full overflow-auto">
                     <GradePanel
                       grade={data.grade}
@@ -460,8 +444,6 @@ export default function ConversationDrawer({
                       }}
                     />
                   </div>
-                ) : (
-                  <AiChatPanel conversationId={id} />
                 )}
               </div>
             </div>
