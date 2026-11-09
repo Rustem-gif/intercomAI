@@ -96,7 +96,7 @@ def test_the_block_places_dated_rows_around_the_chat():
 def test_the_block_falls_back_when_the_bo_has_nothing(tmp_path):
     store = BoPlayersStore(tmp_path / "b.db")
     assert "not available" in block(Contact(id="c"), START, END, store)
-    assert "not available" in block(Contact(id="c", bo_id="1", bo_brand="tombriches"), START, END, store)
+    assert "not available" in block(Contact(id="c", bo_id="1", bo_brand="olympia"), START, END, store)
     assert "not read" in block(Contact(id="c", bo_id="1", bo_brand="kingbilly"), START, END, store)
     store.put("kingbilly", _facts())
     assert "BACK OFFICE (the casino's own records; player 1745500" in block(
@@ -145,7 +145,7 @@ def test_sync_skips_fresh_players_and_supported_brands_only(tmp_path):
     convos = [Conversation(id=str(i), created_at=START, updated_at=None, state="closed",
                            contact=Contact(id=f"c{i}", bo_id=bid, bo_brand=brand))
               for i, (bid, brand) in enumerate([("1745500", "kingbilly"), ("1745500", "kingbilly"),
-                                                ("9", "tombriches"), ("", "kingbilly")])]
+                                                ("9", "olympia"), ("", "kingbilly")])]
     assert bo_sync.players_of(convos) == [("kingbilly", "1745500")]
     bo = FakeBO()
     s1 = bo_sync.sync(bo_sync.players_of(convos), client=bo, db_path=db)

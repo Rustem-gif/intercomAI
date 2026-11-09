@@ -45,6 +45,10 @@ class PlayerFacts:
     freespins: list[dict] = field(default_factory=list)
     comments: list[dict] = field(default_factory=list)  # staff comments on the player
     errors: list[str] = field(default_factory=list)
+    # Added for the Tomb Riches BO (backoffice/apuesta_player.py); empty for King Billy.
+    status_detail: str = ""                           # e.g. "previously blocked", KYC note
+    level: str = ""                                   # loyalty level name
+    unavailable: list[str] = field(default_factory=list)  # lists this BO does not keep
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

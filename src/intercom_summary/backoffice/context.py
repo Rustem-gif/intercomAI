@@ -15,7 +15,13 @@ from intercom_summary.intercom.models import Contact
 
 STATUS = {"enable": "active", "disable": "DISABLED (account closed)", "suspend": "SUSPENDED",
           "restrict_casino": "casino restricted", "restrict_sb": "sportsbook restricted",
-          "activate_in_24h": "to be re-activated in 24 h"}
+          "activate_in_24h": "to be re-activated in 24 h",
+          # Tomb Riches (Apuesta): new → active → verified (KYC); blocked covers closures,
+          # self-exclusion, fraud and multi-accounting (the lock row says which).
+          "new": "active (new, not verified)", "active": "active",
+          "verified": "active, verified (KYC)", "blocked": "BLOCKED"}
+_LABELS = {"payments": "payments", "bonuses": "bonuses", "freespins": "free spins",
+           "comments": "staff comments", "limits": "RG limits"}
 # How far around the chat each list reaches.
 PAYMENTS_BEFORE, BONUS_BEFORE, AFTER = timedelta(days=14), timedelta(days=30), timedelta(days=3)
 MAX_ROWS = {"payments": 12, "bonuses": 10, "freespins": 6, "comments": 5}
@@ -68,20 +74,27 @@ def render(f: PlayerFacts, start: datetime | None, end: datetime | None) -> str:
     lines = [f"=== BACK OFFICE (the casino's own records; player {f.player_id}; read "
              f"{f.fetched_at[:16].replace('T', ' ')} UTC — status, tags and groups are as of "
              f"that read, dated rows are history) ==="]
-    lines.append(f"Account status now: {STATUS.get(f.status, f.status or 'unknown')}")
+    not_read = {e.split(":")[0] for e in f.errors}
+    status = STATUS.get(f.status, f.status or "unknown")
+    lines.append(f"Account status now: {status}"
+                 + (f" — {f.status_detail}" if f.status_detail else ""))
+    if f.level:
+        lines.append(f"Loyalty level now: {f.level}")
     if f.locks:
         lines.append("Locks: " + "; ".join(
             f"{l['kind']} {l['reason']}: \"{l['comment']}\" {_when(l['created_at'], start, end)}"
+            + (f", until {l['until'][:16]}" if l.get("until") else "")
             for l in f.locks))
     else:
         lines.append("Locks: none")
     if f.limits:
         lines.append("RG limits: " + "; ".join(
-            f"{l['type']} {l['period']} — {l['status']}, set {_when(l['created_at'], start, end)}"
-            + (f", ends {l['disable_at'][:16]}" if l.get("disable_at") not in ("", "-") else "")
+            f"{l['type']} {l['period']}".strip() + f" — {l['status']}"
+            + (f", set {_when(l['created_at'], start, end)}" if l.get("created_at") else "")
+            + (f", ends {l['disable_at'][:16]}" if l.get("disable_at") not in ("", "-", None) else "")
             for l in f.limits))
     else:
-        lines.append("RG limits: none")
+        lines.append("RG limits: " + ("not read" if "limits" in not_read else "none"))
     lines.append("Tags: " + (", ".join(f.tags) or "none"))
     hints = [g for g in f.groups if any(h in g.lower() for h in _GROUP_HINTS)]
     if hints:
@@ -97,7 +110,8 @@ def render(f: PlayerFacts, start: datetime | None, end: datetime | None) -> str:
 
     pays, more = window(f.payments, "created_at", PAYMENTS_BEFORE, MAX_ROWS["payments"])
     lines.append(f"Payments from 14 days before the chat to 3 days after (newest first, of the "
-                 f"latest {len(f.payments)}): " + ("none" if not pays else ""))
+                 f"latest {len(f.payments)}): "
+                 + ("" if pays else "not read" if "payments" in not_read else "none"))
     for p in pays:
         state = {"Yes": "succeeded", "No": "failed / not completed"}.get(p["success"], p["success"] or "pending")
         extra = f"; approval {p['approval']}" if p.get("approval") else ""
@@ -107,11 +121,15 @@ def render(f: PlayerFacts, start: datetime | None, end: datetime | None) -> str:
                      + extra)
     if more:
         lines.append("  - … more in that period")
-    for label, rows, cap in (("Bonuses issued", f.bonuses, MAX_ROWS["bonuses"]),
-                             ("Free spins issued", f.freespins, MAX_ROWS["freespins"])):
+    for name, label, rows, cap in (
+            ("bonuses", "Bonuses issued", f.bonuses, MAX_ROWS["bonuses"]),
+            ("freespins", "Free spins issued", f.freespins, MAX_ROWS["freespins"])):
+        if name in f.unavailable:                   # this BO keeps no such list
+            continue
         picked, more = window(rows, "issued_at", BONUS_BEFORE, cap)
         lines.append(f"{label} from 30 days before the chat to 3 days after: "
-                     + ("none" if not picked else ""))
+                     + ("" if picked else "NOT READ — unknown, not none" if name in not_read
+                        else "none"))
         for b in picked:
             lines.append(f"  - {_when(b['issued_at'], start, end)} {b['title'][:40]} — {b['stage']}"
                          + (f", {b['amount']}" if b.get("amount") else ""))
@@ -121,6 +139,6 @@ def render(f: PlayerFacts, start: datetime | None, end: datetime | None) -> str:
     for c in (c for c in notes if c.get("text")):
         lines.append(f"Staff comment {_when(c['created_at'], start, end)}: {c['text'][:200]}")
     if f.errors:
-        lines.append("Not read: " + ", ".join(e.split(":")[0] for e in f.errors))
+        lines.append("Not read: " + ", ".join(_LABELS.get(n, n) for n in sorted(not_read)))
     lines.append("=== END BACK OFFICE ===")
     return "\n".join(lines)

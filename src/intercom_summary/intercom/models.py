@@ -87,8 +87,9 @@ class Contact:
     # "" = not looked up. Current at fetch time, not as of the chat.
     segment: str = ""
     loyalty_level: str = ""
-    # The player's id in the casino back office (the contact's `cleanid`, or external_id
-    # "c<id>") and the brand whose BO holds them ("kingbilly"); "" = unknown.
+    # The player's id in the casino back office (King Billy: the contact's `cleanid`, or
+    # external_id "c<id>"; Tomb Riches: external_id "t-<id>") and the brand whose BO holds
+    # them ("kingbilly" / "tombriches"); "" = unknown.
     bo_id: str = ""
     bo_brand: str = ""
 

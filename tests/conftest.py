@@ -66,14 +66,15 @@ def _no_qa_lessons_loop():
 @pytest.fixture(autouse=True)
 def _no_back_office():
     """Never reach the casino's production back office from a test, whatever .env holds."""
-    old = settings.bo_sync, settings.bo_kb_password, settings.bo_kb_otp_secret
+    names = ("bo_sync", "bo_kb_password", "bo_kb_otp_secret", "bo_tr_password",
+             "bo_tr_otp_secret")
+    old = [getattr(settings, n) for n in names]
     object.__setattr__(settings, "bo_sync", False)
-    object.__setattr__(settings, "bo_kb_password", "")
-    object.__setattr__(settings, "bo_kb_otp_secret", "")
+    for n in names[1:]:
+        object.__setattr__(settings, n, "")
     yield
-    object.__setattr__(settings, "bo_sync", old[0])
-    object.__setattr__(settings, "bo_kb_password", old[1])
-    object.__setattr__(settings, "bo_kb_otp_secret", old[2])
+    for n, v in zip(names, old):
+        object.__setattr__(settings, n, v)
 
 
 @pytest.fixture(autouse=True)

@@ -992,7 +992,8 @@ Intercom **contact** carries it (synced from the back office): `custom_attribute
 ### The casino back office (BO) — what the grader could not see in Intercom
 Closures, self-exclusions, RG limits, payment status, bonus history, duplicates and the VIP
 manager's tag live in the casino's back office (SoftSwiss, Rails ActiveAdmin at
-`BO_KB_URL`, King Billy only for now). Since 2026-10-28 the grader gets them as a
+`BO_KB_URL`, King Billy) and, since 2026-11-09, Tomb Riches' Apuesta Cloud console (see the
+Tomb Riches bullets below). Since 2026-10-28 the grader gets them as a
 **BACK OFFICE block** in front of the transcript, and the kb-v41 / vip-v16 prompts say how to use
 it (section "THE BACK OFFICE BLOCK"); without it the old cannot_determine rules apply.
 - **Login is unattended:** `backoffice/client.py` posts email + password + a TOTP code it
@@ -1021,6 +1022,28 @@ it (section "THE BACK OFFICE BLOCK"); without it the old cannot_determine rules 
   after the chat (the BO shows UTC). Status, tags and groups are as of the read.
 - **Limits:** the BO lists only the latest 10 payments / bonuses, so an old chat of a very active
   player may see none from its own window. Tests never reach the BO (`tests/conftest.py`).
+- **Tomb Riches = Apuesta Cloud** (`BO_TR_URL=https://console.apuesta.cloud/tombriches`, plus
+  `BO_TR_EMAIL` / `BO_TR_PASSWORD` / `BO_TR_OTP_SECRET`). A different platform: the console is a
+  single-page app over **gRPC-web** (`POST /api/cloud.apuesta.<svc>/<Method>`, protobuf body,
+  `opid: tombriches` header, cookie session). `backoffice/apuesta.py` has a stdlib protobuf
+  codec, the login (SignIn → TwoFactorAuth with the TOTP code on the server's clock), the
+  session in `data/bo/session_tombriches.json` and one silent re-login on grpc-status 16.
+  `backoffice/apuesta_player.py` maps the reads into the same `PlayerFacts`; field numbers
+  come from the console's generated JS (`proto.cloud.apuesta.*.deserializeBinaryFromReader`).
+- **Read-only by construction (Apuesta):** only the methods in `apuesta.READ_METHODS` (all
+  Get*/List*) are ever called; anything else is refused before a request. The BO account
+  (ross@gt1.one, Nov 2026) *can* change players — status, balance adjustments, cash payments.
+- **Which player (Tomb Riches):** the contact has no custom attributes; its `external_id` is
+  `t-<Apuesta customer id>` (a 20-char xid) → `contact.bo_id`, `bo_brand = "tombriches"`.
+  Contacts cached before this was added are looked up again once (`contact_segments.bo_checked`
+  < 2 with no id); run `scripts/backfill_contact_segments.py` to fill cached chats.
+- **What is read (Tomb Riches):** status (new / active / verified / blocked, block reason,
+  "previously blocked"), cooling-off end, tags (e.g. `vip`), loyalty level name, the wallets'
+  deposit / withdrawal limits, 25 latest deposits and 25 latest withdrawal orders (approval
+  state, reject reason, "reviewed by staff"), staff notes. **Not read with the current
+  account:** issued bonuses (`GAME_BONUS_VIEW` missing → the block says "NOT READ — unknown,
+  not none") and the customer timeline (`CUSTOMER_TIMELINE_VIEW`). Apuesta keeps no free-spin
+  list and no duplicate count, so those lines are left out. Amounts are cents on the wire.
 
 ### Change the Slack bot
 - `slack/handlers.py` (what happens on commands/clicks), `slack/blocks.py` (the message UI),

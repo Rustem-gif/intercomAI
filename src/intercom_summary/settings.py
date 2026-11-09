@@ -289,6 +289,13 @@ class Settings:
     bo_kb_email: str = field(default_factory=lambda: _env("BO_KB_EMAIL"))
     bo_kb_password: str = field(default_factory=lambda: _env("BO_KB_PASSWORD"))
     bo_kb_otp_secret: str = field(default_factory=lambda: _env("BO_KB_OTP_SECRET"))
+    # The Tomb Riches back office (Apuesta Cloud, gRPC-web) — backoffice/apuesta.py. The URL
+    # names the operator (its first path segment is the `opid`); login is the console login.
+    bo_tr_url: str = field(default_factory=lambda: _env(
+        "BO_TR_URL", "https://console.apuesta.cloud/tombriches").rstrip("/"))
+    bo_tr_email: str = field(default_factory=lambda: _env("BO_TR_EMAIL"))
+    bo_tr_password: str = field(default_factory=lambda: _env("BO_TR_PASSWORD"))
+    bo_tr_otp_secret: str = field(default_factory=lambda: _env("BO_TR_OTP_SECRET"))
     bo_dir: Path = field(default_factory=lambda: Path(_env("BO_DIR", "./data/bo")))
     # Read the BO before grading (backoffice/sync.py); off = the grader sees no BO block.
     bo_sync: bool = field(default_factory=lambda: _env("BO_SYNC", "on").lower()

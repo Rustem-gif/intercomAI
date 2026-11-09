@@ -62,9 +62,18 @@ def segment_from_attrs(attrs: dict[str, Any] | None) -> tuple[str, str]:
     return REGULAR, level
 
 
+# Tomb Riches contacts carry no custom attributes; their external_id is "t-" + the Apuesta
+# customer id (a 20-character xid), e.g. "t-dboeb2r7hsfs7387mf40" (checked 2026-11-09).
+_TR_EXTERNAL = re.compile(r"t-([0-9a-v]{20})")
+
+
 def bo_id_from(contact: dict[str, Any]) -> tuple[str, str]:
-    """(BO player id, brand) from an Intercom contact: `cleanid`, else external_id "c<id>"."""
+    """(BO player id, brand) from an Intercom contact: King Billy's `cleanid`, else external_id
+    "c<id>"; Tomb Riches' external_id "t-<Apuesta customer id>"."""
     attrs = contact.get("custom_attributes") or {}
+    tr = _TR_EXTERNAL.fullmatch(str(contact.get("external_id") or "").strip())
+    if tr and not str(attrs.get("cleanid") or "").strip():
+        return tr.group(1), "tombriches"
     raw = str(attrs.get("cleanid") or "").strip()
     if not raw.isdigit():
         m = re.fullmatch(r"c?(\d+)", str(contact.get("external_id") or "").strip())
