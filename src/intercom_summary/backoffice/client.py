@@ -94,6 +94,8 @@ class BackOfficeClient:
         self._session_file = session_file or (settings.bo_dir / "session.json")
         self._http = httpx.Client(timeout=timeout, follow_redirects=True, http2=False)
         self._lock = threading.Lock()
+        self._relogin = threading.Lock()
+        self._generation = 0          # bumped by every login: threads re-login only once
         self._last_code = ""
         self._load_session()
 
@@ -158,6 +160,7 @@ class BackOfficeClient:
                 raise LoginFailed("login refused: " + ("; ".join(f.strip() for f in flash)
                                                        or f"HTTP {resp.status_code}"))
             self._save_session()
+            self._generation += 1
             log.info("BO: logged in to %s", self.origin)
 
     # ── reads ────────────────────────────────────────────────────────────────────────────
@@ -169,11 +172,16 @@ class BackOfficeClient:
     def _get(self, path: str, headers: dict[str, str], params: dict | None = None) -> httpx.Response:
         url = self._url(path)
         for attempt in (1, 2):
+            generation = self._generation
             resp = self._http.get(url, headers={**headers, "Referer": f"{self.base}/"},
                                   params=params)
             if resp.url.path.rstrip("/").endswith("/login") or resp.status_code == 401:
                 if attempt == 1:
-                    self.login()
+                    # Two threads that both find the session expired log in once, not twice
+                    # (a second login waits out a whole TOTP period for a fresh code).
+                    with self._relogin:
+                        if self._generation == generation:
+                            self.login()
                     continue
                 raise LoginFailed("still on the login page after logging in")
             return resp

@@ -49,6 +49,7 @@ class PlayerFacts:
     status_detail: str = ""                           # e.g. "previously blocked", KYC note
     level: str = ""                                   # loyalty level name
     unavailable: list[str] = field(default_factory=list)  # lists this BO does not keep
+    history_note: str = ""                            # how far back dated history reaches
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

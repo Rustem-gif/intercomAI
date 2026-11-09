@@ -1040,10 +1040,17 @@ it (section "THE BACK OFFICE BLOCK"); without it the old cannot_determine rules 
 - **What is read (Tomb Riches):** status (new / active / verified / blocked, block reason,
   "previously blocked"), cooling-off end, tags (e.g. `vip`), loyalty level name, the wallets'
   deposit / withdrawal limits, 25 latest deposits and 25 latest withdrawal orders (approval
-  state, reject reason, "reviewed by staff"), staff notes. **Not read with the current
-  account:** issued bonuses (`GAME_BONUS_VIEW` missing → the block says "NOT READ — unknown,
-  not none") and the customer timeline (`CUSTOMER_TIMELINE_VIEW`). Apuesta keeps no free-spin
-  list and no duplicate count, so those lines are left out. Amounts are cents on the wire.
+  state, reject reason, "reviewed by staff"), staff notes, issued bonuses (template name,
+  free-spin count, "given by staff" when the bonus has a creator, else "automatic (campaign)"),
+  and from the customer timeline: dated status changes (block / unblock / verification, by
+  staff / system / player), limit and cooling-off changes, manual balance adjustments.
+  Apuesta keeps no free-spin list and no duplicate count, so those lines are left out.
+  Amounts are cents on the wire. Without `GAME_BONUS_VIEW` / `CUSTOMER_TIMELINE_VIEW` (granted
+  2026-11-09) a list is marked "NOT READ — unknown, not none".
+- **Timeline caveat:** Apuesta's timeline starts on 2026-11-01 ~12:00 UTC, and its first hour
+  is the existing state replayed as events (status changes of one player in the same second).
+  `apuesta_player.TIMELINE_FROM` skips rows before 13:00 that day; the block tells the grader
+  the history is kept only since then. Pages are 0-based (`PaginationRequest.CurrentPage`).
 
 ### Change the Slack bot
 - `slack/handlers.py` (what happens on commands/clicks), `slack/blocks.py` (the message UI),

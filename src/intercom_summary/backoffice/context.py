@@ -21,7 +21,7 @@ STATUS = {"enable": "active", "disable": "DISABLED (account closed)", "suspend":
           "new": "active (new, not verified)", "active": "active",
           "verified": "active, verified (KYC)", "blocked": "BLOCKED"}
 _LABELS = {"payments": "payments", "bonuses": "bonuses", "freespins": "free spins",
-           "comments": "staff comments", "limits": "RG limits"}
+           "comments": "staff comments", "limits": "RG limits", "history": "status history"}
 # How far around the chat each list reaches.
 PAYMENTS_BEFORE, BONUS_BEFORE, AFTER = timedelta(days=14), timedelta(days=30), timedelta(days=3)
 MAX_ROWS = {"payments": 12, "bonuses": 10, "freespins": 6, "comments": 5}
@@ -80,10 +80,14 @@ def render(f: PlayerFacts, start: datetime | None, end: datetime | None) -> str:
                  + (f" — {f.status_detail}" if f.status_detail else ""))
     if f.level:
         lines.append(f"Loyalty level now: {f.level}")
+    if f.history_note:
+        lines.append(f.history_note)
     if f.locks:
         lines.append("Locks: " + "; ".join(
-            f"{l['kind']} {l['reason']}: \"{l['comment']}\" {_when(l['created_at'], start, end)}"
+            f"{l['kind']} {l['reason']}" + (f": \"{l['comment']}\"" if l.get("comment") else "")
+            + f" {_when(l['created_at'], start, end)}"
             + (f", until {l['until'][:16]}" if l.get("until") else "")
+            + (f", by {l['by']}" if l.get("by") else "")
             for l in f.locks))
     else:
         lines.append("Locks: none")

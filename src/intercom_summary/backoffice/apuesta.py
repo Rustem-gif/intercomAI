@@ -62,6 +62,7 @@ READ_METHODS = frozenset(_P + m for m in (
     "gamification.bo.v1.LoyaltyProgramService/GetCustomerLoyaltyLevel",
     "gamification.bo.v1.LoyaltyProgramService/GetLoyaltyProgram",
     "bonusservice.bo.v1.GameBonusService/ListCustomerGameBonuses",
+    "bonusservice.bo.v1.GameBonusTemplateService/ListGameBonusTemplatesBrief",
     "audittrail.bo.v1.ActivityService/ListCustomerTimeline",
 ))
 _READ_NAME = re.compile(r"/(Get|List)[A-Z]\w*$")

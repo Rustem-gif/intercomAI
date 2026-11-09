@@ -11,8 +11,13 @@ What maps to what:
 - payments: deposits (ListCustomerPayments) and withdrawal orders (with their approval state —
   awaiting approval, rejected and why), newest first, 25 of each.
 - comments: the staff notes on the customer.
-- bonuses: ListCustomerGameBonuses — needs GAME_BONUS_VIEW; without it the list is recorded as
-  not read, never as empty. Apuesta keeps no separate free-spin list and no duplicate count.
+- bonuses: ListCustomerGameBonuses (GAME_BONUS_VIEW) with the template's name, the free-spin
+  count and "given by staff" / "automatic (campaign)"; without the permission the list is
+  recorded as not read, never as empty. No separate free-spin list, no duplicate count.
+- history: the customer timeline (CUSTOMER_TIMELINE_VIEW) — dated status changes (block,
+  unblock, verification, by whom), limit / cooling-off changes and manual balance adjustments.
+  It starts on 2026-11-01 (rows before 13:00 UTC that day are the replayed initial state and
+  are skipped); the block says so, so an older chat is not read as "never blocked".
 
 Only what a QA verdict needs is kept — no names, addresses, documents, IPs or contact details.
 """
@@ -21,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from intercom_summary.backoffice.apuesta import (
-    ApuestaClient, pb_bytes, pb_int, pb_msgs, pb_str, pb_strs, pb_time, pb_varint)
+    ApuestaClient, pb_bytes, pb_int, pb_msg, pb_msgs, pb_str, pb_strs, pb_time, pb_varint)
 from intercom_summary.backoffice.client import NotAuthorized
 from intercom_summary.backoffice.player import PlayerFacts
 
@@ -165,13 +170,93 @@ def _level(bo: ApuestaClient, cid: str, region: str, f: PlayerFacts) -> None:
 
 
 def _bonuses(bo: ApuestaClient, cid: str, f: PlayerFacts) -> None:
+    """Issued bonuses with the template's name, free-spin count, and who gave them: a bonus
+    with a creator was given by a staff member, one without came from a campaign rule."""
     r = bo.call("bonusservice.bo.v1.GameBonusService/ListCustomerGameBonuses",
                 _list_req(pb_bytes(2, _sv(cid))))
-    f.bonuses = [{"title": f"bonus {pb_str(b, 3)}"[:40], "issued_at": pb_time(b, 6),
-                  "amount": _money(pb_int(b, 9), pb_str(b, 10)) if pb_int(b, 9) else "",
-                  "strategy": "", "stage": BONUS_STATUS.get(pb_int(b, 5), str(pb_int(b, 5))),
-                  "wager": "", "expiry": pb_time(b, 8)}
-                 for b in pb_msgs(r, 1)]
+    rows = pb_msgs(r, 1)
+    names: dict[str, str] = {}
+    ids = sorted({pb_str(b, 3) for b in rows if pb_str(b, 3)})
+    if ids:
+        try:
+            t = bo.call("bonusservice.bo.v1.GameBonusTemplateService/ListGameBonusTemplatesBrief",
+                        b"".join(pb_bytes(1, i) for i in ids))
+            names = {pb_str(x, 1): pb_str(x, 2) for x in pb_msgs(t, 1)}
+        except Exception:  # noqa: BLE001 — a name is a nicety; the rows stand without it
+            pass
+    f.bonuses = []
+    for b in rows:
+        spins = sum(pb_int(c, 2) for c in pb_msgs(pb_msg(b, 14), 1))
+        title = names.get(pb_str(b, 3)) or "bonus"
+        stage = BONUS_STATUS.get(pb_int(b, 5), str(pb_int(b, 5)))
+        stage += ", given by staff" if pb_str(b, 15) else ", automatic (campaign)"
+        f.bonuses.append({
+            "title": (title + (f" + {spins} FS" if spins else ""))[:40],
+            "issued_at": pb_time(b, 6), "stage": stage,
+            "amount": _money(pb_int(b, 9), pb_str(b, 10)) if pb_int(b, 9) else "",
+            "strategy": "", "wager": "", "expiry": pb_time(b, 8)})
+
+
+# Timeline (audit trail) events worth a dated row, and how many pages of 200 to read at most.
+# Apuesta started keeping the timeline on 2026-11-01 around 12:00 UTC (no record anywhere is
+# older), and the first hour holds the existing state replayed as events — several status
+# changes of one player in the same second, for checks done days earlier. Rows before
+# TIMELINE_FROM are therefore not used.
+TIMELINE_FROM = "2026-11-01 13:00:00"
+TIMELINE_PAGES = 3
+_ACTOR = {0: "system", 1: "the player", 2: "staff", 3: "an administrator", 5: "an API key"}
+
+
+def _timeline(bo: ApuestaClient, cid: str, f: PlayerFacts) -> None:
+    """Status changes (block / unblock / verification) and limit, cooling-off and manual
+    balance changes, each dated — what the customer record alone cannot show."""
+    records = []
+    for page in range(TIMELINE_PAGES):                  # pages are 0-based
+        r = bo.call("audittrail.bo.v1.ActivityService/ListCustomerTimeline",
+                    pb_bytes(1, cid) + pb_bytes(3, pb_varint(1, 200) + pb_varint(2, page)))
+        batch = pb_msgs(r, 1)
+        records += batch
+        if len(batch) < 200:
+            break
+    f.history_note = (f"Status history (dated rows below) is kept only since "
+                      f"{TIMELINE_FROM[:16]} UTC: no status row before that means unknown, "
+                      f"not none.")
+    status_rows, other = [], []
+    for x in records:
+        kind = pb_str(x, 3).removeprefix("customer.")
+        kv = {pb_str(p, 1): pb_str(p, 2) for p in pb_msgs(x, 9)}
+        when, by = pb_time(x, 12), _ACTOR.get(pb_int(x, 7), "")
+        if when < TIMELINE_FROM:
+            continue
+        if kind == "status_changed":
+            move = f"{kv.get('from', '?').lower()} -> {kv.get('to', '?').lower()}"
+            block = BLOCK_REASON.get({"GENERAL": 1, "FRAUD": 2, "MULTIACCOUNT": 3,
+                                      "SELF_EXCLUSION": 4}.get(kv.get("block_reason", ""), 0), "")
+            status_rows.append({"kind": "status change", "reason": move + (f" ({block})" if block else ""),
+                                "comment": kv.get("reason", "")[:200], "created_at": when, "by": by})
+        elif kind == "payment_limit_changed":
+            other.append({"type": "limit change", "period": "",
+                          "status": ", ".join(f"{k} {v}" for k, v in kv.items() if v)[:160],
+                          "duration": "", "created_at": when, "modified_at": "", "disable_at": ""})
+        elif kind == "updated":
+            for ch in pb_msgs(x, 10):
+                path = pb_str(ch, 1)
+                if "cooling" in path:                   # block dates: status_changed
+                    other.append({"type": f"{path.replace('_', ' ')} changed", "period": "",
+                                  "status": f"{pb_str(ch, 2) or '-'} -> {pb_str(ch, 3) or '-'}",
+                                  "duration": "", "created_at": when, "modified_at": "",
+                                  "disable_at": ""})
+        elif kind == "balance_adjusted":
+            f.payments.append({"action": "manual balance adjustment", "source": f"by {by}",
+                               "amount": f"{kv.get('amount', '')} {kv.get('currency', '')}".strip(),
+                               "success": "Yes", "approval": "", "manual": "yes",
+                               "return_type": "", "comments": kv.get("reason", "")[:120],
+                               "created_at": when, "finished_at": ""})
+    if any("-> blocked" in r["reason"] for r in status_rows):
+        f.locks = [l for l in f.locks if l.get("kind") != "account block"]  # the dated row says it
+    f.locks = status_rows + f.locks
+    f.limits += other
+    f.payments.sort(key=lambda r: r["created_at"], reverse=True)
 
 
 def fetch(bo: ApuestaClient, customer_id: str) -> PlayerFacts:
@@ -185,7 +270,8 @@ def fetch(bo: ApuestaClient, customer_id: str) -> PlayerFacts:
                        ("payments", lambda: _payments(bo, cid, f)),
                        ("comments", lambda: _notes(bo, cid, f)),
                        ("level", lambda: _level(bo, cid, region, f)),
-                       ("bonuses", lambda: _bonuses(bo, cid, f))):
+                       ("bonuses", lambda: _bonuses(bo, cid, f)),
+                       ("history", lambda: _timeline(bo, cid, f))):
         try:
             step()
         except NotAuthorized:
