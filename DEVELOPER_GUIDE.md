@@ -1047,6 +1047,14 @@ it (section "THE BACK OFFICE BLOCK"); without it the old cannot_determine rules 
   Apuesta keeps no free-spin list and no duplicate count, so those lines are left out.
   Amounts are cents on the wire. Without `GAME_BONUS_VIEW` / `CUSTOMER_TIMELINE_VIEW` (granted
   2026-11-09) a list is marked "NOT READ — unknown, not none".
+- **Player panel (web):** the chat drawer's **Player** tab shows the same cached record to
+  people (`backoffice/panel.py`, `components/PlayerPanel.tsx`): status, level, tags, locks and
+  status changes, RG limits, payments and bonuses (by default the grader's window around the
+  chat, a checkbox shows all), staff notes, "not read" warnings, each dated row marked before /
+  during / after the chat, and a link to the player in the BO. `GET
+  /api/conversations/{id}/player` (also `/api/vip/conversations/…` and `/api/vip/cases/…`)
+  never reaches the BO; `POST …/player/refresh` re-reads that one player (analyst / admin).
+  Hidden in the agents' review portal (staff notes and payment details are not for agents).
 - **Timeline caveat:** Apuesta's timeline starts on 2026-11-01 ~12:00 UTC, and its first hour
   is the existing state replayed as events (status changes of one player in the same second).
   `apuesta_player.TIMELINE_FROM` skips rows before 13:00 that day; the block tells the grader

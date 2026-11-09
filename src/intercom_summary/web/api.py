@@ -502,6 +502,54 @@ def create_app() -> FastAPI:
             gstore.close()
             icstore.close()
 
+    # ── Player panel: the chat's player as the casino back office has them ──────────────
+    # The cache the grader reads (backoffice/panel.py). GET never reaches the BO; refresh
+    # re-reads one player (read-only) and needs the analyst role.
+    def _panel_conversation(kind: str, key: str):
+        if kind == "chat":
+            store = ConversationsStore()
+            try:
+                convo = store.get(key)
+            finally:
+                store.close()
+        elif kind == "vip-thread":
+            from intercom_summary.intercom.models import Conversation
+            from intercom_summary.storage.vip_store import VipStore
+
+            vstore = VipStore()
+            try:
+                row = vstore.get(key)
+            finally:
+                vstore.close()
+            convo = Conversation.from_dict(row["payload"]) if row else None
+        else:
+            from intercom_summary import vip_cases
+
+            convo = vip_cases.load_case_conversations([key]).get(key)
+        if convo is None:
+            raise HTTPException(404, "Not found")
+        return convo
+
+    def _player_routes(prefix: str, kind: str) -> None:
+        @app.get(f"{prefix}/{{key}}/player", name=f"player_{kind}")
+        def player_panel(key: str, user: dict = Depends(auth.current_user)):
+            from intercom_summary.backoffice import panel
+
+            return panel.panel(_panel_conversation(kind, key))
+
+        @app.post(f"{prefix}/{{key}}/player/refresh", name=f"player_refresh_{kind}")
+        def player_refresh(key: str, user: dict = Depends(auth.require_write)):
+            from intercom_summary.backoffice import panel
+
+            try:
+                return panel.refresh(_panel_conversation(kind, key))
+            except RuntimeError as exc:
+                raise HTTPException(503, str(exc)) from exc
+
+    _player_routes("/api/conversations", "chat")
+    _player_routes("/api/vip/conversations", "vip-thread")
+    _player_routes("/api/vip/cases", "vip-case")
+
     @app.get("/api/tags")
     def list_tags(user: dict = Depends(auth.current_user)):
         store = ConversationsStore()

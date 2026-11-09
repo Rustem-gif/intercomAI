@@ -5,12 +5,13 @@ import { useAuth, canWrite } from "@/lib/auth";
 import { Button, Spinner } from "./ui/primitives";
 import GradePanel from "./GradePanel";
 import AiChatPanel from "./AiChatPanel";
+import PlayerPanel from "./PlayerPanel";
 import TagEditor from "./TagEditor";
-import { X, Bot, ClipboardList, BookOpen, BookMarked, GraduationCap, Check, MessageSquare, Trash2, Send } from "lucide-react";
+import { X, Bot, ClipboardList, UserRound, BookOpen, BookMarked, GraduationCap, Check, MessageSquare, Trash2, Send } from "lucide-react";
 import { fmtDate, fmtTime, fmtGap, gapSeconds, isLowCsat, cn } from "@/lib/utils";
 import { brandDot, brandLabel, useBrand } from "@/lib/brand";
 
-type RightPanel = "grade" | "chat";
+type RightPanel = "grade" | "chat" | "player";
 
 interface DrawerProps {
   id: string;
@@ -34,12 +35,16 @@ interface DrawerProps {
   transcriptText?: boolean;
   /** Drawer heading; defaults to "Conversation <id>". */
   title?: string;
+  /** The Player panel's endpoint (the chat's player in the casino back office). Defaults to
+   *  /api/conversations/:id/player; null hides the tab. Hidden by default in the agents'
+   *  review portal (disputeUrl set): staff notes and payment details are not for agents. */
+  playerUrl?: string | null;
 }
 
 export default function ConversationDrawer({
   id, onClose, readOnly = false, detailUrl, disputeUrl, overrideUrl, onOverridden, noGradeText,
   confirmUrl,
-  transcriptText = false, title,
+  transcriptText = false, title, playerUrl,
 }: DrawerProps) {
   const { user, displayName } = useAuth();
   const qc = useQueryClient();
@@ -51,6 +56,9 @@ export default function ConversationDrawer({
   const sideReadOnly = readOnly || sandboxed;
   const sideWriter = writer && !sandboxed;
   const [rightPanel, setRightPanel] = useState<RightPanel>("grade");
+  const playerSrc = playerUrl === undefined
+    ? (disputeUrl ? null : `/api/conversations/${id}/player`)
+    : playerUrl;
   const [savingTags, setSavingTags] = useState(false);
   const [togglingIconic, setTogglingIconic] = useState(false);
   const [coachingOpen, setCoachingOpen] = useState(false);
@@ -381,8 +389,9 @@ export default function ConversationDrawer({
 
             {/* Right panel — Grade or AI chat */}
             <div className="flex w-96 shrink-0 flex-col bg-card">
-              {/* Tab switcher — hidden in read-only mode (only grade tab available) */}
-              {!sideReadOnly && (
+              {/* Tab switcher — Grade always; Ask Qwen on the live conversation only; Player
+                  wherever the chat's back-office record may be shown. */}
+              {(!sideReadOnly || playerSrc) && (
                 <div className="flex shrink-0 border-b">
                   <button
                     onClick={() => setRightPanel("grade")}
@@ -395,6 +404,7 @@ export default function ConversationDrawer({
                     <ClipboardList className="h-3.5 w-3.5" />
                     Grade
                   </button>
+                  {!sideReadOnly && (
                   <button
                     onClick={() => setRightPanel("chat")}
                     className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
@@ -406,11 +416,29 @@ export default function ConversationDrawer({
                     <Bot className="h-3.5 w-3.5" />
                     Ask Qwen
                   </button>
+                  )}
+                  {playerSrc && (
+                    <button
+                      onClick={() => setRightPanel("player")}
+                      className={`flex flex-1 items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-colors ${
+                        rightPanel === "player"
+                          ? "border-b-2 border-primary text-primary"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <UserRound className="h-3.5 w-3.5" />
+                      Player
+                    </button>
+                  )}
                 </div>
               )}
 
               <div className="min-h-0 flex-1 overflow-hidden">
-                {(sideReadOnly || rightPanel === "grade") ? (
+                {rightPanel === "player" && playerSrc ? (
+                  <div className="h-full overflow-auto">
+                    <PlayerPanel url={playerSrc} />
+                  </div>
+                ) : (sideReadOnly || rightPanel === "grade") ? (
                   <div className="h-full overflow-auto">
                     <GradePanel
                       grade={data.grade}

@@ -904,3 +904,42 @@ export interface HistoryStats {
   archives: string[];
   mode: string;
 }
+
+// ── Player panel (backoffice/panel.py) ───────────────────────────────────────
+export type ChatRel = "before" | "during" | "after" | "";
+export interface PlayerRow { when: string; rel: ChatRel }
+export interface PlayerPanelData {
+  available: boolean;
+  reason?: string;
+  brand: string;
+  brand_label: string;
+  player_id: string;
+  bo_url: string;
+  can_refresh?: boolean;
+  segment?: string;
+  read_at?: string;
+  age_hours?: number | null;
+  chat_start?: string | null;
+  chat_end?: string | null;
+  status?: string;
+  status_key?: string;
+  status_detail?: string;
+  level?: string;
+  loyalty_level?: string;
+  tags?: string[];
+  groups?: string[];
+  duplicates?: number | null;
+  history_note?: string;
+  locks?: (PlayerRow & { kind: string; reason: string; comment: string; by: string; until: string })[];
+  limits?: (PlayerRow & { type: string; status: string; ends: string })[];
+  payments?: (PlayerRow & {
+    action: string; amount: string; source: string; state: string;
+    kind: "ok" | "fail" | "pending" | "rejected"; finished: string; approval: string;
+    comment: string; near: boolean;
+  })[];
+  bonuses?: (PlayerRow & { title: string; stage: string; by_staff: boolean | null; amount: string; near: boolean })[];
+  freespins?: (PlayerRow & { title: string; stage: string; near: boolean })[];
+  comments?: (PlayerRow & { text: string })[];
+  not_read?: string[];
+  unavailable?: string[];
+}

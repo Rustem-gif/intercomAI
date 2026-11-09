@@ -242,6 +242,7 @@ function ThreadsView() {
       {openId && (
         <ConversationDrawer id={openId} onClose={() => setOpenId(null)} readOnly
                             detailUrl={`/api/vip/conversations/${openId}`}
+                            playerUrl={`/api/vip/conversations/${openId}/player`}
                             noGradeText="Threads are not graded one by one — open the Cases view: a VIP case groups this player's threads on the topic and is graded on the VIP Scorecard v1.6." />
       )}
     </div>
@@ -481,6 +482,7 @@ function CasesView() {
       {openId && (
         <ConversationDrawer id={openId} onClose={() => setOpenId(null)} title={`Case ${openId}`}
                             detailUrl={`/api/vip/cases/${openId}`}
+                            playerUrl={`/api/vip/cases/${openId}/player`}
                             overrideUrl={`/api/vip/grades/${openId}/override`}
                             confirmUrl={`/api/vip/grades/${openId}/confirm`}
                             onOverridden={() => qc.invalidateQueries({ queryKey: ["vip-cases"] })}
@@ -572,6 +574,7 @@ function ExceptionsView() {
       {openId && (
         <ConversationDrawer id={openId} onClose={() => setOpenId(null)} readOnly
                             detailUrl={`/api/vip/conversations/${openId}`}
+                            playerUrl={`/api/vip/conversations/${openId}/player`}
                             noGradeText="Threads are graded as part of their case — see Cases." />
       )}
     </div>
